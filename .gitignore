@@ -1,0 +1,12 @@
+/prompt.txt
+/results/
+__pycache__/
+*.py[cod]
+# roborev snapshots
+/.roborev/
+
+# IDE config
+.idea/
+
+# scratch / working files (never committed)
+tmp/

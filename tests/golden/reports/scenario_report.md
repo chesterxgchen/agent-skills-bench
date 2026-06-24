@@ -1,0 +1,30 @@
+# Scenario Report: ames_fedavg
+
+Result root: `<RESULT_ROOT>`
+Status: `failed`
+Agent invocation: `replayed`
+Runs: 2/2 completed
+
+Replay: `true`
+Replayed at: `2026-06-13T21:00:00Z`
+This report was regenerated from captured artifacts; no agent or Docker run was executed.
+
+## Run Identity
+
+| Run ID | Label | Agent | Model | Model source | Mode |
+|---|---|---|---|---|---|
+| run_00001 | without_skills | codex | default | NA | without_skills |
+| run_00002 | with_skills | codex | default | NA | with_skills |
+
+## Aggregate Results
+
+| Label | Runs | Quality pass | Median agent seconds | Median tokens |
+|---|---:|---:|---:|---:|
+| with_skills | 1 | 0 | NA | 15000.0 |
+| without_skills | 1 | 0 | NA | 12000.0 |
+
+## Winner Policy
+
+`median_agent_elapsed_seconds_then_tokens_with_quality_gate`
+
+No winner selected because no compared label passed the quality gate with timing data.

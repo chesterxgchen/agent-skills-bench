@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nvflare-skills-benchmark"
+version = "0.1.0"
+description = "Benchmark harness that runs agent CLIs in Docker and compares the same NVFLARE job-conversion task with and without packaged NVFLARE agent skills."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+# Flat layout: the importable package is `benchmark` (entrypoint:
+# `python -m benchmark.harness.host.build` / `... .host.runner`), invoked via
+# bin/build.sh and bin/run.sh which set PYTHONPATH to the repo root.
+[tool.setuptools.packages.find]
+include = ["benchmark*"]
+
+[tool.black]
+line-length = 120
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

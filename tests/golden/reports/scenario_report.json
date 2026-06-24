@@ -1,0 +1,281 @@
+{
+  "agent_invocation": "replayed",
+  "aggregate_metrics": {
+    "by_label": {
+      "with_skills": {
+        "agent_elapsed_seconds": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "quality_fail_count": 1,
+        "quality_pass_count": 0,
+        "run_count": 1,
+        "token_count": {
+          "count": 1,
+          "max": 15000.0,
+          "mean": 15000.0,
+          "median": 15000.0,
+          "min": 15000.0,
+          "stddev": null
+        }
+      },
+      "without_skills": {
+        "agent_elapsed_seconds": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "quality_fail_count": 1,
+        "quality_pass_count": 0,
+        "run_count": 1,
+        "token_count": {
+          "count": 1,
+          "max": 12000.0,
+          "mean": 12000.0,
+          "median": 12000.0,
+          "min": 12000.0,
+          "stddev": null
+        }
+      }
+    },
+    "winner": null,
+    "winner_policy": "no_quality_qualified_winner"
+  },
+  "aggregate_results": {
+    "by_label": {
+      "with_skills": {
+        "agent_elapsed_seconds": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "quality_fail_count": 1,
+        "quality_pass_count": 0,
+        "run_count": 1,
+        "token_count": {
+          "count": 1,
+          "max": 15000.0,
+          "mean": 15000.0,
+          "median": 15000.0,
+          "min": 15000.0,
+          "stddev": null
+        }
+      },
+      "without_skills": {
+        "agent_elapsed_seconds": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "quality_fail_count": 1,
+        "quality_pass_count": 0,
+        "run_count": 1,
+        "token_count": {
+          "count": 1,
+          "max": 12000.0,
+          "mean": 12000.0,
+          "median": 12000.0,
+          "min": 12000.0,
+          "stddev": null
+        }
+      }
+    },
+    "winner": null,
+    "winner_policy": "no_quality_qualified_winner"
+  },
+  "comparison_groups": [
+    {
+      "aggregate_results": {
+        "by_label": {},
+        "winner": null,
+        "winner_policy": "no_quality_qualified_winner"
+      },
+      "compared_records": [],
+      "compared_runs": [],
+      "comparison_group_id": null,
+      "comparison_type": null,
+      "group_axes": {},
+      "quality_gate": {
+        "agent_process_passed": true,
+        "critical_quality_checks_failed": false,
+        "final_container_exit_code": 0,
+        "required_validation_metric_status": [
+          "present",
+          "not_required"
+        ],
+        "source_input_modified": false
+      },
+      "status": "degraded",
+      "winner": null,
+      "winner_policy": "median_agent_elapsed_seconds_then_tokens_with_quality_gate"
+    }
+  ],
+  "comparison_type": "skills",
+  "completed_run_count": 2,
+  "expanded_case_count": 2,
+  "failed_run_count": 2,
+  "is_replay": true,
+  "quality_gate": {
+    "agent_process_passed": true,
+    "critical_quality_checks_failed": false,
+    "final_container_exit_code": 0,
+    "required_validation_metric_status": [
+      "present",
+      "not_required"
+    ],
+    "source_input_modified": false
+  },
+  "replay": {
+    "agent_invocation": "replayed",
+    "note": "Replay regenerates parser/report artifacts from captured records and does not execute Docker.",
+    "replayed": true,
+    "replayed_at": "2026-06-13T21:00:00Z",
+    "schema_version": "1",
+    "source_result_root": "<RESULT_ROOT>"
+  },
+  "report_generation_status": {
+    "status": "pending"
+  },
+  "reproducibility": {
+    "seed": 1234
+  },
+  "runs": [
+    {
+      "agent": "codex",
+      "agent_elapsed_seconds": null,
+      "agent_exit_code": 0,
+      "agent_model": "default",
+      "agent_process_passed": null,
+      "artifact_paths": {},
+      "command_count": 4,
+      "comparison_group_id": null,
+      "comparison_type": null,
+      "cost": null,
+      "critical_quality_checks_failed": false,
+      "elapsed_seconds": 180,
+      "failure_root_cause": null,
+      "final_container_exit_code": 0,
+      "host_status": 0,
+      "job_name": null,
+      "job_path": null,
+      "job_scale": null,
+      "job_slug": null,
+      "mode": "without_skills",
+      "observed_skill_name": null,
+      "phase_seconds": null,
+      "prompt_hash": null,
+      "quality_gate": {
+        "agent_process_passed": true,
+        "critical_quality_checks_failed": false,
+        "final_container_exit_code": 0,
+        "required_validation_metric_status": [
+          "present",
+          "not_required"
+        ],
+        "source_input_modified": false
+      },
+      "quality_gate_failures": [
+        "agent_process_passed"
+      ],
+      "quality_gate_passed": false,
+      "record_dir": "records/agent=codex/model=default/workflow=default/job=ames/repeat=01/mode=without_skills",
+      "required_validation_metric_status": "not_required",
+      "run_id": "run_00001",
+      "scenario_name": null,
+      "sequence": null,
+      "skill_name_source": null,
+      "skills_enabled": false,
+      "status": "failed",
+      "structure_quality_signal": {
+        "reason": "structure quality was not captured for this run",
+        "status": "unavailable"
+      },
+      "token_count": 12000,
+      "validation_metric": {
+        "name": "AUROC",
+        "summary_value_label": "aggregated best validation metric",
+        "value": 0.7421,
+        "value_scope": "fl_summary_metric"
+      },
+      "validation_metric_status": "not_required",
+      "workflow": null
+    },
+    {
+      "agent": "codex",
+      "agent_elapsed_seconds": null,
+      "agent_exit_code": 0,
+      "agent_model": "default",
+      "agent_process_passed": null,
+      "artifact_paths": {},
+      "command_count": 4,
+      "comparison_group_id": null,
+      "comparison_type": null,
+      "cost": null,
+      "critical_quality_checks_failed": false,
+      "elapsed_seconds": 240,
+      "failure_root_cause": null,
+      "final_container_exit_code": 0,
+      "host_status": 0,
+      "job_name": null,
+      "job_path": null,
+      "job_scale": null,
+      "job_slug": null,
+      "mode": "with_skills",
+      "observed_skill_name": null,
+      "phase_seconds": null,
+      "prompt_hash": null,
+      "quality_gate": {
+        "agent_process_passed": true,
+        "critical_quality_checks_failed": false,
+        "final_container_exit_code": 0,
+        "required_validation_metric_status": [
+          "present",
+          "not_required"
+        ],
+        "source_input_modified": false
+      },
+      "quality_gate_failures": [
+        "agent_process_passed"
+      ],
+      "quality_gate_passed": false,
+      "record_dir": "records/agent=codex/model=default/workflow=default/job=ames/repeat=01/mode=with_skills",
+      "required_validation_metric_status": "not_required",
+      "run_id": "run_00002",
+      "scenario_name": null,
+      "sequence": null,
+      "skill_name_source": null,
+      "skills_enabled": true,
+      "status": "failed",
+      "structure_quality_signal": {
+        "reason": "structure quality was not captured for this run",
+        "status": "unavailable"
+      },
+      "token_count": 15000,
+      "validation_metric": {
+        "name": "AUROC",
+        "summary_value_label": "aggregated best validation metric",
+        "value": 0.7689,
+        "value_scope": "fl_summary_metric"
+      },
+      "validation_metric_status": "not_required",
+      "workflow": null
+    }
+  ],
+  "scenario_name": "ames_fedavg",
+  "schema_version": "1",
+  "status": "failed",
+  "winner_policy": "median_agent_elapsed_seconds_then_tokens_with_quality_gate"
+}

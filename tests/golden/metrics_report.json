@@ -1,0 +1,216 @@
+{
+  "comparison": {
+    "elapsed_seconds_with_skills_minus_without_skills": 60,
+    "token_count_with_skills_minus_without_skills": 3000
+  },
+  "metric_name": "AUROC",
+  "result_root": "<RESULT_ROOT>",
+  "runs": [
+    {
+      "activity": {
+        "command_count": 4,
+        "unique_command_count": 3
+      },
+      "agent": "codex",
+      "agent_model": "default",
+      "available": true,
+      "label": "No skills baseline",
+      "metrics": {
+        "activity.command_count": 4,
+        "activity.unique_command_count": 3,
+        "record.final_container_exit_code": 0,
+        "record.reported_validation_metric.value": 0.7421,
+        "record.workspace_delta.changed_file_count": 3,
+        "record.workspace_delta.runtime_artifact_count": 1,
+        "summary.agent_exit_code": 0,
+        "summary.elapsed_seconds": 180,
+        "summary.final_container_exit_code": 0,
+        "summary.token_count": 12000,
+        "usage.input_tokens": 0,
+        "usage.output_tokens": 0,
+        "usage.token_count": 12000
+      },
+      "mode": "without_skills",
+      "model_source": "scenario",
+      "record": {
+        "agent": "codex",
+        "agent_model": "default",
+        "final_container_exit_code": 0,
+        "mode": "without_skills",
+        "model_source": "scenario",
+        "reported_validation_metric": {
+          "name": "AUROC",
+          "summary_value_label": "aggregated best validation metric",
+          "value": 0.7421,
+          "value_scope": "fl_summary_metric"
+        },
+        "validation_metric_policy": {
+          "expected_primary_metric": "AUROC"
+        },
+        "workspace_delta": {
+          "changed_file_count": 3,
+          "changed_files": [
+            {
+              "artifact_path": "changed_files/nvflare_jobs/ames_fedavg/client.py",
+              "path": "nvflare_jobs/ames_fedavg/client.py"
+            },
+            {
+              "artifact_path": "changed_files/nvflare_jobs/ames_fedavg/model.py",
+              "path": "nvflare_jobs/ames_fedavg/model.py"
+            },
+            {
+              "artifact_path": "changed_files/nvflare_jobs/ames_fedavg/job.py",
+              "path": "nvflare_jobs/ames_fedavg/job.py"
+            }
+          ],
+          "final_structure_files": [
+            {
+              "path": "nvflare_jobs/ames_fedavg/client.py"
+            },
+            {
+              "path": "nvflare_jobs/ames_fedavg/model.py"
+            },
+            {
+              "path": "nvflare_jobs/ames_fedavg/job.py"
+            },
+            {
+              "path": "download_data.py"
+            }
+          ],
+          "runtime_artifact_count": 1,
+          "runtime_artifacts": [
+            {
+              "artifact_path": "runtime_artifacts/runtime_workspaces/job/server/simulate_job/app_server/config/config_fed_server.json",
+              "path": "runtime_workspaces/job/server/simulate_job/app_server/config/config_fed_server.json",
+              "source_path": "/tmp/nvflare/workspaces/job/server/simulate_job/app_server/config/config_fed_server.json"
+            }
+          ]
+        }
+      },
+      "runtime_image": {
+        "digest": "sha256:fixed-fixture-digest",
+        "image": "agent-skills-benchmark:codex-baseline"
+      },
+      "skills_enabled": false,
+      "summary": {
+        "agent": "codex",
+        "agent_exit_code": 0,
+        "agent_model": "default",
+        "elapsed_seconds": 180,
+        "final_container_exit_code": 0,
+        "mode": "without_skills",
+        "model_source": "scenario",
+        "token_count": 12000
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "token_count": 12000
+      }
+    },
+    {
+      "activity": {
+        "command_count": 5,
+        "unique_command_count": 4
+      },
+      "agent": "codex",
+      "agent_model": "default",
+      "available": true,
+      "label": "With skills",
+      "metrics": {
+        "activity.command_count": 5,
+        "activity.unique_command_count": 4,
+        "record.final_container_exit_code": 0,
+        "record.reported_validation_metric.value": 0.7689,
+        "record.workspace_delta.changed_file_count": 3,
+        "record.workspace_delta.runtime_artifact_count": 1,
+        "summary.agent_exit_code": 0,
+        "summary.elapsed_seconds": 240,
+        "summary.final_container_exit_code": 0,
+        "summary.token_count": 15000,
+        "usage.input_tokens": 0,
+        "usage.output_tokens": 0,
+        "usage.token_count": 15000
+      },
+      "mode": "with_skills",
+      "model_source": "scenario",
+      "record": {
+        "agent": "codex",
+        "agent_model": "default",
+        "final_container_exit_code": 0,
+        "mode": "with_skills",
+        "model_source": "scenario",
+        "reported_validation_metric": {
+          "name": "AUROC",
+          "summary_value_label": "aggregated best validation metric",
+          "value": 0.7689,
+          "value_scope": "fl_summary_metric"
+        },
+        "validation_metric_policy": {
+          "expected_primary_metric": "AUROC"
+        },
+        "workspace_delta": {
+          "changed_file_count": 3,
+          "changed_files": [
+            {
+              "artifact_path": "changed_files/nvflare_jobs/ames_fedavg/client.py",
+              "path": "nvflare_jobs/ames_fedavg/client.py"
+            },
+            {
+              "artifact_path": "changed_files/nvflare_jobs/ames_fedavg/model.py",
+              "path": "nvflare_jobs/ames_fedavg/model.py"
+            },
+            {
+              "artifact_path": "changed_files/nvflare_jobs/ames_fedavg/job.py",
+              "path": "nvflare_jobs/ames_fedavg/job.py"
+            }
+          ],
+          "final_structure_files": [
+            {
+              "path": "nvflare_jobs/ames_fedavg/client.py"
+            },
+            {
+              "path": "nvflare_jobs/ames_fedavg/model.py"
+            },
+            {
+              "path": "nvflare_jobs/ames_fedavg/job.py"
+            },
+            {
+              "path": "download_data.py"
+            }
+          ],
+          "runtime_artifact_count": 1,
+          "runtime_artifacts": [
+            {
+              "artifact_path": "runtime_artifacts/runtime_workspaces/job/server/simulate_job/app_server/config/config_fed_server.json",
+              "path": "runtime_workspaces/job/server/simulate_job/app_server/config/config_fed_server.json",
+              "source_path": "/tmp/nvflare/workspaces/job/server/simulate_job/app_server/config/config_fed_server.json"
+            }
+          ]
+        }
+      },
+      "runtime_image": {
+        "digest": "sha256:fixed-fixture-digest",
+        "image": "agent-skills-benchmark:codex-baseline"
+      },
+      "skills_enabled": true,
+      "summary": {
+        "agent": "codex",
+        "agent_exit_code": 0,
+        "agent_model": "default",
+        "elapsed_seconds": 240,
+        "final_container_exit_code": 0,
+        "mode": "with_skills",
+        "model_source": "scenario",
+        "token_count": 15000
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "token_count": 15000
+      }
+    }
+  ],
+  "status": "No skills baseline: passed; With skills: passed",
+  "title": "Benchmark Metrics"
+}
