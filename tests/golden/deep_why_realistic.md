@@ -42,7 +42,18 @@ Baseline comparison: No skills baseline had 1 command classified successful job/
 | 2 | `python3 job.py --num-sites 3 --num-rounds 3` (360s, exit 0) | `python3 -m pip install -r requirements.txt` (30s, exit 0) |
 | 3 | `uv pip install -r requirements-train.txt` (150s, exit 0) | no timed command span >=30s captured |
 
-- **Dependency install path differed**: with-skills spent 150s across 1 install command(s) (1 requirements-file install(s)), while the baseline spent 30s across 1 install command(s) (1 requirements-file install(s)). The longest with-skills install was `uv pip install -r requirements-train.txt` (150s, exit 0); downloaded packages included nvidia-cublas-cu13, nvidia-cudnn-cu13, torch; baseline longest install was `python3 -m pip install -r requirements.txt` (30s, exit 0). Installer form differed: with-skills used uv pip; baseline longest install used python -m pip. Accelerator dependency evidence: with-skills install logs included nvidia-cublas-cu13, nvidia-cudnn-cu13; large accelerator/framework wheels can dominate install time. Network/download evidence: with-skills install logs showed broken/incomplete download, download retry; baseline install logs showed no captured network retry/timeout markers.
+**Dependency install path differed**
+
+| Run | Install time | Install scope | Stack evidence | Installer | Representative command |
+|---|---:|---|---|---|---|
+| With skills | 150s | 1 requirements-file install(s) | accelerator-capable dependency stack (nvidia-cublas-cu13, nvidia-cudnn-cu13) | uv pip | `uv pip install -r requirements-train.txt` |
+| No skills baseline | 30s | 1 requirements-file install(s) | framework dependency stack | python -m pip | `python3 -m pip install -r requirements.txt` |
+
+- **Why the install is longer**: With skills installed the training requirements path, while the baseline installed a narrower targeted dependency path. The with-skills install logs show accelerator-capable framework packages.
+- **Captured package examples**: nvidia-cublas-cu13, nvidia-cudnn-cu13, torch.
+- **Accelerator dependency evidence**: with-skills install logs included nvidia-cublas-cu13, nvidia-cudnn-cu13; large accelerator/framework wheels can dominate install time.
+- **Installer difference**: with-skills used uv pip, while the baseline used python -m pip.
+- **Network/download evidence**: with-skills install logs showed broken/incomplete download, download retry; baseline install logs showed no captured network retry/timeout markers.
 
 **NVFLARE runtime path diverged**
 

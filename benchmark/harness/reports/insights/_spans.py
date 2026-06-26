@@ -29,10 +29,11 @@ from .._events import (
     command_failed,
     command_succeeded,
     fmt_seconds_with_unit,
+    inline_code_text,
     is_dependency_install_command,
     parse_event_timestamp,
 )
-from .._text import fmt_number, strip_ansi
+from .._text import fmt_number, markdown_cell, strip_ansi
 from ._plugin_view import dependency_install_attempted, event_type_count, run_summary
 
 __all__ = [
@@ -378,59 +379,132 @@ def _install_total_display(spans: list[dict[str, Any]]) -> str:
     return f"{fmt_number(round(total))}s across {len(spans)} install command(s)"
 
 
+def _install_total_seconds(spans: list[dict[str, Any]]) -> float:
+    return sum(as_number(span.get("duration_seconds")) or 0 for span in spans)
+
+
+def _install_stack_evidence(spans: list[dict[str, Any]]) -> str:
+    text = "\n".join(f"{span.get('command') or ''}\n{span.get('output') or ''}" for span in spans).lower()
+    accelerator_packages = _accelerator_dependency_packages(text)
+    if "download.pytorch.org/whl/cpu" in text or "+cpu" in text:
+        return "CPU-only framework wheel"
+    if accelerator_packages:
+        return f"accelerator-capable dependency stack ({', '.join(accelerator_packages)})"
+    if re.search(r"\btorch\b|\bpytorch(?:[-_]lightning)?\b|\btorchmetrics\b", text):
+        return "framework dependency stack"
+    if any(_install_strategy_label(span) == "requirements-file install" for span in spans):
+        return "requirements-defined training stack, not CPU-only pinned"
+    return "not captured"
+
+
+def _install_command_display(span: dict[str, Any] | None) -> str:
+    if not span:
+        return "not captured"
+    return f"`{inline_code_text(span.get('command'), 96)}`"
+
+
+def _install_runtime_offset_note(with_run: dict[str, Any], base_run: dict[str, Any]) -> str | None:
+    with_total = as_number(run_summary(with_run).get("elapsed_seconds"))
+    base_total = as_number(run_summary(base_run).get("elapsed_seconds"))
+    with_runtime = _elapsed_excluding_dependency_install(with_run)
+    base_runtime = _elapsed_excluding_dependency_install(base_run)
+    if with_total is None or base_total is None or with_runtime is None or base_runtime is None:
+        return None
+    if with_total >= base_total or with_runtime >= base_runtime:
+        return None
+    total_saved = base_total - with_total
+    runtime_saved = base_runtime - with_runtime
+    return (
+        "- **Why With skills is still faster overall**: the dependency install was slower, "
+        f"but runtime after install was {fmt_seconds_with_unit(runtime_saved)} faster "
+        f"({fmt_seconds_with_unit(with_runtime)} vs {fmt_seconds_with_unit(base_runtime)}). "
+        f"That more than offset the setup cost, so total elapsed was {fmt_seconds_with_unit(total_saved)} faster "
+        f"({fmt_seconds_with_unit(with_total)} vs {fmt_seconds_with_unit(base_total)})."
+    )
+
+
 def _dependency_install_slowdown_note(with_run: dict[str, Any], base_run: dict[str, Any]) -> str | None:
     with_installs = _dependency_install_spans(with_run)
     base_installs = _dependency_install_spans(base_run)
     with_install = _longest_span(with_installs)
     if not with_install:
         return None
-    with_install_total_seconds = sum(as_number(span.get("duration_seconds")) or 0 for span in with_installs)
-    base_install_seconds = sum(as_number(span.get("duration_seconds")) or 0 for span in base_installs)
+    with_install_total_seconds = _install_total_seconds(with_installs)
+    base_install_seconds = _install_total_seconds(base_installs)
     if with_install_total_seconds < 60 or with_install_total_seconds <= base_install_seconds + 60:
         return None
     with_install_output = "\n".join(str(span.get("output") or "") for span in with_installs)
     package_examples = _dependency_package_examples(with_install_output)
-    package_note = f"; downloaded packages included {', '.join(package_examples)}" if package_examples else ""
     accelerator_packages = _accelerator_dependency_packages(with_install_output)
-    accelerator_note = ""
+    base_install = _longest_span(base_installs)
+    with_stack_evidence = _install_stack_evidence(with_installs)
+    base_stack_evidence = _install_stack_evidence(base_installs)
+    install_reason = (
+        "- **Why the install is longer**: With skills installed the training requirements path, "
+        "while the baseline installed a narrower targeted dependency path."
+    )
+    if "CPU-only framework wheel" in base_stack_evidence:
+        install_reason += (
+            " In this run the baseline also used the explicit CPU-only PyTorch wheel index, "
+            "which avoids larger accelerator-capable framework packages; the with-skills requirements command "
+            "was not pinned to that CPU-only index."
+        )
+    elif "accelerator-capable dependency stack" in with_stack_evidence:
+        install_reason += " The with-skills install logs show accelerator-capable framework packages."
+
+    lines = [
+        "**Dependency install path differed**",
+        "",
+        "| Run | Install time | Install scope | Stack evidence | Installer | Representative command |",
+        "|---|---:|---|---|---|---|",
+        (
+            f"| With skills | {fmt_seconds_with_unit(with_install_total_seconds)} | "
+            f"{markdown_cell(_install_strategy_summary(with_installs))} | "
+            f"{markdown_cell(with_stack_evidence)} | "
+            f"{markdown_cell(_install_tool_label(with_install))} | "
+            f"{markdown_cell(_install_command_display(with_install))} |"
+        ),
+        (
+            f"| No skills baseline | {fmt_seconds_with_unit(base_install_seconds)} | "
+            f"{markdown_cell(_install_strategy_summary(base_installs))} | "
+            f"{markdown_cell(base_stack_evidence)} | "
+            f"{markdown_cell(_install_tool_label(base_install))} | "
+            f"{markdown_cell(_install_command_display(base_install))} |"
+        ),
+        "",
+        install_reason,
+    ]
+    if package_examples:
+        lines.append(f"- **Captured package examples**: {', '.join(package_examples)}.")
     if accelerator_packages:
-        accelerator_note = (
-            " Accelerator dependency evidence: with-skills install logs included "
+        lines.append(
+            "- **Accelerator dependency evidence**: with-skills install logs included "
             f"{', '.join(accelerator_packages)}; large accelerator/framework wheels can dominate install time."
         )
-    base_install = _longest_span(base_installs)
-    base_note = (
-        f"; baseline longest install was {_format_command_span(base_install)}"
-        if base_install
-        else "; baseline had no captured dependency install command"
-    )
-    installer_note = ""
     if base_install:
-        installer_note = (
-            f" Installer form differed: with-skills used {_install_tool_label(with_install)}; "
-            f"baseline longest install used {_install_tool_label(base_install)}."
+        lines.append(
+            "- **Installer difference**: "
+            f"with-skills used {_install_tool_label(with_install)}, while the baseline used "
+            f"{_install_tool_label(base_install)}."
         )
-    network_note = ""
     if _install_network_markers_for_spans(with_installs) or _install_network_markers_for_spans(base_installs):
-        network_note = (
-            " Network/download evidence: "
+        lines.append(
+            "- **Network/download evidence**: "
             f"{_install_network_marker_display_for_spans('with-skills', with_installs)}; "
             f"{_install_network_marker_display_for_spans('baseline', base_installs)}."
         )
+    runtime_note = _install_runtime_offset_note(with_run, base_run)
+    if runtime_note:
+        lines.append(runtime_note)
     baseline_followup_note = ""
     if len(base_installs) > 1:
         baseline_followup_note = (
-            f" Baseline ran {len(base_installs)} install commands; after its longest install, later requirements installs "
-            "mostly reused already-installed packages when the log reported them as already satisfied."
+            f"- **Baseline follow-up installs**: baseline ran {len(base_installs)} install commands; after its "
+            "longest install, later requirements installs mostly reused already-installed packages when the log "
+            "reported them as already satisfied."
         )
-    return (
-        "- **Dependency install path differed**: "
-        f"with-skills spent {_install_total_display(with_installs)} "
-        f"({_install_strategy_summary(with_installs)}), while the baseline spent "
-        f"{_install_total_display(base_installs)} ({_install_strategy_summary(base_installs)}). "
-        f"The longest with-skills install was {_format_command_span(with_install)}{package_note}{base_note}."
-        f"{installer_note}{accelerator_note}{network_note}{baseline_followup_note}"
-    )
+        lines.append(baseline_followup_note)
+    return "\n".join(lines)
 
 
 def _dependency_install_retry_reason(spans: list[dict[str, Any]]) -> str:

@@ -3195,9 +3195,9 @@ while flare.is_running():
     assert "python job.py" in explanation
     assert "Dependency install path differed" in explanation
     assert "requirements-file install" in explanation
-    assert "downloaded packages included" in explanation
+    assert "Captured package examples" in explanation
     assert "nvidia-cublas" in explanation
-    assert "Installer form differed" in explanation
+    assert "Installer difference" in explanation
     assert "Network/download evidence" in explanation
     assert "connection timeout" in explanation
     assert "resumed incomplete download" in explanation
@@ -3311,6 +3311,102 @@ def test_why_section_reports_runtime_regression_when_total_time_is_not_slower():
     assert "extra wall time came from tools" not in section
     assert "| Assistant turns | 5 | 2 | +3 | extra model round-trips |" in section
     assert "wall-clock overhead;" not in section
+
+
+def test_why_section_reports_dependency_install_regression_when_runtime_is_not_slower():
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import why_section
+
+    def command_events(command, start, end, item_id, output="ok"):
+        return [
+            {
+                "timestamp": start,
+                "type": "item.started",
+                "item": {
+                    "command": command,
+                    "id": item_id,
+                    "status": "in_progress",
+                    "type": "command_execution",
+                },
+            },
+            {
+                "timestamp": end,
+                "type": "item.completed",
+                "item": {
+                    "aggregated_output": output,
+                    "command": command,
+                    "exit_code": 0,
+                    "id": item_id,
+                    "status": "completed",
+                    "type": "command_execution",
+                },
+            },
+        ]
+
+    with_events = command_events(
+        "uv pip install -r requirements-train.txt",
+        "2026-06-13T00:00:00Z",
+        "2026-06-13T00:02:30Z",
+        "with_install",
+        output=(
+            "Downloading pytorch_lightning (2.4MiB)\n"
+            "Successfully installed nvidia-cublas-cu13 triton pytorch_lightning torchmetrics\n"
+        ),
+    ) + command_events(
+        "python job.py",
+        "2026-06-13T00:02:35Z",
+        "2026-06-13T00:03:05Z",
+        "with_job",
+        output="Finished FedAvg.\n",
+    )
+    base_events = command_events(
+        "python -m pip install torch --index-url https://download.pytorch.org/whl/cpu",
+        "2026-06-13T00:00:00Z",
+        "2026-06-13T00:00:30Z",
+        "base_install",
+        output="Successfully installed torch-2.12.0+cpu\n",
+    ) + command_events(
+        "python run_job.py",
+        "2026-06-13T00:00:35Z",
+        "2026-06-13T00:02:15Z",
+        "base_job",
+        output="Finished FedAvg.\n",
+    )
+    runs = {
+        NO_SKILLS_MODE: {
+            "label": "No skills baseline",
+            "run": {"elapsed_seconds": 250, "token_count": 1000},
+            "activity": {"event_types": {"assistant": 2}},
+            "agent_events_text": "\n".join(json.dumps(event) for event in base_events),
+        },
+        WITH_SKILLS_MODE: {
+            "label": "With skills",
+            "run": {"elapsed_seconds": 200, "token_count": 1000},
+            "activity": {"event_types": {"assistant": 2}},
+            "agent_events_text": "\n".join(json.dumps(event) for event in with_events),
+        },
+    }
+
+    section = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
+
+    assert "## Why" in section
+    assert "Why With skills has longer dependency install" in section
+    assert "| With skills | 150s | 50s | 200s |" in section
+    assert "| No skills baseline | 30s | 220s | 250s |" in section
+    assert "a run can finish faster overall while still spending more time installing dependencies" in section
+    assert "Dependency install path differed" in section
+    assert "| Run | Install time | Install scope | Stack evidence | Installer | Representative command |" in section
+    assert "accelerator-capable dependency stack" in section
+    assert "CPU-only framework wheel" in section
+    assert "requirements-file install" in section
+    assert "targeted package install" in section
+    assert "Captured package examples" in section
+    assert "pytorch_lightning" in section
+    assert "Accelerator dependency evidence" in section
+    assert "explicit CPU-only PyTorch wheel index" in section
+    assert "Why With skills is still faster overall" in section
+    assert "Why With skills is slower" not in section
+    assert "Why With skills has longer runtime after install" not in section
 
 
 def test_runtime_path_note_includes_baseline_fallback_command_time():

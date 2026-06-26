@@ -764,6 +764,44 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
     return lines
 
 
+def _why_dependency_install_slower(with_run: RunEvidence, base_run: RunEvidence) -> list[str]:
+    dependency_note = _dependency_install_slowdown_note(with_run, base_run)
+    if not dependency_note:
+        return []
+    with_label = with_run.label or "With skills"
+    base_label = base_run.label or "No skills baseline"
+    with_dependency = _dependency_install_total_seconds(with_run)
+    base_dependency = _dependency_install_total_seconds(base_run)
+    with_dependency_number = as_number(with_dependency) or 0
+    base_dependency_number = as_number(base_dependency) or 0
+    dependency_delta = with_dependency_number - base_dependency_number
+    pct = round(dependency_delta / base_dependency_number * 100) if base_dependency_number > 0 else 0
+    return [
+        f"**Why {with_label} has longer dependency install** "
+        f"(+{fmt_seconds(dependency_delta)}s / +{pct}% vs {base_label}):",
+        "",
+        "| Run | Dependency install | Runtime after install | Total elapsed |",
+        "|---|---:|---:|---:|",
+        (
+            f"| {markdown_cell(with_label)} | {fmt_seconds_with_unit(with_dependency)} | "
+            f"{fmt_seconds_with_unit(_elapsed_excluding_dependency_install(with_run))} | "
+            f"{fmt_seconds_with_unit(run_summary(with_run).get('elapsed_seconds'))} |"
+        ),
+        (
+            f"| {markdown_cell(base_label)} | {fmt_seconds_with_unit(base_dependency)} | "
+            f"{fmt_seconds_with_unit(_elapsed_excluding_dependency_install(base_run))} | "
+            f"{fmt_seconds_with_unit(run_summary(base_run).get('elapsed_seconds'))} |"
+        ),
+        "",
+        (
+            "This isolates dependency setup/download time from the actual job/runtime path; "
+            "a run can finish faster overall while still spending more time installing dependencies."
+        ),
+        "",
+        dependency_note,
+    ]
+
+
 def _why_more_tokens(with_run: RunEvidence, base_run: RunEvidence) -> list[str]:
     with_label = with_run.label or "With skills"
     base_label = base_run.label or "No skills baseline"
@@ -897,6 +935,8 @@ def why_section(
         sections.append(_comparison_failure_explanation(runs_by_mode, modes, ctx))
     if elapsed_is_slower or runtime_is_slower or quality_is_worse:
         sections.append(_why_slower(with_run, base_run, ctx))
+    elif _dependency_install_slowdown_note(with_run, base_run):
+        sections.append(_why_dependency_install_slower(with_run, base_run))
     if with_tokens is not None and base_tokens is not None and with_tokens > base_tokens:
         sections.append(_why_more_tokens(with_run, base_run))
     if not sections:
