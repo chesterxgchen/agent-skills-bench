@@ -217,6 +217,47 @@ def test_metric_artifact_parser_reads_generic_json_shape(tmp_path):
     assert metric["source"] == "metrics_artifact"
 
 
+def test_metric_artifact_parser_recognizes_val_prefixed_metric_names(tmp_path):
+    from benchmark.harness.metric_artifacts import validation_metric_from_workspace_delta_manifest
+
+    delta = tmp_path / "delta"
+    artifact = delta / "runtime_artifacts" / "metrics_summary.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        json.dumps({"final_aggregated_metrics": [{"name": "val_auroc", "value": 0.7757}]}),
+        encoding="utf-8",
+    )
+    manifest = {
+        "delta_dir": str(delta),
+        "runtime_artifacts": [{"artifact_path": "runtime_artifacts/metrics_summary.json"}],
+    }
+
+    metric = validation_metric_from_workspace_delta_manifest(manifest, tmp_path / "delta_manifest.json", "AUROC")
+
+    assert metric["name"] == "AUROC"
+    assert metric["value"] == 0.7757
+
+
+def test_metric_artifact_parser_falls_back_to_local_replay_delta_dir(tmp_path):
+    from benchmark.harness.metric_artifacts import validation_metric_from_workspace_delta_manifest
+
+    mode_dir = tmp_path / "mode=with_skills"
+    artifact = mode_dir / "workspace_delta" / "runtime_artifacts" / "metrics_summary.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        json.dumps({"final_aggregated_metrics": [{"name": "val_auroc", "value": 0.7757}]}),
+        encoding="utf-8",
+    )
+    manifest = {
+        "delta_dir": "/workspace/results/workspace_delta",
+        "runtime_artifacts": [{"artifact_path": "runtime_artifacts/metrics_summary.json"}],
+    }
+
+    metric = validation_metric_from_workspace_delta_manifest(manifest, mode_dir / "workspace_delta_manifest.json", "AUROC")
+
+    assert metric["value"] == 0.7757
+
+
 def test_metric_artifact_parser_prefers_runtime_artifacts_over_changed_files(tmp_path):
     from benchmark.harness.metric_artifacts import validation_metric_from_workspace_delta_manifest
 

@@ -66,6 +66,7 @@ from ._events import (  # noqa: F401
     inline_code_text,
     is_dependency_install_command,
     run_activity,
+    truncate,
     unsupported_model_message,
 )
 from ._loader import sanitized_validation_metric  # noqa: F401
@@ -123,6 +124,45 @@ from .insights._structure import (
 )
 from .insights._why import *  # noqa: F401,F403
 from .insights._why import cost_comparison_section, why_section
+
+
+def _compact_overall_status(status: str) -> str:
+    if status.startswith("needs review"):
+        return "needs review"
+    if status.startswith("completed with metric mismatch"):
+        return "warn"
+    if status.startswith("failed"):
+        return "failed"
+    if status.startswith("passed"):
+        return "passed"
+    if status.startswith("missing"):
+        return "missing"
+    return status or "NA"
+
+
+def _compact_result_gate(outcome: str) -> str:
+    if outcome.startswith("pass:"):
+        return "pass"
+    if outcome.startswith("fail:"):
+        return "fail"
+    if outcome.startswith("warn:"):
+        return "warn"
+    return outcome or "NA"
+
+
+def _run_status_detail_lines(label: str, overall: str, job_status: str, outcome: str) -> list[str]:
+    details: list[tuple[str, str]] = []
+    if _compact_overall_status(overall) != overall:
+        details.append(("Overall", truncate(overall, 180)))
+    if job_status and not job_status.startswith("completed"):
+        details.append(("Job", truncate(job_status, 180)))
+    if _compact_result_gate(outcome) != "pass":
+        details.append(("Result gate", truncate(outcome, 180)))
+    if not details:
+        return []
+    lines = [f"**{label}**"]
+    lines.extend(f"- {name}: {detail}" for name, detail in details)
+    return lines
 
 
 def _render_plugin_section(section: Any) -> list[str]:
@@ -193,8 +233,12 @@ def _executive_summary_section(
     status_lines = [
         "### Run Status",
         "",
-        "| Run | Overall status | Job run status | Result quality gate | Result metric |",
+        "| Run | Overall | Job | Result gate | Metric |",
         "|---|---|---|---|---|",
+    ]
+    status_detail_lines = [
+        "### Run Status Details",
+        "",
     ]
     context_lines = [
         "### Run Context",
@@ -210,18 +254,30 @@ def _executive_summary_section(
         job_status = job_exec.status
         if job_exec.status_reason:
             job_status = f"{job_status}: {job_exec.status_reason}"
+        overall_status = human_readable_status(run, ev)
+        result_gate = benchmark_outcome(run, ev)
+        metric_status = run_result_metric_status(run, ev)
         status_lines.append(
-            f"| {markdown_cell(run.label or mode)} | {markdown_cell(human_readable_status(run, ev))} | "
-            f"{markdown_cell(job_status)} | {markdown_cell(benchmark_outcome(run, ev))} | "
-            f"{markdown_cell(run_result_metric_status(run, ev))} |"
+            f"| {markdown_cell(run.label or mode)} | {markdown_cell(_compact_overall_status(overall_status))} | "
+            f"{markdown_cell(job_exec.status or 'NA')} | {markdown_cell(_compact_result_gate(result_gate))} | "
+            f"{markdown_cell(truncate(metric_status, 80))} |"
         )
+        detail = _run_status_detail_lines(run.label or mode, overall_status, job_status or "", result_gate)
+        if detail:
+            if len(status_detail_lines) > 2:
+                status_detail_lines.append("")
+            status_detail_lines.extend(detail)
         context_lines.append(
             f"| {markdown_cell(run.label or mode)} | "
             f"{markdown_cell(agent_model)} | "
             f"{markdown_cell(fl_algorithm_display(run, ctx.algorithm(mode)))} | "
             f"{markdown_cell(artifact_summary(run))} |"
         )
-    return "\n".join(["## Executive Summary", "", *status_lines, "", *context_lines])
+    summary_lines = ["## Executive Summary", "", *status_lines]
+    if len(status_detail_lines) > 2:
+        summary_lines.extend(["", *status_detail_lines])
+    summary_lines.extend(["", *context_lines])
+    return "\n".join(summary_lines)
 
 
 def benchmark_report(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) -> str:

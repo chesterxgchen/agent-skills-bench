@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from ...modes import BENCHMARK_RUNS, mode_names
+from ...metric_artifacts import observed_metric_payloads_from_workspace_delta_manifest
 from ...quality_signals import (
     canonical_metric_name,
     is_numeric_metric_value,
@@ -165,6 +166,30 @@ def result_metric_scalar_available(run: RunEvidence, metric_name: str | None = N
     return metric_value(run, canonical_metric_name(metric_name) if metric_name else None, ev) is not None
 
 
+def _plugin_metric_quality_issue(run: RunEvidence, ev: Any = None) -> str:
+    assessment = getattr(ev, "metric", None) if ev is not None else None
+    if assessment is None or not getattr(assessment, "gate_phrase", None):
+        return ""
+    if not (
+        getattr(assessment, "reported", False)
+        or getattr(assessment, "name", None)
+        or getattr(assessment, "scalar_term", None)
+    ):
+        return ""
+    metric = run.validation_metric if isinstance(run.validation_metric, dict) else {}
+    metric_name = canonical_metric_name(getattr(assessment, "name", None) or metric.get("name"))
+    if result_metric_scalar_available(run, metric_name or None, ev):
+        return ""
+    scalar_term = getattr(assessment, "scalar_term", None) or "single result scalar"
+    if getattr(assessment, "reported", False):
+        reported = metric_name or "result metric"
+        return f"Failed check `result_metric_scalar`: {reported} was reported, but no {scalar_term} value was found."
+    return (
+        "Failed check `result_metric_available`: "
+        f"{getattr(assessment, 'gate_phrase', None)} was not satisfied; no {scalar_term} value was found."
+    )
+
+
 def final_response_metric_reporting_gap(run: RunEvidence, ev: Any = None) -> str:
     record = run.record if isinstance(run.record, dict) else {}
     signal = quality_signal(record)
@@ -207,6 +232,9 @@ def run_quality_issues(run: RunEvidence, ev: Any = None) -> list[str]:
         issues.append(
             f"Failed check `fl_metric_scalar`: no {_scalar_term(ev)} value was found for expected metric `{expected}`."
         )
+    plugin_metric_issue = _plugin_metric_quality_issue(run, ev)
+    if plugin_metric_issue and not any("metric" in issue for issue in issues):
+        issues.append(plugin_metric_issue)
     delta = record.get("workspace_delta") if isinstance(record.get("workspace_delta"), dict) else {}
     if delta and not workspace_delta_has_artifact_evidence(delta):
         issues.append(
@@ -427,6 +455,14 @@ def observed_metric_payloads(run: RunEvidence) -> list[dict[str, Any]]:
         if payload.get("reported_values"):
             payloads.append(payload)
             seen.add(canonical_name)
+    if run.mode_dir is not None and isinstance(run.workspace_delta, dict):
+        artifact_payloads = observed_metric_payloads_from_workspace_delta_manifest(
+            run.workspace_delta,
+            run.mode_dir / "workspace_delta_manifest.json",
+            OBSERVED_METRIC_NAMES,
+            skip_names=seen,
+        )
+        payloads.extend(artifact_payloads)
     return payloads
 
 

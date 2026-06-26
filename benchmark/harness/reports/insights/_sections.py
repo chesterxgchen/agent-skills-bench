@@ -28,6 +28,7 @@ from .._events import (
     exit_code,
     failure_evidence,
     fmt_seconds_with_unit,
+    artifact_validation_metric_evidence,
 )
 from .._text import markdown_cell
 from ..evidence import RunEvidence
@@ -149,7 +150,7 @@ def quality_signal_table(runs: dict[str, RunEvidence], modes: list[str], ctx: Re
         label = _metric_value_label(run, comparable_name, ev)
         if label:
             result = f"{result} ({label})"
-        evidence = signal.get("evidence") or "NA"
+        evidence = artifact_validation_metric_evidence(run.raw) or signal.get("evidence") or "NA"
         status = signal.get("status") or "NA"
         response_gap = final_response_metric_reporting_gap(run, ev)
         if response_gap:
@@ -460,8 +461,9 @@ def failure_analysis_section(runs: dict[str, RunEvidence], modes: list[str], ctx
             lines.append("- Outcome: missing. No run artifacts were found for this mode.")
         record = run.record if isinstance(run.record, dict) else {}
         signal = quality_signal(record)
-        if signal.get("evidence"):
-            lines.append(f"- Metric evidence: {signal['evidence']}")
+        metric_evidence = artifact_validation_metric_evidence(run.raw) or signal.get("evidence")
+        if metric_evidence:
+            lines.append(f"- Metric evidence: {metric_evidence}")
         if status_kind == "passed":
             bash_blocked = bash_blocked_diagnostic(run, recovered=True, ctx=ctx)
             if bash_blocked:

@@ -32,6 +32,7 @@ classification (step 5).
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -85,6 +86,7 @@ from ...reports._text import (
     _shell_command_parts,
     _shell_command_segments,
     _strip_quoted,
+    markdown_cell,
     strip_ansi,
 )
 
@@ -318,18 +320,111 @@ def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
         else:
             recovery = "not recovered in this run"
         dependency_evidence = ""
-        if missing_python_module_name(output):
+        missing_module = missing_python_module_name(output)
+        root_cause = command_error_summary(output)
+        if missing_module:
             dependency_evidence = dependency_install_evidence(run)
+            timing_reason = _missing_module_timing_reason(run, event, missing_module)
+            if timing_reason:
+                root_cause = f"{root_cause}; {timing_reason}"
         diagnostics.append(
             {
                 "command": inline_code_text(command, 180),
                 "exit": str(event.get("exit_code")),
                 "recovery": recovery,
-                "root_cause": command_error_summary(output),
+                "root_cause": root_cause,
                 "dependency": dependency_evidence,
             }
         )
     return diagnostics
+
+
+def _event_payloads_with_index(run: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
+    payloads = []
+    for index, line in enumerate(str(run.get("agent_events_text") or "").splitlines()):
+        try:
+            payload = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            payloads.append((index, payload))
+    return payloads
+
+
+def _tool_result_index(payloads: list[tuple[int, dict[str, Any]]], tool_id: str) -> int | None:
+    for index, payload in payloads:
+        for item in _message_content(payload):
+            if item.get("type") == "tool_result" and str(item.get("tool_use_id") or "") == tool_id:
+                return index
+    return None
+
+
+def _background_dependency_install_windows(run: dict[str, Any]) -> list[tuple[int, int | None, str]]:
+    payloads = _event_payloads_with_index(run)
+    background_installs: dict[str, tuple[int, str]] = {}
+    tasks_by_tool_id: dict[str, str] = {}
+    task_completion: dict[str, int] = {}
+    for index, payload in payloads:
+        for item in _message_content(payload):
+            if item.get("type") != "tool_use" or item.get("name") != "Bash":
+                continue
+            tool_input = item.get("input") if isinstance(item.get("input"), dict) else {}
+            command = str(tool_input.get("command") or payload.get("command_text") or "")
+            tool_id = str(item.get("id") or "")
+            if tool_id and tool_input.get("run_in_background") and is_dependency_install_command(command):
+                background_installs[tool_id] = (index, inline_code_text(command, 100))
+        event_type = str(payload.get("event_type") or payload.get("type") or "")
+        task_id = str(payload.get("task_id") or "")
+        tool_id = str(payload.get("tool_use_id") or "")
+        if event_type == "system.task_started" and task_id and tool_id:
+            tasks_by_tool_id[tool_id] = task_id
+            continue
+        if event_type in {"system.task_updated", "system.task_notification"} and task_id:
+            status = ""
+            if isinstance(payload.get("patch"), dict):
+                status = str(payload["patch"].get("status") or "")
+            status = status or str(payload.get("status") or "")
+            if status.lower() == "completed" and task_id not in task_completion:
+                task_completion[task_id] = index
+
+    windows = []
+    for tool_id, (start_index, command) in background_installs.items():
+        task_id = tasks_by_tool_id.get(tool_id)
+        windows.append((start_index, task_completion.get(task_id) if task_id else None, command))
+    return windows
+
+
+def _later_successful_module_probe(run: dict[str, Any], failed_index: int | None, module_name: str) -> str:
+    if failed_index is None:
+        return ""
+    for event in agent_command_events(run):
+        if int(event.get("index") or 0) <= failed_index or not command_succeeded(event):
+            continue
+        command = str(event.get("command") or "")
+        output = str(event.get("output") or "")
+        if re.search(rf"\bimport\s+{re.escape(module_name)}\b", command) and re.search(
+            rf"\b{re.escape(module_name)}\s+[0-9]", output
+        ):
+            return f"later verification imported `{module_name}` successfully"
+    return ""
+
+
+def _missing_module_timing_reason(run: dict[str, Any], event: dict[str, Any], module_name: str) -> str:
+    payloads = _event_payloads_with_index(run)
+    result_index = _tool_result_index(payloads, str(event.get("id") or ""))
+    if result_index is None:
+        return ""
+    for start_index, completion_index, install_command in _background_dependency_install_windows(run):
+        if start_index < result_index and (completion_index is None or result_index < completion_index):
+            detail = (
+                f"`{module_name}` was probed while background dependency install `{install_command}` "
+                "was still running"
+            )
+            later_probe = _later_successful_module_probe(run, int(event.get("index") or 0), module_name)
+            if later_probe:
+                detail += f"; {later_probe}"
+            return detail
+    return ""
 
 
 # --- NVFLARE recipe / FL-algorithm detection (step 5b) ---
@@ -758,6 +853,246 @@ def job_run_status_reason(run: dict[str, Any]) -> str:
         return f"{reason}; {recovered_issue}" if recovered_issue else reason
 
     return "status unknown — no simulation hint counts or events found"
+
+
+def _runtime_artifacts(run: dict[str, Any]) -> list[dict[str, Any]]:
+    delta = run_workspace_delta(run)
+    artifacts = delta.get("runtime_artifacts") if isinstance(delta.get("runtime_artifacts"), list) else []
+    return [item for item in artifacts if isinstance(item, dict)]
+
+
+def _artifact_label(item: dict[str, Any]) -> str:
+    return str(item.get("path") or item.get("artifact_path") or "")
+
+
+def _read_runtime_artifact(run: dict[str, Any], pattern: str, *, max_bytes: int = 128_000) -> tuple[str, str]:
+    for item in _runtime_artifacts(run):
+        label = _artifact_label(item).replace("\\", "/")
+        if not re.search(pattern, label):
+            continue
+        path = _workspace_artifact_path(run, item)
+        if path and path.exists():
+            return label, read_text(path, max_bytes=max_bytes)
+    return "", ""
+
+
+def _runtime_artifact_present(run: dict[str, Any], pattern: str) -> bool:
+    return any(re.search(pattern, _artifact_label(item).replace("\\", "/")) for item in _runtime_artifacts(run))
+
+
+def _has_scalar_result_metric(run: dict[str, Any]) -> bool:
+    metric = run.get("validation_metric") if isinstance(run.get("validation_metric"), dict) else {}
+    return as_number(metric.get("value")) is not None or artifact_validation_metric_is_runtime_evidence(run)
+
+
+def _agent_event_payloads(run: dict[str, Any]) -> list[dict[str, Any]]:
+    payloads = []
+    for line in str(run.get("agent_events_text") or "").splitlines():
+        try:
+            payload = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def _message_content(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+    content = message.get("content")
+    return [item for item in content if isinstance(item, dict)] if isinstance(content, list) else []
+
+
+def _background_task_interruption_summary(run: dict[str, Any]) -> str:
+    background_tools: dict[str, dict[str, str]] = {}
+    task_starts: dict[str, dict[str, str]] = {}
+    task_updates: dict[str, list[str]] = {}
+    task_notifications: dict[str, list[str]] = {}
+    for payload in _agent_event_payloads(run):
+        for item in _message_content(payload):
+            if item.get("type") != "tool_use" or item.get("name") != "Bash":
+                continue
+            tool_input = item.get("input") if isinstance(item.get("input"), dict) else {}
+            if not tool_input.get("run_in_background"):
+                continue
+            tool_id = str(item.get("id") or "")
+            if not tool_id:
+                continue
+            background_tools[tool_id] = {
+                "command": str(tool_input.get("command") or payload.get("command_text") or ""),
+                "description": str(tool_input.get("description") or payload.get("description") or ""),
+            }
+        event_type = str(payload.get("event_type") or payload.get("type") or "")
+        task_id = str(payload.get("task_id") or "")
+        if not task_id:
+            continue
+        if event_type == "system.task_started":
+            task_starts[task_id] = {
+                "description": str(payload.get("description") or ""),
+                "tool_use_id": str(payload.get("tool_use_id") or ""),
+            }
+            continue
+        if event_type == "system.task_updated":
+            patch = payload.get("patch") if isinstance(payload.get("patch"), dict) else {}
+            status = str(patch.get("status") or "")
+            if status:
+                task_updates.setdefault(task_id, []).append(status)
+            continue
+        if event_type == "system.task_notification":
+            status = str(payload.get("status") or "")
+            if status:
+                task_notifications.setdefault(task_id, []).append(status)
+
+    interrupted_statuses = {"failed", "killed", "stopped", "cancelled", "canceled", "interrupted"}
+    for task_id, started in task_starts.items():
+        tool_id = started.get("tool_use_id") or ""
+        if tool_id not in background_tools:
+            continue
+        updates = [status for status in task_updates.get(task_id, []) if status.lower() in interrupted_statuses]
+        notifications = [
+            status for status in task_notifications.get(task_id, []) if status.lower() in interrupted_statuses
+        ]
+        if not updates and not notifications:
+            continue
+        details = []
+        description = started.get("description") or background_tools[tool_id].get("description")
+        if description:
+            details.append(description)
+        if updates:
+            details.append("task update " + ", ".join(f"`{status}`" for status in updates))
+        if notifications:
+            details.append("notification " + ", ".join(f"`{status}`" for status in notifications))
+        return f"Background task `{task_id}` was interrupted after launch ({'; '.join(details)})."
+    return ""
+
+
+def _background_task_interruption_cause(run: dict[str, Any]) -> str:
+    payloads = _agent_event_payloads(run)
+    result_payload = None
+    result_timestamp = None
+    interrupted_timestamp = None
+    saw_background_task = False
+    saw_schedule_wakeup = False
+    for payload in payloads:
+        event_type = str(payload.get("event_type") or payload.get("type") or "")
+        timestamp = parse_event_timestamp(payload.get("harness_timestamp") or payload.get("timestamp"))
+        for item in _message_content(payload):
+            if item.get("type") == "tool_use" and item.get("name") == "Bash":
+                tool_input = item.get("input") if isinstance(item.get("input"), dict) else {}
+                saw_background_task = saw_background_task or bool(tool_input.get("run_in_background"))
+            if item.get("type") == "tool_use" and item.get("name") == "ScheduleWakeup":
+                saw_schedule_wakeup = True
+        if event_type == "result.success" or (
+            str(payload.get("type") or "") == "result" and str(payload.get("subtype") or "") == "success"
+        ):
+            result_payload = payload
+            result_timestamp = timestamp
+            continue
+        if event_type in {"system.task_updated", "system.task_notification"}:
+            status = ""
+            if isinstance(payload.get("patch"), dict):
+                status = str(payload["patch"].get("status") or "")
+            status = status or str(payload.get("status") or "")
+            if (
+                status.lower() in {"failed", "killed", "stopped", "cancelled", "canceled", "interrupted"}
+                and timestamp is not None
+                and (interrupted_timestamp is None or timestamp > interrupted_timestamp)
+            ):
+                interrupted_timestamp = timestamp
+    if not saw_background_task or result_payload is None:
+        return ""
+    if result_timestamp and interrupted_timestamp and result_timestamp > interrupted_timestamp:
+        return ""
+
+    stop_reason = str(result_payload.get("stop_reason") or "not captured")
+    terminal_reason = str(result_payload.get("terminal_reason") or result_payload.get("subtype") or "not captured")
+    parts = [
+        "agent run ended while the background simulation was still running",
+        f"stop_reason `{stop_reason}`",
+        f"terminal_reason `{terminal_reason}`",
+    ]
+    if result_timestamp and interrupted_timestamp:
+        delta = round((interrupted_timestamp - result_timestamp).total_seconds())
+        if delta >= 0:
+            parts.append(f"task was killed/stopped {delta}s after the agent result")
+    if saw_schedule_wakeup:
+        parts.append("scheduled wakeup did not keep the non-interactive benchmark run alive")
+    return "; ".join(parts) + "."
+
+
+def _server_progress_summary(run: dict[str, Any]) -> str:
+    _label, text = _read_runtime_artifact(run, r"(^|/)server/log_fl\.txt$")
+    if not text:
+        return ""
+    rounds = [int(match.group(1)) for match in re.finditer(r"\bRound\s+(\d+)\s+started\b", text)]
+    aggregations = re.findall(r"\baggregating\s+(\d+)\s+update\(s\)\s+at round\s+(\d+)\b", text, re.IGNORECASE)
+    finished = bool(re.search(r"\bFinished\b|\bEnd\s+Scaffold\b", text, re.IGNORECASE))
+    parts = []
+    if rounds:
+        parts.append(f"server log reached `Round {max(rounds)} started`")
+    if aggregations:
+        updates, round_number = aggregations[-1]
+        parts.append(f"round {round_number} aggregated {updates} update(s)")
+    if not finished:
+        parts.append("no terminal `Finished` marker was captured")
+    return "; ".join(parts)
+
+
+def _metrics_artifact_summary(run: dict[str, Any]) -> str:
+    has_summary = _runtime_artifact_present(run, r"(^|/)server/simulate_job/metrics/metrics_summary\.json$")
+    _label, round_metrics = _read_runtime_artifact(
+        run, r"(^|/)server/simulate_job/metrics/round_metrics\.jsonl$", max_bytes=64_000
+    )
+    if has_summary:
+        return "`metrics_summary.json` was captured."
+    if round_metrics:
+        row_count = sum(1 for line in round_metrics.splitlines() if line.strip())
+        return (
+            f"`round_metrics.jsonl` was captured with {row_count} non-empty row(s), "
+            "but `metrics_summary.json` was not captured."
+        )
+    return "`metrics_summary.json` was not captured."
+
+
+def _error_log_summary(run: dict[str, Any]) -> str:
+    _label, text = _read_runtime_artifact(run, r"(^|/)server/error_log\.txt$", max_bytes=32_000)
+    if text == "":
+        if _runtime_artifact_present(run, r"(^|/)server/error_log\.txt$"):
+            return "`server/error_log.txt` is empty; no NVFLARE/Python exception was captured there."
+        return ""
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return f"`server/error_log.txt` captured: {truncate(first_line, 180)}"
+
+
+def result_failure_root_cause_block(run: dict[str, Any]) -> str:
+    """Explain missing NVFLARE result metrics from captured runtime artifacts."""
+
+    if not run.get("available") or _has_scalar_result_metric(run) or job_run_status(run) != "started_failed":
+        return ""
+    rows = [
+        ("Interruption cause", _background_task_interruption_cause(run)),
+        ("Background task", _background_task_interruption_summary(run)),
+        ("Simulation progress", _server_progress_summary(run)),
+        ("Metric artifacts", _metrics_artifact_summary(run)),
+        ("Error log", _error_log_summary(run)),
+    ]
+    rows = [(label, value) for label, value in rows if value]
+    if not rows:
+        return ""
+    lines = [
+        "**Root cause of missing FL result**",
+        "",
+        (
+            "The captured evidence points to an incomplete NVFLARE simulation: the run was interrupted before "
+            "the server reached a terminal completion state and before the final metrics summary was produced."
+        ),
+        "",
+        "| Evidence | What it shows |",
+        "|---|---|",
+    ]
+    for label, value in rows:
+        lines.append(f"| {markdown_cell(label)} | {markdown_cell(value)} |")
+    return "\n".join(lines)
 
 
 def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:

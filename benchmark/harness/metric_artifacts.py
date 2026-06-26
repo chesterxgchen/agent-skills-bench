@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from .quality_signals import (
     canonical_metric_name,
@@ -33,10 +33,28 @@ METRIC_VALUE_KEYS = frozenset({"value", "score", "scalar", "mean"})
 ARTIFACT_SUFFIXES = frozenset({".json", ".jsonl"})
 
 
+def _candidate_delta_dirs(manifest: Mapping[str, Any], manifest_path: Path) -> list[Path]:
+    candidates: list[Path] = []
+    configured = str(manifest.get("delta_dir") or "")
+    if configured:
+        candidates.append(Path(configured))
+    candidates.extend([manifest_path.parent / "workspace_delta", manifest_path.parent])
+
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = path.as_posix()
+        if key in seen:
+            continue
+        result.append(path)
+        seen.add(key)
+    return result
+
+
 def captured_metric_artifact_paths(manifest: Mapping[str, Any], manifest_path: Path) -> list[Path]:
     """Return copied structured artifact paths from a workspace-delta manifest."""
 
-    delta_dir = Path(str(manifest.get("delta_dir") or manifest_path.parent))
+    delta_dirs = _candidate_delta_dirs(manifest, manifest_path)
     paths: list[Path] = []
     seen: set[Path] = set()
     for key in ("runtime_artifacts", "changed_files", "workspace_added_files", "workspace_modified_files"):
@@ -50,8 +68,11 @@ def captured_metric_artifact_paths(manifest: Mapping[str, Any], manifest_path: P
             artifact_text = str(item.get("artifact_path") or "")
             if not artifact_text:
                 continue
-            candidate = delta_dir / artifact_text
-            if candidate.is_file() and candidate.suffix.lower() in ARTIFACT_SUFFIXES:
+            candidate = next(
+                (delta_dir / artifact_text for delta_dir in delta_dirs if (delta_dir / artifact_text).is_file()),
+                None,
+            )
+            if candidate is not None and candidate.suffix.lower() in ARTIFACT_SUFFIXES:
                 category_paths.append(candidate)
         for candidate in sorted(category_paths, key=lambda path: path.as_posix()):
             if candidate not in seen:
@@ -155,3 +176,25 @@ def validation_metric_from_workspace_delta_manifest(
         if metric:
             return metric
     return {}
+
+
+def observed_metric_payloads_from_workspace_delta_manifest(
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    metric_names: Sequence[str],
+    *,
+    skip_names: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    seen = {canonical_metric_name(name) for name in skip_names if canonical_metric_name(name)}
+    for name in metric_names:
+        canonical_name = canonical_metric_name(name)
+        if not canonical_name or canonical_name in seen:
+            continue
+        for path in captured_metric_artifact_paths(manifest, manifest_path):
+            metric = validation_metric_from_artifact(path, canonical_name)
+            if metric:
+                payloads.append(metric)
+                seen.add(canonical_name)
+                break
+    return payloads

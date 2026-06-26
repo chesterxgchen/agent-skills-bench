@@ -22,7 +22,9 @@ from pathlib import Path
 from typing import Any
 
 from ..common import flatten_numbers, load_json, write_json
+from ..metric_artifacts import validation_metric_from_workspace_delta_manifest
 from ..modes import BENCHMARK_RUNS, NO_SKILLS_MODE, WITH_SKILLS_MODE
+from ..quality_signals import canonical_metric_name, is_plausible_metric_value
 from ._context import ReportContext
 from ._loader import (
     MAX_AGENT_EVENTS_TEXT_BYTES,
@@ -37,8 +39,10 @@ from .benchmark_insights import (
     _report_context,
     activity_insights_table,
     embedded_bar_chart,
+    comparable_metric_name,
     human_readable_status,
     interpretation_section,
+    metric_value,
     markdown_cell,
     metric_name_for_runs,
     outcome_metrics_table,
@@ -80,6 +84,8 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
         activity = load_json(mode_dir / "agent_activity.json", {}) if mode_dir.exists() else {}
         usage = load_json(mode_dir / "agent_usage.json", {}) if mode_dir.exists() else {}
         runtime_image = load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {}
+        workspace_delta_path = mode_dir / "workspace_delta_manifest.json"
+        workspace_delta = load_json(workspace_delta_path, {}) if mode_dir.exists() else {}
         if not isinstance(summary, dict):
             summary = {}
         if not isinstance(record, dict):
@@ -90,6 +96,20 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
             usage = {}
         if not isinstance(runtime_image, dict):
             runtime_image = {}
+        if not isinstance(workspace_delta, dict):
+            workspace_delta = {}
+        expected_metric = (
+            record.get("validation_metric_policy", {}).get("expected_primary_metric")
+            if isinstance(record.get("validation_metric_policy"), dict)
+            else None
+        )
+        record_metric = validation_metric_from_record(record)
+        artifact_metric = validation_metric_from_workspace_delta_manifest(
+            workspace_delta,
+            workspace_delta_path,
+            expected_metric,
+        )
+        validation_metric = artifact_metric or record_metric
         runs.append(
             {
                 "mode": spec.mode,
@@ -112,8 +132,15 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
                 "activity": activity,
                 "usage": usage,
                 "runtime_image": runtime_image,
+                "validation_metric": validation_metric,
                 "metrics": flatten_numbers(
-                    {"summary": summary, "record": record, "activity": activity, "usage": usage}
+                    {
+                        "summary": summary,
+                        "record": record,
+                        "activity": activity,
+                        "usage": usage,
+                        "validation_metric": validation_metric,
+                    }
                 ),
             }
         )
@@ -134,11 +161,33 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
         usage = row.get("usage") if isinstance(row.get("usage"), dict) else {}
         activity = row.get("activity") if isinstance(row.get("activity"), dict) else {}
         runtime_image = row.get("runtime_image") if isinstance(row.get("runtime_image"), dict) else {}
+        workspace_delta_path = mode_dir / "workspace_delta_manifest.json"
+        workspace_delta = (
+            row.get("workspace_delta")
+            if isinstance(row.get("workspace_delta"), dict)
+            else load_json(workspace_delta_path, {}) if available else {}
+        )
+        if not isinstance(workspace_delta, dict):
+            workspace_delta = {}
+        validation_metric = row.get("validation_metric") if isinstance(row.get("validation_metric"), dict) else {}
+        if not validation_metric:
+            expected_metric = (
+                record.get("validation_metric_policy", {}).get("expected_primary_metric")
+                if isinstance(record.get("validation_metric_policy"), dict)
+                else None
+            )
+            artifact_metric = validation_metric_from_workspace_delta_manifest(
+                workspace_delta if isinstance(workspace_delta, dict) else {},
+                workspace_delta_path,
+                expected_metric,
+            )
+            validation_metric = artifact_metric or validation_metric_from_record(record)
         mode_console_text = read_text(root / f"{mode}.console.log") or filter_mode_console(console_text, mode)
         runs[mode] = {
             "available": available,
             "mode": mode,
             "label": row.get("label") or spec.label,
+            "mode_dir": mode_dir,
             "skills": "with skills" if spec.skills_enabled else "without skills",
             "agent": first_non_empty(row.get("agent"), summary.get("agent"), record.get("agent")),
             "agent_model": first_non_empty(
@@ -156,7 +205,7 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             "container_exit": load_json(mode_dir / "container_exit_code.json", {}) if available else {},
             "usage": usage,
             "activity": activity,
-            "workspace_delta": load_json(mode_dir / "workspace_delta_manifest.json", {}) if available else {},
+            "workspace_delta": workspace_delta,
             "runtime_image": runtime_image,
             "agent_last_message": read_text(mode_dir / "agent_last_message.txt") if available else "",
             "agent_stderr": read_text(mode_dir / "agent_stderr.txt") if available else "",
@@ -164,14 +213,40 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
                 read_text(mode_dir / "agent_events.jsonl", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES) if available else ""
             ),
             "console_text": mode_console_text,
-            "validation_metric": validation_metric_from_record(record),
+            "validation_metric": validation_metric or validation_metric_from_record(record),
         }
     # Render from the typed Contract B spine (Inversion 1): the shared
     # benchmark_insights helpers receive RunEvidence, same as benchmark_report.
     return {mode: _run_evidence_from_bundle(bundle) for mode, bundle in runs.items()}
 
 
-def numeric_comparison(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _row_validation_metric_value(row: dict[str, Any], metric_name: str) -> Any:
+    metric = row.get("validation_metric")
+    if not isinstance(metric, dict):
+        return None
+    if canonical_metric_name(metric.get("name")) != canonical_metric_name(metric_name):
+        return None
+    value = metric.get("value")
+    return value if is_plausible_metric_value(metric_name, value) else None
+
+
+def _row_comparable_metric_name(rows: list[dict[str, Any]]) -> str | None:
+    names = []
+    for row in rows:
+        metric = row.get("validation_metric") if isinstance(row, dict) else None
+        if not isinstance(metric, dict) or not metric.get("name"):
+            continue
+        name = canonical_metric_name(metric.get("name"))
+        if name and name not in names:
+            names.append(name)
+    return names[0] if len(names) == 1 else None
+
+
+def numeric_comparison(
+    rows: list[dict[str, Any]],
+    insight_runs: dict[str, RunEvidence] | None = None,
+    ctx: ReportContext | None = None,
+) -> dict[str, Any]:
     rows_by_mode = {row.get("mode"): row for row in rows if isinstance(row, dict)}
     without = rows_by_mode.get(NO_SKILLS_MODE)
     with_skills = rows_by_mode.get(WITH_SKILLS_MODE)
@@ -188,6 +263,24 @@ def numeric_comparison(rows: list[dict[str, Any]]) -> dict[str, Any]:
             and not isinstance(right, bool)
         ):
             result[f"{key}_with_skills_minus_without_skills"] = right - left
+    metric_name = (
+        comparable_metric_name(insight_runs) if insight_runs is not None else _row_comparable_metric_name(rows)
+    )
+    if metric_name:
+        if insight_runs is not None:
+            evidence = ctx.evidence if ctx is not None else {}
+            left = metric_value(insight_runs[NO_SKILLS_MODE], metric_name, evidence.get(NO_SKILLS_MODE))
+            right = metric_value(insight_runs[WITH_SKILLS_MODE], metric_name, evidence.get(WITH_SKILLS_MODE))
+        else:
+            left = _row_validation_metric_value(without, metric_name)
+            right = _row_validation_metric_value(with_skills, metric_name)
+        if (
+            isinstance(left, (int, float))
+            and not isinstance(left, bool)
+            and isinstance(right, (int, float))
+            and not isinstance(right, bool)
+        ):
+            result[f"validation_metric_{metric_name}_with_skills_minus_without_skills"] = right - left
     return result
 
 
@@ -208,7 +301,7 @@ def report_summary(
         "status": status_summary(insight_runs, ctx=ctx),
         "metric_name": metric_name,
         "runs": rows,
-        "comparison": numeric_comparison(rows),
+        "comparison": numeric_comparison(rows, insight_runs, ctx),
     }
 
 
@@ -220,6 +313,15 @@ def fmt(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:.4f}"
     return str(value)
+
+
+def comparison_label(key: str) -> str:
+    metric_prefix = "validation_metric_"
+    metric_suffix = "_with_skills_minus_without_skills"
+    if key.startswith(metric_prefix) and key.endswith(metric_suffix):
+        metric_name = key[len(metric_prefix) : -len(metric_suffix)]
+        return f"Validation metric ({metric_name}) with skills minus without skills"
+    return key
 
 
 def markdown_report(
@@ -272,7 +374,7 @@ def markdown_report(
     if comparison:
         lines.extend(["", "## Comparison", "", "| Metric | Delta |", "|---|---:|"])
         for key, value in sorted(comparison.items()):
-            lines.append(f"| {markdown_cell(key)} | {fmt(value)} |")
+            lines.append(f"| {markdown_cell(comparison_label(str(key)))} | {fmt(value)} |")
     why = why_section(insight_runs, modes, ctx)
     if why:
         lines.extend(["", why])

@@ -131,6 +131,7 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     from benchmark.harness.reports.benchmark_insights import benchmark_report, collect_benchmark_runs
 
     entries = []
+    record_dirs = {}
     for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
         record_dir = (
             tmp_path
@@ -143,6 +144,7 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
             / f"mode={mode}"
         )
         record_dir.mkdir(parents=True)
+        record_dirs[mode] = record_dir
         entries.append(
             {
                 "run_id": f"run_{index:05d}",
@@ -192,6 +194,11 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     metrics_markdown = (tmp_path / "metrics_report.md").read_text(encoding="utf-8")
     assert "Metrics (AUROC)" in metrics_markdown
     assert "| No skills baseline | codex | default |" in metrics_markdown
+    metric_rows = metrics_report.collect_runs(tmp_path)
+    insight_runs = metrics_report.runs_by_mode_for_insights(tmp_path, metric_rows)
+    assert insight_runs[WITH_SKILLS_MODE].mode_dir == record_dirs[WITH_SKILLS_MODE]
+    metrics_json = json.loads((tmp_path / "metrics_report.json").read_text(encoding="utf-8"))
+    assert abs(metrics_json["comparison"]["validation_metric_AUROC_with_skills_minus_without_skills"] - 0.01) < 1e-12
 
 
 def test_common_dl_metric_aliases_are_recognized_and_unknown_names_kept_verbatim():
@@ -206,8 +213,11 @@ def test_common_dl_metric_aliases_are_recognized_and_unknown_names_kept_verbatim
 
     # Common-DL spelling variants fold to a canonical name (recognition aid).
     assert canonical_metric_name("auc") == "AUROC"
+    assert canonical_metric_name("val_auroc") == "AUROC"
     assert canonical_metric_name("acc") == "accuracy"
+    assert canonical_metric_name("val_accuracy") == "accuracy"
     assert canonical_metric_name("validation_loss") == "loss"
+    assert canonical_metric_name("val_loss") == "loss"
     # A job-specific / unrecognized metric is NOT aliased -- kept verbatim (structural only).
     assert canonical_metric_name("dice") == "dice"
     # Detection: the job declares AUROC, the agent logs the `AUC` variant -> still matched.
@@ -514,6 +524,7 @@ def test_fl_algorithm_recipe_mismatch_is_quality_issue(tmp_path):
         "container_exit": {"exit_code": 0},
         "record": {},
         "run": {"final_container_exit_code": 0},
+        "validation_metric": {"name": "AUROC", "value": 0.725},
         "workspace_delta": {
             "runtime_artifacts": [
                 {
@@ -571,14 +582,91 @@ def test_numeric_comparison_uses_mode_names_not_row_order():
     from benchmark.harness.reports.metrics_report import numeric_comparison
 
     rows = [
-        {"mode": WITH_SKILLS_MODE, "summary": {"elapsed_seconds": 13, "token_count": 150}},
-        {"mode": NO_SKILLS_MODE, "summary": {"elapsed_seconds": 10, "token_count": 100}},
+        {
+            "mode": WITH_SKILLS_MODE,
+            "summary": {"elapsed_seconds": 13, "token_count": 150},
+            "validation_metric": {"name": "AUROC", "value": 0.77},
+        },
+        {
+            "mode": NO_SKILLS_MODE,
+            "summary": {"elapsed_seconds": 10, "token_count": 100},
+            "validation_metric": {"name": "AUROC", "value": 0.72},
+        },
     ]
 
     assert numeric_comparison(rows) == {
         "elapsed_seconds_with_skills_minus_without_skills": 3,
         "token_count_with_skills_minus_without_skills": 50,
+        "validation_metric_AUROC_with_skills_minus_without_skills": 0.050000000000000044,
     }
+
+
+def test_metrics_report_recovers_validation_metric_from_runtime_artifacts(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports import metrics_report
+
+    entries = []
+    for index, (mode, value) in enumerate(((NO_SKILLS_MODE, 0.72), (WITH_SKILLS_MODE, 0.77)), start=1):
+        record_dir = (
+            tmp_path
+            / "records"
+            / "agent=codex"
+            / "model=default"
+            / "workflow=default"
+            / "job=ames"
+            / f"mode={mode}"
+        )
+        record_dir.mkdir(parents=True)
+        entries.append(
+            {
+                "run_id": f"run_{index:05d}",
+                "mode": mode,
+                "agent": "codex",
+                "agent_model": "default",
+                "model_source": "scenario",
+                "record_dir": str(record_dir.relative_to(tmp_path)),
+            }
+        )
+        write_json(
+            record_dir / "run_summary.json",
+            {
+                "mode": mode,
+                "elapsed_seconds": 10 + index,
+                "token_count": 100 + index,
+                "agent_exit_code": 0,
+                "final_container_exit_code": 0,
+            },
+        )
+        write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+        write_json(record_dir / "agent_activity.json", {"command_count": index})
+        write_json(
+            record_dir / "benchmark_record.json",
+            {
+                "mode": mode,
+                "validation_metric_policy": {"expected_primary_metric": "AUROC"},
+            },
+        )
+        delta_dir = record_dir / "workspace_delta"
+        artifact_path = delta_dir / "runtime_artifacts" / "metrics_summary.json"
+        artifact_path.parent.mkdir(parents=True)
+        write_json(artifact_path, {"AUROC": value})
+        write_json(
+            record_dir / "workspace_delta_manifest.json",
+            {
+                "delta_dir": str(delta_dir),
+                "runtime_artifacts": [{"artifact_path": "runtime_artifacts/metrics_summary.json"}],
+            },
+        )
+    write_json(tmp_path / "run_plan.json", {"entries": entries})
+
+    summary = metrics_report.write_reports(tmp_path, "Synthetic Metrics")
+
+    assert summary["runs"][0]["validation_metric"]["value"] == 0.72
+    assert summary["runs"][1]["validation_metric"]["value"] == 0.77
+    assert abs(summary["comparison"]["validation_metric_AUROC_with_skills_minus_without_skills"] - 0.05) < 1e-12
+    metrics_markdown = (tmp_path / "metrics_report.md").read_text(encoding="utf-8")
+    assert "| Metrics (AUROC) | AUROC 0.7200 | AUROC 0.7700 |" in metrics_markdown
 
 
 def test_cost_comparison_separates_dependency_install_time():
@@ -1918,6 +2006,155 @@ def test_artifact_metric_satisfies_result_gate_when_final_response_metric_is_inc
     assert "artifact metric present; final response gap" in quality_table
 
 
+def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_path):
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import (
+        benchmark_outcome,
+        human_readable_status,
+        run_quality_issues,
+        why_section,
+    )
+
+    with_mode_dir = tmp_path / WITH_SKILLS_MODE
+    artifact_root = with_mode_dir / "workspace_delta" / "runtime_artifacts"
+
+    def runtime_artifact(rel_path: str, text: str):
+        path = artifact_root / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return {
+            "artifact_path": f"runtime_artifacts/{rel_path}",
+            "path": rel_path,
+            "size_bytes": len(text.encode("utf-8")),
+        }
+
+    runtime_artifacts = [
+        runtime_artifact(
+            "runtime_workspaces/ames_scaffold/ames_scaffold/server/log_fl.txt",
+            "\n".join(
+                [
+                    "2026-06-26 06:30:27,539 - Scaffold - INFO - Start Scaffold.",
+                    "2026-06-26 06:30:27,539 - Scaffold - INFO - Round 0 started.",
+                    "2026-06-26 06:30:51,982 - Scaffold - INFO - aggregating 3 update(s) at round 0",
+                    "2026-06-26 06:30:52,001 - Scaffold - INFO - Round 1 started.",
+                    "2026-06-26 06:30:52,002 - Scaffold - INFO - Sending task train to ['site-1', 'site-2', 'site-3']",
+                ]
+            ),
+        ),
+        runtime_artifact(
+            "runtime_workspaces/ames_scaffold/ames_scaffold/server/simulate_job/metrics/round_metrics.jsonl",
+            '{"round": 0, "AUROC": 0.72}\n',
+        ),
+        runtime_artifact("runtime_workspaces/ames_scaffold/ames_scaffold/server/error_log.txt", ""),
+    ]
+    background_events = [
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_job",
+                        "input": {
+                            "command": "python3 job.py --num-sites 3 --num-rounds 3",
+                            "description": "Run 3-site 3-round SCAFFOLD simulation",
+                            "run_in_background": True,
+                        },
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "description": "Run 3-site 3-round SCAFFOLD simulation",
+            "event_type": "system.task_started",
+            "task_id": "b7449z95m",
+            "tool_use_id": "toolu_job",
+        },
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_wakeup",
+                        "input": {"duration": "30s"},
+                        "name": "ScheduleWakeup",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "result.success",
+            "harness_timestamp": "2026-06-26T06:30:46.246Z",
+            "stop_reason": "end_turn",
+            "subtype": "success",
+            "terminal_reason": "completed",
+            "type": "result",
+        },
+        {
+            "event_type": "system.task_updated",
+            "harness_timestamp": "2026-06-26T06:30:51.283Z",
+            "patch": {"status": "killed"},
+            "task_id": "b7449z95m",
+        },
+        {"event_type": "system.task_notification", "status": "stopped", "task_id": "b7449z95m"},
+    ]
+    runs = {
+        NO_SKILLS_MODE: {
+            "available": True,
+            "mode": NO_SKILLS_MODE,
+            "label": "No skills baseline",
+            "container_exit": {"exit_code": 0},
+            "run": {"final_container_exit_code": 0, "elapsed_seconds": 848, "token_count": 8_644_807},
+            "record": {},
+            "validation_metric": {"name": "AUROC", "value": 0.725},
+        },
+        WITH_SKILLS_MODE: {
+            "available": True,
+            "mode": WITH_SKILLS_MODE,
+            "label": "With skills",
+            "container_exit": {"exit_code": 0},
+            "run": {"final_container_exit_code": 0, "elapsed_seconds": 630, "token_count": 4_725_568},
+            "record": {},
+            "activity": {"commands": ["python3 job.py --num-sites 3 --num-rounds 3"]},
+            "agent_events_text": "\n".join(json.dumps(event) for event in background_events),
+            "mode_dir": with_mode_dir,
+            "workspace_delta": {"runtime_artifacts": runtime_artifacts},
+        },
+    }
+    modes = [NO_SKILLS_MODE, WITH_SKILLS_MODE]
+    typed = _evruns(runs)
+    ctx = _nv_ctx(runs, modes)
+
+    assert run_quality_issues(typed[NO_SKILLS_MODE], ctx.evidence[NO_SKILLS_MODE]) == []
+    assert "result_metric_available" in "; ".join(
+        run_quality_issues(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE])
+    )
+    assert human_readable_status(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("needs review")
+    assert benchmark_outcome(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("fail:")
+    why = why_section(typed, modes, ctx)
+    assert "## Why" in why
+    assert "**Why With skills needs more work**" in why
+    assert "**Primary result failure**" in why
+    assert "did not produce a usable FL result" in why
+    assert "**Root cause of missing FL result**" in why
+    assert "Interruption cause" in why
+    assert "agent run ended while the background simulation was still running" in why
+    assert "task was killed/stopped 5s after the agent result" in why
+    assert "scheduled wakeup did not keep the non-interactive benchmark run alive" in why
+    assert "Background task `b7449z95m`" in why
+    assert "`killed`" in why
+    assert "`stopped`" in why
+    assert "`Round 1 started`" in why
+    assert "`round_metrics.jsonl` was captured with 1 non-empty row" in why
+    assert "`metrics_summary.json` was not captured" in why
+    assert "`server/error_log.txt` is empty" in why
+    assert "Result quality issue" in why
+    assert "Result metric" in why
+    assert "Slowdown driver comparison" not in why
+
+
 def test_metric_mismatch_evidence_includes_integer_metric_value():
     from benchmark.harness.quality_signals import format_metric_value
 
@@ -1967,6 +2204,51 @@ def test_missing_target_metric_section_reports_observed_alternate_metrics():
     assert "Additional/other validation metric values" in outcome_details_table(
         _evruns({NO_SKILLS_MODE: run}), [NO_SKILLS_MODE]
     )
+
+
+def test_outcome_details_reports_observed_metrics_from_runtime_artifact(tmp_path):
+    from benchmark.harness.modes import WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import additional_or_observed_metric_values_display
+
+    mode_dir = tmp_path / "mode=with_skills"
+    artifact = mode_dir / "workspace_delta" / "runtime_artifacts" / "metrics_summary.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        json.dumps(
+            {
+                "final_aggregated_metrics": [
+                    {"name": "train_loss", "value": 0.4508},
+                    {"name": "val_loss", "value": 0.5386},
+                    {"name": "val_accuracy", "value": 0.7079},
+                    {"name": "val_auroc", "value": 0.7757},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    run = {
+        "available": True,
+        "mode": WITH_SKILLS_MODE,
+        "label": "With skills",
+        "mode_dir": mode_dir,
+        "workspace_delta": {
+            "delta_dir": "/workspace/results/workspace_delta",
+            "runtime_artifacts": [{"artifact_path": "runtime_artifacts/metrics_summary.json"}],
+        },
+        "validation_metric": {
+            "name": "AUROC",
+            "value": 0.7757,
+            "reported_values": [0.7757],
+            "reported_value_entries": [{"label": "artifact aggregated validation metric", "value": 0.7757}],
+        },
+        "agent_last_message": "Final AUROC: 0.7757",
+    }
+
+    display = additional_or_observed_metric_values_display(_ev(run), "AUROC")
+
+    assert "AUROC 0.7757" in display
+    assert "accuracy 0.7079" in display
+    assert "loss 0.5386" in display
 
 
 def test_failure_analysis_reports_recovered_job_failure_and_metric_gap():
@@ -2125,7 +2407,9 @@ def test_job_run_status_section_reports_bash_blocked_not_started(tmp_path):
     )
     report = benchmark_report(tmp_path, runs)
     assert "## Job Run Status" not in report
-    assert "| No skills baseline | missing | unknown: run artifacts not available | fail: run artifacts missing | missing |" in report
+    assert "| No skills baseline | missing | unknown | fail | missing |" in report
+    assert "- Job: unknown: run artifacts not available" in report
+    assert "- Result gate: fail: run artifacts missing" in report
     assert "not_started: Bash blocked 1 time(s)" in report
     assert "| With skills | not_started | Bash blocked 1 time(s)" in section
     assert "Fix agent Bash/tool permissions and rerun" in section
@@ -3427,6 +3711,7 @@ def test_failure_analysis_formats_multiline_recovered_command_as_single_line():
         "container_exit": {"exit_code": 0},
         "record": {},
         "run": {"final_container_exit_code": 0},
+        "validation_metric": {"name": "AUROC", "value": 0.725},
     }
 
     section = failure_analysis_section(
@@ -3585,6 +3870,114 @@ def test_failure_analysis_reports_dependency_install_evidence_for_missing_module
 
     assert "ModuleNotFoundError: No module named 'torch'" in section
     assert "no dependency install command was captured before the failed job run" in section
+
+
+def test_failure_analysis_explains_missing_module_during_background_dependency_install():
+    from benchmark.harness.modes import WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import failure_analysis_section
+
+    install_command = "uv pip install -r requirements-train.txt 2>&1 | tail -20"
+    probe_stderr = "Traceback (most recent call last):\nModuleNotFoundError: No module named 'torch'"
+    events = [
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_install",
+                        "input": {"command": install_command, "run_in_background": True},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {"event_type": "system.task_started", "task_id": "install_task", "tool_use_id": "toolu_install"},
+        {
+            "event_type": "user",
+            "message": {
+                "content": [
+                    {
+                        "content": "Command running in background with ID: install_task",
+                        "tool_use_id": "toolu_install",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"backgroundTaskId": "install_task"},
+        },
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_probe",
+                        "input": {"command": 'python3 -c "import torch"'},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "user",
+            "message": {
+                "content": [
+                    {
+                        "content": probe_stderr,
+                        "is_error": True,
+                        "tool_use_id": "toolu_probe",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"stderr": probe_stderr, "is_error": True},
+        },
+        {"event_type": "system.task_updated", "patch": {"status": "completed"}, "task_id": "install_task"},
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_verify",
+                        "input": {"command": 'python3 -c "import torch; print(\'torch\', torch.__version__)"'},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "user",
+            "message": {
+                "content": [
+                    {
+                        "content": "torch 2.12.1+cu130",
+                        "tool_use_id": "toolu_verify",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"stdout": "torch 2.12.1+cu130"},
+        },
+    ]
+    run = {
+        "available": True,
+        "label": "With skills",
+        "container_exit": {"exit_code": 1},
+        "activity": {"commands": ['python3 -c "import torch"']},
+        "agent_events_text": "\n".join(json.dumps(event) for event in events),
+    }
+
+    section = failure_analysis_section(
+        _evruns({WITH_SKILLS_MODE: run}), [WITH_SKILLS_MODE], _nv_ctx({WITH_SKILLS_MODE: run}, [WITH_SKILLS_MODE])
+    )
+
+    assert "ModuleNotFoundError: No module named 'torch'" in section
+    assert "`torch` was probed while background dependency install" in section
+    assert "requirements-train.txt" in section
+    assert "was still running" in section
+    assert "later verification imported `torch` successfully" in section
 
 
 def test_job_run_status_reason_reports_failed_dependency_install():

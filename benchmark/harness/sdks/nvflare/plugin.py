@@ -249,12 +249,17 @@ class NvflareReportPlugin(ReportPlugin):
         if len(cmp.modes) != 2 or WITH_SKILLS_MODE not in cmp.modes:
             return []
         base_mode = next(mode for mode in cmp.modes if mode != WITH_SKILLS_MODE)
+        fragments = []
+        result_failure_block = _logic.result_failure_root_cause_block(cmp.runs[WITH_SKILLS_MODE].raw)
+        if result_failure_block:
+            fragments.append(NarrativeFragment(text=result_failure_block, anchor="why_result_failure"))
         blocks = self._runtime_path_slowdown_blocks(
             with_je=(plugin.get(WITH_SKILLS_MODE) or PluginEvidence()).job_execution or JobExecutionSignal(),
             base_je=(plugin.get(base_mode) or PluginEvidence()).job_execution or JobExecutionSignal(),
             base_run=cmp.runs.get(base_mode),
         )
-        return [NarrativeFragment(text=block, anchor="why_slowdown") for block in blocks]
+        fragments.extend(NarrativeFragment(text=block, anchor="why_slowdown") for block in blocks)
+        return fragments
 
     @staticmethod
     def _runtime_path_slowdown_blocks(

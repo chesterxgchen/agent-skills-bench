@@ -41,26 +41,30 @@ GENERIC_VALIDATION_METRIC_PATTERN = (
 # may require -- the job's PRIMARY metric is declared in its instruction/README and flows
 # in as data at runtime, and any unrecognized (job-specific) name is handled generically.
 METRIC_ALIAS_PATTERNS = {
-    "AUROC": r"\b(?:AUROC|AUC)\b|\b(?:valid|validation)[_-]?auroc\b",
-    "accuracy": r"\baccuracy\b|\b(?:valid|validation)[_-]?accuracy\b|\bacc\b",
-    "loss": r"\b(?:loss|valid[_-]?loss|validation[_-]?loss|train[_-]?loss)\b",
-    "f1": r"\b(?:f1|f1[_-]?score|valid[_-]?f1|validation[_-]?f1)\b",
+    "AUROC": r"\b(?:AUROC|AUC)\b|\b(?:val|valid|validation)[_-]?auroc\b",
+    "accuracy": r"\baccuracy\b|\b(?:val|valid|validation)[_-]?accuracy\b|\bacc\b",
+    "loss": r"\b(?:loss|val[_-]?loss|valid[_-]?loss|validation[_-]?loss|train[_-]?loss)\b",
+    "f1": r"\b(?:f1|f1[_-]?score|val[_-]?f1|valid[_-]?f1|validation[_-]?f1)\b",
 }
 _COMMON_DL_METRIC_ALIASES = {
     "auroc": "AUROC",
     "auc": "AUROC",
+    "val_auroc": "AUROC",
     "valid_auroc": "AUROC",
     "validation_auroc": "AUROC",
     "accuracy": "accuracy",
     "acc": "accuracy",
+    "val_accuracy": "accuracy",
     "valid_accuracy": "accuracy",
     "validation_accuracy": "accuracy",
     "loss": "loss",
+    "val_loss": "loss",
     "valid_loss": "loss",
     "validation_loss": "loss",
     "train_loss": "loss",
     "f1": "f1",
     "f1_score": "f1",
+    "val_f1": "f1",
     "valid_f1": "f1",
     "validation_f1": "f1",
 }

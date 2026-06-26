@@ -6,10 +6,10 @@ Result root: `<RESULT_ROOT>`
 
 ### Run Status
 
-| Run | Overall status | Job run status | Result quality gate | Result metric |
+| Run | Overall | Job | Result gate | Metric |
 |---|---|---|---|---|
-| No skills baseline | passed | completed: simulation completed — FL workflow reached Finished state | pass: scalar FL result metric available | AUROC 0.7421 (aggregated best validation metric) |
-| With skills | passed | completed: simulation completed — FL workflow reached Finished state | pass: scalar FL result metric available | AUROC 0.7689 (aggregated best validation metric) |
+| No skills baseline | passed | completed | pass | AUROC 0.7421 (aggregated best validation metric) |
+| With skills | passed | completed | pass | AUROC 0.7689 (aggregated best validation metric) |
 
 ### Run Context
 

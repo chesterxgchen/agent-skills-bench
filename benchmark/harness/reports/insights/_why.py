@@ -25,6 +25,7 @@ from .._events import (
     as_number,
     fmt_seconds,
     fmt_seconds_with_unit,
+    truncate,
     run_activity,
 )
 from .._runs import run_workspace_delta
@@ -43,6 +44,7 @@ from ._plugin_view import (
     run_summary,
 )
 from ._sections import repeated_dependency_install_section, repeated_job_runs_section
+from ._metrics import run_quality_issues, run_result_metric_status
 from ._spans import (
     _assistant_turns,
     _command_span_total_seconds,
@@ -569,6 +571,51 @@ def _token_usage_comparison_table(with_run: RunEvidence, base_run: RunEvidence) 
     return "\n".join(lines)
 
 
+def _job_status_summary(run: RunEvidence, ctx: ReportContext | None) -> str:
+    if ctx is None:
+        return "not captured"
+    job_exec = ctx.job_execution(run.mode)
+    status = job_exec.status or "not captured"
+    if job_exec.status_reason:
+        status = f"{status}: {job_exec.status_reason}"
+    return truncate(status, 220)
+
+
+def _quality_regression_explanation(
+    with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext | None
+) -> list[str]:
+    with_ev = ctx.evidence.get(with_run.mode) if ctx is not None else None
+    base_ev = ctx.evidence.get(base_run.mode) if ctx is not None else None
+    with_issues = run_quality_issues(with_run, with_ev)
+    base_issues = run_quality_issues(base_run, base_ev)
+    if not with_issues or base_issues:
+        return []
+
+    result_term = _result_term(ctx)
+    with_label = with_run.label or "With skills"
+    base_label = base_run.label or "No skills baseline"
+    lines = [
+        "**Primary result failure**",
+        "",
+        (
+            f"{with_label} did not produce a usable {result_term}result. "
+            f"{base_label} did, so faster wall time or lower token use is not a successful benchmark win."
+        ),
+        "",
+        f"| Signal | {markdown_cell(with_label)} | {markdown_cell(base_label)} |",
+        "|---|---|---|",
+        f"| Job run status | {markdown_cell(_job_status_summary(with_run, ctx))} | "
+        f"{markdown_cell(_job_status_summary(base_run, ctx))} |",
+        f"| Result quality issue | {markdown_cell(with_issues[0])} | pass |",
+        f"| Result metric | {markdown_cell(run_result_metric_status(with_run, with_ev))} | "
+        f"{markdown_cell(run_result_metric_status(base_run, base_ev))} |",
+    ]
+    root_cause_notes = _plugin_narrative(ctx, "why_result_failure")
+    if root_cause_notes:
+        lines.extend(["", *root_cause_notes])
+    return lines
+
+
 def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext | None = None) -> list[str]:
     with_label = with_run.label or "With skills"
     base_label = base_run.label or "No skills baseline"
@@ -610,6 +657,10 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
     else:
         heading = f"**Why {with_label} needs more work**:"
     lines = [heading, ""]
+    quality_explanation = _quality_regression_explanation(with_run, base_run, ctx)
+    include_slowdown_context = elapsed_is_slower or runtime_is_slower or not quality_explanation
+    if quality_explanation:
+        lines.extend([*quality_explanation, ""])
     slowdown_table = _slowdown_reason_table(
         with_run,
         base_run,
@@ -618,7 +669,7 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
         command_span_label=command_span_label,
         elapsed_is_slower=elapsed_is_slower,
     )
-    if slowdown_table:
+    if slowdown_table and include_slowdown_context:
         lines.extend(
             [
                 slowdown_table,
@@ -634,23 +685,25 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
     repeated_runs = repeated_job_runs_slowdown_section(with_run, base_run, ctx)
     if repeated_runs:
         lines.extend([repeated_runs, ""])
-    lines.extend(["", _elapsed_time_accounting_note(with_run, base_run), ""])
+    if include_slowdown_context:
+        lines.extend(["", _elapsed_time_accounting_note(with_run, base_run), ""])
     longest_command_note = _longest_command_comparison_note(with_run, base_run)
-    if longest_command_note:
+    if longest_command_note and include_slowdown_context:
         lines.extend([longest_command_note, ""])
     dependency_note = _dependency_install_slowdown_note(with_run, base_run)
-    if dependency_note:
+    if dependency_note and include_slowdown_context:
         lines.append(dependency_note)
-    # E3 named slot "why_slowdown": the FL runtime-path note now lives in
-    # NvflareReportPlugin.explain() and is contributed through this anchor. A
-    # flat/absent SDK contributes nothing -> no engine fallback.
-    runtime_notes = _plugin_narrative(ctx, "why_slowdown")
-    if runtime_notes:
-        if lines[-1] != "":
+    if include_slowdown_context:
+        # E3 named slot "why_slowdown": the FL runtime-path note now lives in
+        # NvflareReportPlugin.explain() and is contributed through this anchor. A
+        # flat/absent SDK contributes nothing -> no engine fallback.
+        runtime_notes = _plugin_narrative(ctx, "why_slowdown")
+        if runtime_notes:
+            if lines[-1] != "":
+                lines.append("")
+            lines.extend(runtime_notes)
             lines.append("")
-        lines.extend(runtime_notes)
-        lines.append("")
-    lines.extend(_code_quality_slowdown_notes(with_run, base_run, ctx))
+        lines.extend(_code_quality_slowdown_notes(with_run, base_run, ctx))
     if len(lines) == 2:
         lines.append("- Cause not resolved from available activity signals.")
     return lines
@@ -760,11 +813,7 @@ def _why_more_tokens(with_run: RunEvidence, base_run: RunEvidence) -> list[str]:
 def why_section(
     runs: dict[str, RunEvidence | dict[str, Any]], modes: list[str], ctx: ReportContext | None = None
 ) -> str:
-    """Explain why the with-skills run is slower, has longer runtime, or uses more tokens.
-
-    Only rendered when with_skills is actually worse than the baseline on total
-    elapsed time, runtime after dependency install, or token usage.
-    """
+    """Explain why the with-skills run is slower, costlier, or needs more work."""
     from ...modes import WITH_SKILLS_MODE
 
     ctx = ctx or _report_context(runs, modes)
@@ -784,7 +833,10 @@ def why_section(
     sections: list[list[str]] = []
     elapsed_is_slower = with_time is not None and base_time is not None and with_time > base_time
     runtime_is_slower = with_runtime is not None and base_runtime is not None and with_runtime > base_runtime
-    if elapsed_is_slower or runtime_is_slower:
+    with_quality_issues = run_quality_issues(with_run, ctx.evidence.get(WITH_SKILLS_MODE))
+    base_quality_issues = run_quality_issues(base_run, ctx.evidence.get(base_mode))
+    quality_is_worse = bool(with_quality_issues) and not base_quality_issues
+    if elapsed_is_slower or runtime_is_slower or quality_is_worse:
         sections.append(_why_slower(with_run, base_run, ctx))
     if with_tokens is not None and base_tokens is not None and with_tokens > base_tokens:
         sections.append(_why_more_tokens(with_run, base_run))

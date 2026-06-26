@@ -1,7 +1,8 @@
 {
   "comparison": {
     "elapsed_seconds_with_skills_minus_without_skills": 60,
-    "token_count_with_skills_minus_without_skills": 3000
+    "token_count_with_skills_minus_without_skills": 3000,
+    "validation_metric_AUROC_with_skills_minus_without_skills": 0.026800000000000046
   },
   "metric_name": "AUROC",
   "result_root": "<RESULT_ROOT>",
@@ -28,7 +29,11 @@
         "summary.token_count": 12000,
         "usage.input_tokens": 0,
         "usage.output_tokens": 0,
-        "usage.token_count": 12000
+        "usage.token_count": 12000,
+        "validation_metric.reported_value_entries.0.value": 0.7421,
+        "validation_metric.reported_values.0": 0.7421,
+        "validation_metric.site_value_count": 0,
+        "validation_metric.value": 0.7421
       },
       "mode": "without_skills",
       "model_source": "scenario",
@@ -106,6 +111,28 @@
         "input_tokens": 0,
         "output_tokens": 0,
         "token_count": 12000
+      },
+      "validation_metric": {
+        "name": "AUROC",
+        "reported_value_entries": [
+          {
+            "label": "aggregated best validation metric",
+            "value": 0.7421
+          }
+        ],
+        "reported_value_labels": [
+          "aggregated best validation metric"
+        ],
+        "reported_values": [
+          0.7421
+        ],
+        "site_value_count": 0,
+        "site_value_labels": [],
+        "site_values": [],
+        "source": "agent_last_message",
+        "summary_value_label": "aggregated best validation metric",
+        "value": 0.7421,
+        "value_scope": "fl_summary_metric"
       }
     },
     {
@@ -130,7 +157,11 @@
         "summary.token_count": 15000,
         "usage.input_tokens": 0,
         "usage.output_tokens": 0,
-        "usage.token_count": 15000
+        "usage.token_count": 15000,
+        "validation_metric.reported_value_entries.0.value": 0.7689,
+        "validation_metric.reported_values.0": 0.7689,
+        "validation_metric.site_value_count": 0,
+        "validation_metric.value": 0.7689
       },
       "mode": "with_skills",
       "model_source": "scenario",
@@ -208,6 +239,28 @@
         "input_tokens": 0,
         "output_tokens": 0,
         "token_count": 15000
+      },
+      "validation_metric": {
+        "name": "AUROC",
+        "reported_value_entries": [
+          {
+            "label": "aggregated best validation metric",
+            "value": 0.7689
+          }
+        ],
+        "reported_value_labels": [
+          "aggregated best validation metric"
+        ],
+        "reported_values": [
+          0.7689
+        ],
+        "site_value_count": 0,
+        "site_value_labels": [],
+        "site_values": [],
+        "source": "agent_last_message",
+        "summary_value_label": "aggregated best validation metric",
+        "value": 0.7689,
+        "value_scope": "fl_summary_metric"
       }
     }
   ],
