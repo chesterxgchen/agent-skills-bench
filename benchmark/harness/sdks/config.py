@@ -41,6 +41,20 @@ def string_tuple(value: Any, *, label: str, config_path: Path) -> tuple[str, ...
     return tuple(str(item) for item in value)
 
 
+def bool_value(value: Any, *, label: str, config_path: Path, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"{config_path}: {label} must be a boolean")
+
+
 def format_config_value(value: Any, values: Mapping[str, str], *, label: str, config_path: Path) -> str:
     try:
         return str(value).format(**values)
@@ -240,6 +254,12 @@ class ConfigurableSdkAdapter(SdkAdapter):
             build_env_value=str(raw.get("build_env_value", "")),
             wheel_globs=wheel_globs,
             wheel_exclude_globs=wheel_exclude_globs,
+            reuse_existing=bool_value(
+                raw.get("reuse_existing"),
+                label=f"build.variants.{name}.reuse_existing",
+                config_path=self._cfg.source_path,
+                default=True,
+            ),
         )
 
     def skills_setup(self, *, repo_root: Path, home: Path) -> SdkSkillsSetup:

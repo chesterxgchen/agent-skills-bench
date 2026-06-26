@@ -173,9 +173,11 @@ def test_nvflare_sdk_adapter_loads_build_contract():
     assert source.repo_markers == ("pyproject.toml", "nvflare/")
     assert sdk.build_env_name == "NVFLARE_PACKAGE_AGENT_SKILLS"
     assert skills.build_env_value == "1"
+    assert skills.reuse_existing is False
     assert skills.wheel_exclude_globs == ("*no_skills*.whl",)
     assert baseline.build_env_value == "0"
-    assert baseline.wheel_globs == ("*no_skills*.whl",)
+    assert baseline.reuse_existing is False
+    assert baseline.wheel_globs == ("nvflare-*.whl", "nvflare_nightly-*.whl", "*no_skills*.whl")
     assert build_args["SKILLS_INSTALL_COMMAND"].startswith("nvflare --format json agent skills install")
 
 
@@ -237,6 +239,8 @@ skills:
     assert sdk.build_env_name == "EXAMPLE_PACKAGE_SKILLS"
     assert skills.build_env_value == "with"
     assert baseline.build_env_value == "without"
+    assert skills.reuse_existing is True
+    assert baseline.reuse_existing is True
     assert build_args["SDK_PACKAGE_NAME"] == "example-sdk"
     assert build_args["SKILLS_SETUP_TYPE"] == "command"
     assert build_args["SKILLS_INSTALL_OUTPUT"] == "skills_build_install.json"
@@ -405,6 +409,34 @@ def test_build_sdk_wheel_reuses_existing_dist_wheel_by_default(tmp_path, monkeyp
     assert prepared.wheel.read_bytes() == b"prebuilt wheel"
 
 
+def test_build_sdk_wheel_honors_variant_reuse_existing_false(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from benchmark.harness.host import build
+
+    sdk, repo = _repo_uv_wheel_sdk(tmp_path)
+    existing = repo / "dist" / "example_sdk-1.0.0-py3-none-any.whl"
+    existing.write_bytes(b"stale wheel")
+    variant = replace(sdk.wheel_variant("baseline"), reuse_existing=False)
+    calls = {"n": 0}
+
+    def fake_uv_build(cmd, **kwargs):
+        calls["n"] += 1
+        out_dir = Path(cmd[-1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "example_sdk-2.0.0-py3-none-any.whl").write_bytes(b"freshly built")
+        return 0
+
+    monkeypatch.setattr(build.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(build.subprocess, "call", fake_uv_build)
+
+    prepared = build.build_sdk_wheel_from_repo(repo=repo, sdk=sdk, variant=variant, out_dir=tmp_path / "staged")
+
+    assert calls["n"] == 1
+    assert prepared.wheel.name == "example_sdk-2.0.0-py3-none-any.whl"
+    assert prepared.wheel.read_bytes() == b"freshly built"
+
+
 def test_build_sdk_wheel_builds_when_no_wheel_and_when_rebuild_requested(tmp_path, monkeypatch):
     from benchmark.harness.host import build
 
@@ -414,7 +446,9 @@ def test_build_sdk_wheel_builds_when_no_wheel_and_when_rebuild_requested(tmp_pat
     def fake_uv_build(cmd, **kwargs):
         calls["n"] += 1
         # Emulate uv writing the wheel into the repo dist/ (the --out-dir).
-        (repo / "dist" / "example_sdk-2.0.0-py3-none-any.whl").write_bytes(b"freshly built")
+        out_dir = Path(cmd[-1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "example_sdk-2.0.0-py3-none-any.whl").write_bytes(b"freshly built")
         return 0
 
     monkeypatch.setattr(build.shutil, "which", lambda _name: "/usr/bin/uv")

@@ -287,7 +287,7 @@ def build_sdk_wheel_from_repo(
     # repo's ``dist/`` (uv's default output) so repeated benchmark builds don't rebuild the
     # SDK when only agent config or Docker layers changed.
     dist_dir = repo / "dist"
-    if not rebuild:
+    if not rebuild and variant.reuse_existing:
         existing = latest_sdk_wheel(dist_dir, variant.wheel_globs, variant.wheel_exclude_globs)
         if existing is not None:
             emit(
@@ -296,8 +296,10 @@ def build_sdk_wheel_from_repo(
             )
             return _stage_repo_wheel(existing, out_dir, repo)
         emit(f"=== No existing {sdk.package_name} {variant.label} wheel under {dist_dir}; building ===")
-    else:
+    elif rebuild:
         emit(f"=== Rebuilding {sdk.package_name} {variant.label} wheel (--rebuild) ===")
+    else:
+        emit(f"=== Building {sdk.package_name} {variant.label} wheel (profile disables dist/ reuse) ===")
 
     uv = shutil.which("uv")
     if uv is None:
@@ -308,18 +310,28 @@ def build_sdk_wheel_from_repo(
     env = {**os.environ}
     if sdk.build_env_name:
         env[sdk.build_env_name] = variant.build_env_value
-    # Build into the repo's persistent dist/ so the wheel can be reused next time.
-    status = subprocess.call([uv, "build", "--wheel", "--out-dir", str(dist_dir)], cwd=repo, env=env)
-    if status != 0:
-        raise SystemExit(status)
+    temp_build_dir = (
+        tempfile.TemporaryDirectory(prefix=f"{sdk.name}-{variant.name}-wheel.") if not variant.reuse_existing else None
+    )
+    build_out_dir = Path(temp_build_dir.name) if temp_build_dir is not None else dist_dir
+    try:
+        # Build into the repo's persistent dist/ when reuse is enabled. Variants that
+        # disable reuse build into an isolated directory so stale wheels for another
+        # variant cannot be selected when filenames overlap.
+        status = subprocess.call([uv, "build", "--wheel", "--out-dir", str(build_out_dir)], cwd=repo, env=env)
+        if status != 0:
+            raise SystemExit(status)
 
-    wheel = latest_sdk_wheel(dist_dir, variant.wheel_globs, variant.wheel_exclude_globs)
-    if wheel is None:
-        raise SystemExit(
-            f"No {sdk.package_name} {variant.label} wheel found under {dist_dir}. "
-            f"Expected a wheel matching {variant.wheel_globs} excluding {variant.wheel_exclude_globs}."
-        )
-    return _stage_repo_wheel(wheel, out_dir, repo)
+        wheel = latest_sdk_wheel(build_out_dir, variant.wheel_globs, variant.wheel_exclude_globs)
+        if wheel is None:
+            raise SystemExit(
+                f"No {sdk.package_name} {variant.label} wheel found under {build_out_dir}. "
+                f"Expected a wheel matching {variant.wheel_globs} excluding {variant.wheel_exclude_globs}."
+            )
+        return _stage_repo_wheel(wheel, out_dir, repo)
+    finally:
+        if temp_build_dir is not None:
+            temp_build_dir.cleanup()
 
 
 def prepare_sdk_wheel(

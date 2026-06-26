@@ -28,6 +28,7 @@ class SdkWheelVariant:
     build_env_value: str
     wheel_globs: tuple[str, ...]
     wheel_exclude_globs: tuple[str, ...] = ()
+    reuse_existing: bool = True
 
 
 @dataclass(frozen=True)

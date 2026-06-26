@@ -16,6 +16,7 @@
 #
 # Optional defaults:
 # - build.variants.<name>.label defaults to the variant name.
+# - build.variants.<name>.reuse_existing defaults to true.
 # - build.env_name/build_env_value are only needed by SDKs with build toggles.
 # - docker.version_command may be omitted when no CLI version check is needed.
 # - skills.setup.install_output defaults to skills_build_install.json.
@@ -43,6 +44,7 @@ build:
     skills:
       label: skills
       build_env_value: "1"
+      reuse_existing: false
       wheel_globs:
         - nvflare-*.whl
         - nvflare_nightly-*.whl
@@ -51,7 +53,10 @@ build:
     baseline:
       label: baseline
       build_env_value: "0"
+      reuse_existing: false
       wheel_globs:
+        - nvflare-*.whl
+        - nvflare_nightly-*.whl
         - "*no_skills*.whl"
 
 # Optional SDK verification run after wheel install.
