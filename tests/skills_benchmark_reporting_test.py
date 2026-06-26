@@ -51,6 +51,61 @@ def _nv_ctx(runs, modes=None):
     return _report_context(typed, modes, NvflareReportPlugin())
 
 
+def test_skill_usage_keeps_explicit_skills_and_shared_refs_separate():
+    from benchmark.harness.reports._skill_usage import shared_skill_usage_display, skill_usage_display
+
+    events_text = "\n".join(
+        [
+            json.dumps(
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "name": "Skill",
+                                "input": {"skill": "nvflare-convert-lightning"},
+                            }
+                        ]
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "name": "Read",
+                                "input": {"file_path": "/workspace/.claude/skills/_shared/dependency-install.md"},
+                            }
+                        ]
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "name": "Read",
+                                "input": {"file_path": "/workspace/.claude/skills/_shared/dependency-install.md"},
+                            },
+                            {
+                                "name": "Read",
+                                "input": {"file_path": "/workspace/.claude/skills/_shared/runtime-output-guidance.md"},
+                            },
+                        ]
+                    }
+                }
+            ),
+        ]
+    )
+
+    assert skill_usage_display(events_text=events_text, skills_enabled=True) == "nvflare-convert-lightning"
+    assert (
+        shared_skill_usage_display(events_text)
+        == "_shared/dependency-install.md; _shared/runtime-output-guidance.md"
+    )
+
+
 def test_benchmark_insights_explains_docker_image_failures(tmp_path):
     from benchmark.harness.modes import NO_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import (
@@ -209,10 +264,14 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     insights = benchmark_report(tmp_path, runs)
     assert "### Benchmark Target" in insights
     assert "| ames-lightning | Lightning target | pair codex ames-lightning | /tmp/jobs/ames-lightning |" in insights
-    assert "| Run | Job | Framework | Skills used (tool calls) | Agent/model | Algorithm/workflow |" in insights
-    assert "| No skills baseline | ames-lightning | Lightning target | none | agent=codex, model=default |" in insights
     assert (
-        "| With skills | ames-lightning | Lightning target | nvflare-convert-pytorch | agent=codex, model=default |"
+        "| Run | Job | Framework | Skills used (tool calls) | Shared skill refs used | Agent/model | "
+        "Algorithm/workflow |"
+    ) in insights
+    assert "| No skills baseline | ames-lightning | Lightning target | none | none | agent=codex, model=default |" in insights
+    assert (
+        "| With skills | ames-lightning | Lightning target | nvflare-convert-pytorch | none | "
+        "agent=codex, model=default |"
         in insights
     )
     assert "## Run Identity" in insights
@@ -232,6 +291,59 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     assert insight_runs[WITH_SKILLS_MODE].mode_dir == record_dirs[WITH_SKILLS_MODE]
     metrics_json = json.loads((tmp_path / "metrics_report.json").read_text(encoding="utf-8"))
     assert abs(metrics_json["comparison"]["validation_metric_AUROC_with_skills_minus_without_skills"] - 0.01) < 1e-12
+
+
+def test_benchmark_target_infers_plain_pytorch_framework_from_captured_evidence(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import benchmark_report, collect_benchmark_runs
+
+    entries = []
+    for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
+        record_dir = tmp_path / "records" / "agent=claude" / "model=default" / "job=ames" / f"mode={mode}"
+        record_dir.mkdir(parents=True)
+        entries.append(
+            {
+                "run_id": f"run_{index:05d}",
+                "mode": mode,
+                "agent": "claude",
+                "agent_model": "default",
+                "scenario_name": "pair claude ames",
+                "job_name": "ames",
+                "job_slug": "ames",
+                "job_path": "/tmp/jobs/ames",
+                "record_dir": str(record_dir.relative_to(tmp_path)),
+            }
+        )
+        write_json(
+            record_dir / "run_summary.json",
+            {
+                "mode": mode,
+                "elapsed_seconds": 10,
+                "token_count": 100,
+                "agent_exit_code": 0,
+                "final_container_exit_code": 0,
+            },
+        )
+        write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+        write_json(record_dir / "benchmark_record.json", {"mode": mode})
+        (record_dir / "agent_last_message.txt").write_text(
+            "Converted the plain-PyTorch AMES training code into an NVFLARE job.\n",
+            encoding="utf-8",
+        )
+        if mode == WITH_SKILLS_MODE:
+            (record_dir / "agent_events.jsonl").write_text(
+                json.dumps({"message": {"content": [{"name": "Skill", "input": {"skill": "nvflare-convert-pytorch"}}]}})
+                + "\n",
+                encoding="utf-8",
+            )
+    write_json(tmp_path / "run_plan.json", {"entries": entries})
+
+    report = benchmark_report(tmp_path, collect_benchmark_runs(tmp_path))
+
+    assert "| ames | PyTorch target | pair claude ames | /tmp/jobs/ames |" in report
+    assert "| No skills baseline | ames | PyTorch target | none |" in report
+    assert "| With skills | ames | PyTorch target | nvflare-convert-pytorch |" in report
 
 
 def test_common_dl_metric_aliases_are_recognized_and_unknown_names_kept_verbatim():

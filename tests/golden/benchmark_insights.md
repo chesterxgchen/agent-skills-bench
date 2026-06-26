@@ -4,6 +4,12 @@ Result root: `<RESULT_ROOT>`
 
 ## Executive Summary
 
+### Benchmark Target
+
+| Job | Framework | Scenario | Job path |
+|---|---|---|---|
+| ames | PyTorch target | ames_fedavg | NA |
+
 ### Run Status
 
 | Run | Overall | Job | Result gate | Metric |
@@ -13,10 +19,10 @@ Result root: `<RESULT_ROOT>`
 
 ### Run Context
 
-| Run | Job | Framework | Skills used (tool calls) | Agent/model | FL algorithm/workflow | Captured generated artifacts |
-|---|---|---|---|---|---|---|
-| No skills baseline | ames | NA | none | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
-| With skills | ames | NA | nvflare-convert-pytorch | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| Run | Job | Framework | Skills used (tool calls) | Shared skill refs used | Agent/model | FL algorithm/workflow | Captured generated artifacts |
+|---|---|---|---|---|---|---|---|
+| No skills baseline | ames | NA | none | none | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| With skills | ames | PyTorch target | nvflare-convert-pytorch | none | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
 
 ## FL Algorithm / Workflow
 

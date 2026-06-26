@@ -38,6 +38,7 @@ from ._loader import (
 from ._runs import read_text
 from .benchmark_insights import (
     _report_context,
+    _run_shared_skill_display,
     _run_skill_display,
     activity_insights_table,
     embedded_bar_chart,
@@ -335,8 +336,8 @@ def markdown_report(
         "",
         "## Runs",
         "",
-        "| Run | Agent | Model | Status | Skills used (tool calls) | Elapsed seconds | Tokens | Commands | Root cause |",
-        "|---|---|---|---|---|---:|---:|---:|---|",
+        "| Run | Agent | Model | Status | Skills used (tool calls) | Shared skill refs used | Elapsed seconds | Tokens | Commands | Root cause |",
+        "|---|---|---|---|---|---|---:|---:|---:|---|",
     ]
     for row in summary["runs"]:
         run = insight_runs[row["mode"]]
@@ -347,7 +348,8 @@ def markdown_report(
         lines.append(
             f"| {markdown_cell(row['label'])} | {markdown_cell(run.agent)} | "
             f"{markdown_cell(run.agent_model)} | {markdown_cell(human_readable_status(run, ev))} | "
-            f"{markdown_cell(_run_skill_display(run))} | {fmt(run_summary.get('elapsed_seconds'))} | "
+            f"{markdown_cell(_run_skill_display(run))} | {markdown_cell(_run_shared_skill_display(run))} | "
+            f"{fmt(run_summary.get('elapsed_seconds'))} | "
             f"{fmt(run_summary.get('token_count'))} | {fmt(activity.get('command_count'))} | "
             f"{markdown_cell(root_cause)} |"
         )
@@ -394,6 +396,7 @@ def html_report(
             f"<td>{html.escape(fmt(run.agent_model))}</td>"
             f"<td>{html.escape(human_readable_status(run, ctx.evidence.get(row['mode'])))}</td>"
             f"<td>{html.escape(_run_skill_display(run))}</td>"
+            f"<td>{html.escape(_run_shared_skill_display(run))}</td>"
             f"<td>{html.escape(fmt(run_summary.get('elapsed_seconds')))}</td>"
             f"<td>{html.escape(fmt(run_summary.get('token_count')))}</td>"
             "</tr>"
@@ -419,7 +422,7 @@ def html_report(
   <p>Result root: <code>{html.escape(summary['result_root'])}</code></p>
   <p>Status: {html.escape(summary['status'])}</p>
   <table>
-    <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Status</th><th>Skills used (tool calls)</th><th>Elapsed seconds</th><th>Tokens</th></tr></thead>
+    <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Status</th><th>Skills used (tool calls)</th><th>Shared skill refs used</th><th>Elapsed seconds</th><th>Tokens</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
   {chart}

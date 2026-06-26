@@ -22,7 +22,7 @@ import json  # noqa: F401
 import logging
 import re  # noqa: F401
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ from ._events import (  # noqa: F401
 from ._loader import sanitized_validation_metric  # noqa: F401
 from ._loader import collect_benchmark_runs
 from ._runs import combined_text, manifest_paths, run_record, run_workspace_delta, unique_paths  # noqa: F401
-from ._skill_usage import skill_usage_display
+from ._skill_usage import shared_skill_usage_display, skill_usage_display
 from ._text import (  # noqa: F401
     _command_count_display,
     _is_file_inspection_segment,
@@ -172,6 +172,15 @@ def _infer_framework_from_text(*values: str) -> str:
     return ""
 
 
+def _nested_text(mapping: Mapping[str, Any], *keys: str) -> str:
+    value: Any = mapping
+    for key in keys:
+        if not isinstance(value, Mapping):
+            return ""
+        value = value.get(key)
+    return str(value) if value else ""
+
+
 def _run_job_name(run: RunEvidence) -> str:
     raw = run.raw if isinstance(run.raw, dict) else {}
     job_name = raw.get("job_name") or raw.get("job_slug")
@@ -186,11 +195,17 @@ def _run_job_name(run: RunEvidence) -> str:
 
 def _run_framework_display(run: RunEvidence) -> str:
     raw = run.raw if isinstance(run.raw, dict) else {}
+    record = run.record if isinstance(run.record, Mapping) else {}
+    summary = run.summary if isinstance(run.summary, Mapping) else {}
     target_framework = _infer_framework_from_text(
         str(raw.get("framework") or ""),
         str(raw.get("job_name") or ""),
         str(raw.get("job_slug") or ""),
         str(raw.get("job_path") or ""),
+        _run_skill_display(run),
+        run.agent_last_message,
+        _nested_text(record, "agent_exit_summary", "classification_excerpt"),
+        _nested_text(summary, "agent_exit_summary", "classification_excerpt"),
     )
     return f"{target_framework} target" if target_framework else ""
 
@@ -230,11 +245,32 @@ def _run_skill_display(run: RunEvidence) -> str:
     )
 
 
+def _run_shared_skill_display(run: RunEvidence) -> str:
+    raw = run.raw if isinstance(run.raw, dict) else {}
+    return shared_skill_usage_display(str(raw.get("agent_events_text") or ""))
+
+
+def _first_run_framework(runs: dict[str, RunEvidence]) -> str:
+    for run in runs.values():
+        framework = _run_framework_display(run).removesuffix(" target")
+        if framework:
+            return framework
+    return ""
+
+
+def _first_run_job_name(runs: dict[str, RunEvidence]) -> str:
+    for run in runs.values():
+        job_name = _run_job_name(run)
+        if job_name:
+            return job_name
+    return ""
+
+
 def _benchmark_target_section(runs: dict[str, RunEvidence]) -> list[str]:
-    job_name = _first_run_value(runs, "job_name") or _first_run_value(runs, "job_slug")
+    job_name = _first_run_value(runs, "job_name") or _first_run_value(runs, "job_slug") or _first_run_job_name(runs)
     job_path = _first_run_value(runs, "job_path")
     scenario_name = _first_run_value(runs, "scenario_name")
-    target_framework = _infer_framework_from_text(
+    target_framework = _first_run_framework(runs) or _infer_framework_from_text(
         _first_run_value(runs, "framework"),
         job_name,
         _first_run_value(runs, "job_slug"),
@@ -346,8 +382,9 @@ def _executive_summary_section(
     context_lines = [
         "### Run Context",
         "",
-        f"| Run | Job | Framework | Skills used (tool calls) | Agent/model | {markdown_cell(algorithm_label)} | Captured generated artifacts |",
-        "|---|---|---|---|---|---|---|",
+        f"| Run | Job | Framework | Skills used (tool calls) | Shared skill refs used | "
+        f"Agent/model | {markdown_cell(algorithm_label)} | Captured generated artifacts |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for mode in modes:
         run = runs[mode]
@@ -375,6 +412,7 @@ def _executive_summary_section(
             f"{markdown_cell(_run_job_name(run) or 'NA')} | "
             f"{markdown_cell(_run_framework_display(run) or 'NA')} | "
             f"{markdown_cell(_run_skill_display(run))} | "
+            f"{markdown_cell(_run_shared_skill_display(run))} | "
             f"{markdown_cell(agent_model)} | "
             f"{markdown_cell(fl_algorithm_display(run, ctx.algorithm(mode)))} | "
             f"{markdown_cell(artifact_summary(run))} |"

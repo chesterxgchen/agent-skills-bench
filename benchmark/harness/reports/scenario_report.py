@@ -21,7 +21,7 @@ from typing import Any, Mapping
 
 from ..common import write_json
 from ._loader import MAX_AGENT_EVENTS_TEXT_BYTES, read_text
-from ._skill_usage import skill_usage_display
+from ._skill_usage import shared_skill_usage_display, skill_usage_display
 
 
 def markdown_cell(value: Any) -> str:
@@ -29,17 +29,21 @@ def markdown_cell(value: Any) -> str:
     return text.replace("|", "\\|").replace("\n", "<br>")
 
 
-def skill_used(result_root: Path, run: Mapping[str, Any]) -> str:
+def _run_events_text(result_root: Path, run: Mapping[str, Any]) -> str:
     artifact_paths = run.get("artifact_paths") if isinstance(run.get("artifact_paths"), Mapping) else {}
     events_path = artifact_paths.get("agent_events")
-    events_text = ""
     if events_path:
-        events_text = read_text(result_root / str(events_path), max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES)
-    elif run.get("record_dir"):
-        events_text = read_text(
+        return read_text(result_root / str(events_path), max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES)
+    if run.get("record_dir"):
+        return read_text(
             result_root / str(run.get("record_dir")) / "agent_events.jsonl",
             max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES,
         )
+    return ""
+
+
+def skill_used(result_root: Path, run: Mapping[str, Any]) -> str:
+    events_text = _run_events_text(result_root, run)
     observed_skill_name = None
     for key in ("observed_skill_name", "skill_name", "skill"):
         if run.get(key):
@@ -52,6 +56,10 @@ def skill_used(result_root: Path, run: Mapping[str, Any]) -> str:
     )
 
 
+def shared_skill_refs_used(result_root: Path, run: Mapping[str, Any]) -> str:
+    return shared_skill_usage_display(_run_events_text(result_root, run))
+
+
 def run_identity_lines(result_root: Path, runs: Any) -> list[str]:
     if not isinstance(runs, list) or not runs:
         return []
@@ -59,8 +67,8 @@ def run_identity_lines(result_root: Path, runs: Any) -> list[str]:
         "",
         "## Run Identity",
         "",
-        "| Run ID | Label | Agent | Model | Model source | Mode | Skills used (tool calls) |",
-        "|---|---|---|---|---|---|---|",
+        "| Run ID | Label | Agent | Model | Model source | Mode | Skills used (tool calls) | Shared skill refs used |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for run in runs:
         if not isinstance(run, Mapping):
@@ -69,7 +77,8 @@ def run_identity_lines(result_root: Path, runs: Any) -> list[str]:
         lines.append(
             f"| {markdown_cell(run.get('run_id'))} | {markdown_cell(label)} | {markdown_cell(run.get('agent'))} | "
             f"{markdown_cell(run.get('agent_model'))} | {markdown_cell(run.get('model_source'))} | "
-            f"{markdown_cell(run.get('mode'))} | {markdown_cell(skill_used(result_root, run))} |"
+            f"{markdown_cell(run.get('mode'))} | {markdown_cell(skill_used(result_root, run))} | "
+            f"{markdown_cell(shared_skill_refs_used(result_root, run))} |"
         )
     return lines
 
