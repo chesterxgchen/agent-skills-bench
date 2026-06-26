@@ -780,6 +780,76 @@ def test_replay_recovers_metric_artifact_when_policy_is_missing(tmp_path):
     assert with_skills_row["validation_metric"]["value"] == 0.7648461238800156
 
 
+def test_replay_metric_artifact_fallback_uses_dynamic_metric_name(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import collect_benchmark_runs
+
+    record_dir = (
+        tmp_path
+        / "records"
+        / "agent=claude"
+        / "model=default"
+        / "workflow=default"
+        / "job=segmentation"
+        / f"mode={WITH_SKILLS_MODE}"
+    )
+    record_dir.mkdir(parents=True)
+    write_json(
+        tmp_path / "run_plan.json",
+        {
+            "entries": [
+                {
+                    "run_id": "run_00002",
+                    "mode": WITH_SKILLS_MODE,
+                    "agent": "claude",
+                    "agent_model": "default",
+                    "record_dir": str(record_dir.relative_to(tmp_path)),
+                }
+            ]
+        },
+    )
+    write_json(record_dir / "run_summary.json", {"mode": WITH_SKILLS_MODE, "final_container_exit_code": 0})
+    write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+    write_json(
+        record_dir / "benchmark_record.json",
+        {
+            "mode": WITH_SKILLS_MODE,
+            "reported_validation_metric": {
+                "name": "dice_score",
+                "value": None,
+                "reported_values": [],
+                "source": "agent_last_message",
+            },
+        },
+    )
+    delta_dir = record_dir / "workspace_delta"
+    artifact_path = delta_dir / "runtime_artifacts" / "metrics_summary.json"
+    artifact_path.parent.mkdir(parents=True)
+    write_json(
+        artifact_path,
+        {
+            "final_aggregated_metrics": [
+                {"name": "loss", "value": 1.91},
+                {"name": "dice_score", "value": 62.75},
+            ]
+        },
+    )
+    write_json(
+        record_dir / "workspace_delta_manifest.json",
+        {
+            "delta_dir": str(delta_dir),
+            "runtime_artifacts": [{"artifact_path": "runtime_artifacts/metrics_summary.json"}],
+        },
+    )
+
+    metric = collect_benchmark_runs(tmp_path)[WITH_SKILLS_MODE]["validation_metric"]
+
+    assert metric["source"] == "metrics_artifact"
+    assert metric["name"] == "dice_score"
+    assert metric["value"] == 62.75
+
+
 def test_cost_comparison_separates_dependency_install_time():
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import chart_value_display, cost_comparison_section
