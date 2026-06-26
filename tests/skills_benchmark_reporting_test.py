@@ -1290,6 +1290,89 @@ def test_why_section_surfaces_repeated_successful_job_executions():
     )
 
 
+def test_why_section_surfaces_skill_guidance_overridden_by_docstring_discovery():
+    from benchmark.harness.reports.benchmark_insights import _why_slower
+
+    events_text = "\n".join(
+        [
+            json.dumps(
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "id": "skill-1",
+                                "input": {"skill": "nvflare-convert-lightning"},
+                                "name": "Skill",
+                                "type": "tool_use",
+                            }
+                        ]
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "content": (
+                                    "Client script requirement: Unlike FedAvgRecipe, the client script must use "
+                                    "PTScaffoldHelper and include SCAFFOLD_CTRL_DIFF."
+                                ),
+                                "is_error": False,
+                                "tool_use_id": "read-1",
+                                "type": "tool_result",
+                            }
+                        ]
+                    },
+                    "tool_use_result": {
+                        "stdout": "/workspace/venv/lib/python3.11/site-packages/nvflare/app_opt/pt/recipes/scaffold.py"
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "text": (
+                                    "The standard Lightning `flare.patch(trainer)` exchange genuinely cannot express "
+                                    "SCAFFOLD, so I need to switch implementation strategy."
+                                ),
+                                "type": "text",
+                            }
+                        ]
+                    }
+                }
+            ),
+        ]
+    )
+    with_run = {
+        "available": True,
+        "mode": "with_skills",
+        "label": "With skills",
+        "run": {"elapsed_seconds": 300},
+        "activity": {"tool_counts": {"Skill": 1}, "event_types": {"assistant": 10}},
+        "agent_events_text": events_text,
+    }
+    base_run = {
+        "available": True,
+        "mode": "without_skills",
+        "label": "No skills baseline",
+        "run": {"elapsed_seconds": 100},
+        "activity": {"tool_counts": {}, "event_types": {"assistant": 3}},
+    }
+
+    why_text = "\n".join(_why_slower(_ev(with_run), _ev(base_run)))
+
+    assert "Skill guidance overridden after local API/source inspection" in why_text
+    assert "recipes/scaffold.py" in why_text
+    assert "local source/docstring evidence" in why_text
+    assert "conflicting with the skill guidance" in why_text
+    assert "changed implementation strategy" in why_text
+    assert "does not assert that the local API/source claim is permanently true" in why_text
+    assert "genuinely cannot express SCAFFOLD" in why_text
+
+
 def test_repeated_job_reason_uses_codex_agent_message_context():
     from benchmark.harness.reports.benchmark_insights import repeated_job_runs_section
     from benchmark.harness.sdks.nvflare._logic import repeated_job_run_summary

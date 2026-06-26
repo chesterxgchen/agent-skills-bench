@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from .._context import JobExecutionSignal, ReportContext
@@ -103,6 +105,12 @@ def cost_comparison_section(runs: dict[str, RunEvidence], modes: list[str]) -> s
             _non_dependency_command_seconds(right_run),
             "seconds",
         ),
+        (
+            "Agent/model interaction seconds",
+            _agent_interaction_seconds(left_run),
+            _agent_interaction_seconds(right_run),
+            "seconds",
+        ),
         ("Total tokens", left_summary.get("token_count"), right_summary.get("token_count"), "short"),
         (
             "Commands",
@@ -136,7 +144,8 @@ def cost_comparison_section(runs: dict[str, RunEvidence], modes: list[str]) -> s
         "",
         "`Runtime seconds` is total elapsed time minus captured dependency-install command/background-task time. "
         "`Dependency install seconds` is captured dependency-install command/background-task time. "
-        "`Non-install command seconds` is summed duration of captured non-install shell/tool commands, so it can be lower than runtime when the agent spends time reasoning, waiting, or using non-command tools.",
+        "`Non-install command seconds` is summed duration of captured non-install shell/tool commands, so it can be lower than runtime when the agent spends time reasoning, waiting, or using non-command tools. "
+        "`Agent/model interaction seconds` is the remaining runtime after subtracting captured non-install command spans; it is a residual signal for model round trips, tool orchestration, background command gaps, and other time not attributed to command spans.",
         "Command span timing is operation-level evidence, not a strict wall-clock partition; it can differ from total elapsed time when agent event timestamps overlap, are truncated, or come from a different clock than the harness timer.",
         "",
         f"| Signal | {markdown_cell(left_run.label or left)} | {markdown_cell(right_run.label or right)} | Delta right-left |",
@@ -163,8 +172,8 @@ def _elapsed_time_accounting_note(with_run: RunEvidence, base_run: RunEvidence) 
     lines = [
         "**Elapsed time accounting**",
         "",
-        "| Run | Total | Dependency install | Runtime after install | Captured non-install commands |",
-        "|---|---:|---:|---:|---:|",
+        "| Run | Total | Dependency install | Runtime after install | Captured non-install commands | Agent/model interaction residual |",
+        "|---|---:|---:|---:|---:|---:|",
     ]
     for label, run in rows:
         lines.append(
@@ -172,16 +181,183 @@ def _elapsed_time_accounting_note(with_run: RunEvidence, base_run: RunEvidence) 
             f"{fmt_seconds_with_unit(run_summary(run).get('elapsed_seconds'))} | "
             f"{fmt_seconds_with_unit(_dependency_install_total_seconds(run))} | "
             f"{fmt_seconds_with_unit(_elapsed_excluding_dependency_install(run))} | "
-            f"{fmt_seconds_with_unit(_non_dependency_command_seconds(run))} |"
+            f"{fmt_seconds_with_unit(_non_dependency_command_seconds(run))} | "
+            f"{fmt_seconds_with_unit(_agent_interaction_seconds(run))} |"
         )
     lines.extend(
         [
             "",
             "`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. "
-            "Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.",
+            "Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time. "
+            "The residual column is the best available indicator that wall time came from agent/model round trips, "
+            "tool orchestration, background command gaps, or other non-command activity.",
         ]
     )
     return "\n".join(lines)
+
+
+def _agent_interaction_seconds(run: RunEvidence) -> float | None:
+    runtime = _elapsed_excluding_dependency_install(run)
+    command_seconds = _non_dependency_command_seconds(run)
+    if runtime is None or command_seconds is None:
+        return None
+    return max(0.0, runtime - command_seconds)
+
+
+def _agent_interaction_slowdown_note(with_run: RunEvidence, base_run: RunEvidence) -> str:
+    with_label = with_run.label or "With skills"
+    base_label = base_run.label or "No skills baseline"
+    with_residual = _agent_interaction_seconds(with_run)
+    base_residual = _agent_interaction_seconds(base_run)
+    with_commands = _non_dependency_command_seconds(with_run)
+    base_commands = _non_dependency_command_seconds(base_run)
+    if with_residual is None or base_residual is None:
+        return ""
+    residual_delta = with_residual - base_residual
+    command_delta = None
+    if with_commands is not None and base_commands is not None:
+        command_delta = with_commands - base_commands
+    if residual_delta <= 30:
+        return ""
+    command_phrase = ""
+    if command_delta is not None and command_delta < 0:
+        command_phrase = (
+            f" Captured non-install command time was lower for {with_label} "
+            f"({fmt_seconds_with_unit(with_commands)} vs {fmt_seconds_with_unit(base_commands)}), "
+            "so the slowdown is not explained by longer measured shell/job commands."
+        )
+    return (
+        "- **Root cause: more agent/model loop time, not measured command runtime**: "
+        f"{with_label} spent {fmt_seconds_with_unit(with_residual)} outside captured dependency and "
+        f"non-install command spans vs {fmt_seconds_with_unit(base_residual)} for {base_label} "
+        f"(+{fmt_seconds_with_unit(residual_delta)})."
+        f"{command_phrase} Read this with the turn/tool rows above: extra assistant turns, skill loading, "
+        "tool lookups, file/source inspection, and validation retries compound wall time even when generated "
+        "artifact count is smaller."
+    )
+
+
+def _event_text_items(run: RunEvidence) -> list[str]:
+    items: list[str] = []
+    for line in str(run.agent_events_text or "").splitlines():
+        try:
+            payload = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        message = payload.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text":
+                text = str(item.get("text") or "").strip()
+                if text:
+                    items.append(text)
+            elif item.get("type") == "tool_result":
+                text = str(item.get("content") or "").strip()
+                if text:
+                    items.append(text)
+        result = payload.get("tool_use_result")
+        if isinstance(result, dict):
+            for key in ("stdout", "stderr", "content"):
+                text = str(result.get(key) or "").strip()
+                if text:
+                    items.append(text)
+    return items
+
+
+def _skill_contract_mismatch_note(with_run: RunEvidence) -> str:
+    """Surface when the agent overrides skill guidance after local API/source evidence.
+
+    This intentionally uses captured event text only. It does not know whether
+    the SDK/API claim is true or stable; it reports that the agent spent work
+    resolving a conflict between skill guidance and local source/docstring
+    evidence.
+    """
+
+    if count_map(with_run, "tool_counts").get("Skill", 0) <= 0:
+        return ""
+    texts = _event_text_items(with_run)
+    combined = "\n".join(texts)
+    lower = combined.lower()
+    override_patterns = (
+        "cannot use the lightning `flare.patch",
+        "cannot use `flare.patch",
+        "cannot use flare.patch",
+        "not a plain `flare.patch",
+        "cannot express",
+        "not the lightning ``flare.patch",
+        "rather than a lightning ``flare.patch",
+        "switch implementation strategy",
+        "switch to a different implementation strategy",
+    )
+    source_evidence = any(marker in lower for marker in ("docstring", "source/docstring", "client script requirement"))
+    if not source_evidence and not re.search(r"/[^\s\"']*nvflare/[^\s\"']*\.py", combined):
+        return ""
+    if not any(pattern in lower for pattern in override_patterns):
+        return ""
+
+    local_source = ""
+    source_matches = re.findall(
+        r"(/[^\s\"']*nvflare/[^\s\"']*\.py|/[^\s\"']*site-packages/nvflare/[^\s\"']*\.py)",
+        combined,
+    )
+    if source_matches:
+        local_source = next(
+            (path for path in source_matches if "/recipes/" in path),
+            "",
+        )
+    elif source_evidence:
+        local_source = "local SDK source/docstring"
+    if not local_source and source_evidence:
+        local_source = "local SDK source/docstring"
+
+    decisive_text = _strategy_change_rationale(texts, override_patterns)
+
+    source_phrase = f" after reading {inline_source(local_source)}" if local_source else ""
+    decisive_phrase = f" Captured agent rationale: {markdown_cell(decisive_text)}." if decisive_text else ""
+    return (
+        "- **Skill guidance overridden after local API/source inspection**: the skills-enabled agent loaded a skill, "
+        f"then treated local source/docstring evidence{source_phrase} as conflicting with the skill guidance and "
+        "changed implementation strategy. This does not assert that the local API/source claim is permanently true; "
+        "it surfaces the root cause of this run's extra work: the agent spent turns reading source, reconciling the "
+        f"conflict, and recovering from the abandoned path.{decisive_phrase}"
+    )
+
+
+def inline_source(value: str) -> str:
+    return f"`{value}`" if value else "local SDK source"
+
+
+def _strategy_change_rationale(texts: list[str], override_patterns: tuple[str, ...]) -> str:
+    matching_texts: list[str] = []
+    for text in texts:
+        if text.startswith("Base directory for this skill:"):
+            continue
+        text_lower = text.lower()
+        if any(pattern in text_lower for pattern in override_patterns):
+            matching_texts.append(text)
+    if not matching_texts:
+        return ""
+
+    preferred_markers = (
+        "switch implementation strategy",
+        "switch to a different implementation strategy",
+        "so i need to switch",
+        "i need to switch",
+        "i'll switch",
+        "manual",
+        "therefore",
+    )
+    decisive_text = next(
+        (text for text in matching_texts if any(marker in text.lower() for marker in preferred_markers)),
+        matching_texts[-1],
+    )
+    return truncate(decisive_text, 260)
 
 
 def _longest_command_comparison_note(with_run: RunEvidence, base_run: RunEvidence) -> str:
@@ -408,6 +584,13 @@ def _slowdown_reason_table(
         _elapsed_excluding_dependency_install(with_run),
         _elapsed_excluding_dependency_install(base_run),
         "agent/job runtime after dependency setup",
+    )
+    _append_time_reason_row(
+        rows,
+        "Agent/model interaction residual",
+        _agent_interaction_seconds(with_run),
+        _agent_interaction_seconds(base_run),
+        "time not attributed to captured dependency or non-install command spans",
     )
     command_interpretation = (
         "captured command time contributing to wall-clock slowdown"
@@ -745,6 +928,12 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
     longest_command_note = _longest_command_comparison_note(with_run, base_run)
     if longest_command_note and include_slowdown_context:
         lines.extend([longest_command_note, ""])
+    mismatch_note = _skill_contract_mismatch_note(with_run)
+    if mismatch_note and include_slowdown_context:
+        lines.extend([mismatch_note, ""])
+    interaction_note = _agent_interaction_slowdown_note(with_run, base_run)
+    if interaction_note and include_slowdown_context:
+        lines.extend([interaction_note, ""])
     dependency_note = _dependency_install_slowdown_note(with_run, base_run)
     if dependency_note and include_slowdown_context:
         lines.append(dependency_note)
