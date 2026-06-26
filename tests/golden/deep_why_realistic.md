@@ -32,7 +32,7 @@ Baseline comparison: No skills baseline had 1 command classified successful job/
 | With skills | 900s | 150s | 750s | 731s |
 | No skills baseline | 600s | 30s | 570s | 560s |
 
-`Runtime after install` is total elapsed time minus captured dependency-install command time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.
+`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.
 
 **Longest command comparison**
 

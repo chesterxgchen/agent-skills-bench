@@ -148,7 +148,7 @@ Read cost winners only after checking the quality gates; a cheaper run that does
 | With skills | 240s | 60s | 180s | 170s |
 | No skills baseline | 180s | 30s | 150s | 140s |
 
-`Runtime after install` is total elapsed time minus captured dependency-install command time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.
+`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.
 
 **Longest command comparison**
 

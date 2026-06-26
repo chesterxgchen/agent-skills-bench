@@ -43,7 +43,12 @@ def parse_event_timestamp(value: Any) -> datetime | None:
 
 def fmt_seconds(value: Any) -> str:
     number = as_number(value)
-    return "NA" if number is None else str(round(number))
+    if number is None:
+        return "NA"
+    if 0 < abs(number) < 1:
+        text = f"{number:.3f}".rstrip("0").rstrip(".")
+        return text if text not in {"0", "-0"} else ("0.001" if number > 0 else "-0.001")
+    return str(round(number))
 
 
 def fmt_seconds_with_unit(value: Any) -> str:

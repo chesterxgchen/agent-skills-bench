@@ -134,8 +134,8 @@ def cost_comparison_section(runs: dict[str, RunEvidence], modes: list[str]) -> s
         "",
         "Cost numbers are descriptive only. Quality gates decide whether a cost comparison is meaningful.",
         "",
-        "`Runtime seconds` is total elapsed time minus captured dependency-install command time. "
-        "`Dependency install seconds` is captured dependency-install command time. "
+        "`Runtime seconds` is total elapsed time minus captured dependency-install command/background-task time. "
+        "`Dependency install seconds` is captured dependency-install command/background-task time. "
         "`Non-install command seconds` is summed duration of captured non-install shell/tool commands, so it can be lower than runtime when the agent spends time reasoning, waiting, or using non-command tools.",
         "Command span timing is operation-level evidence, not a strict wall-clock partition; it can differ from total elapsed time when agent event timestamps overlap, are truncated, or come from a different clock than the harness timer.",
         "",
@@ -177,7 +177,7 @@ def _elapsed_time_accounting_note(with_run: RunEvidence, base_run: RunEvidence) 
     lines.extend(
         [
             "",
-            "`Runtime after install` is total elapsed time minus captured dependency-install command time. "
+            "`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. "
             "Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.",
         ]
     )

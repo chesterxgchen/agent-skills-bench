@@ -909,14 +909,86 @@ def test_cost_comparison_separates_dependency_install_time():
 
     section = cost_comparison_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
 
-    assert "`Runtime seconds` is total elapsed time minus captured dependency-install command time" in section
-    assert "`Dependency install seconds` is captured dependency-install command time" in section
+    assert "`Runtime seconds` is total elapsed time minus captured dependency-install command/background-task time" in section
+    assert "`Dependency install seconds` is captured dependency-install command/background-task time" in section
     assert "Command span timing is operation-level evidence, not a strict wall-clock partition" in section
     assert "| Total time seconds | 100 | 300 | 200 |" in section
     assert "| Runtime seconds | 85 | 180 | 95 |" in section
     assert "| Dependency install seconds | 15 | 120 | 105 |" in section
     assert "| Non-install command seconds | 70 | 160 | 90 |" in section
     assert chart_value_display(1009.055, "seconds") == "1009"
+    assert chart_value_display(0.071, "seconds") == "0.071"
+
+
+def test_dependency_install_time_uses_background_task_duration():
+    from benchmark.harness.modes import WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import _dependency_install_spans, _dependency_install_total_seconds
+
+    install_command = "uv pip install -r requirements-train.txt 2>&1 | tail -20"
+    events = [
+        {
+            "event_type": "assistant",
+            "harness_timestamp": "2026-06-26T00:00:00.000Z",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_install",
+                        "input": {
+                            "command": install_command,
+                            "description": "Install training requirements into venv",
+                            "run_in_background": True,
+                        },
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "system.task_started",
+            "harness_timestamp": "2026-06-26T00:00:00.000Z",
+            "task_id": "install_task",
+            "tool_use_id": "toolu_install",
+        },
+        {
+            "event_type": "user",
+            "harness_timestamp": "2026-06-26T00:00:00.071Z",
+            "message": {
+                "content": [
+                    {
+                        "content": "Command running in background with ID: install_task",
+                        "tool_use_id": "toolu_install",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"backgroundTaskId": "install_task"},
+        },
+        {
+            "event_type": "system.task_updated",
+            "harness_timestamp": "2026-06-26T00:01:23.000Z",
+            "patch": {"status": "completed"},
+            "task_id": "install_task",
+        },
+    ]
+    run = _ev(
+        {
+            "available": True,
+            "mode": WITH_SKILLS_MODE,
+            "label": "With skills",
+            "run": {"elapsed_seconds": 120, "token_count": 12},
+            "activity": {"commands": [install_command]},
+            "workspace_delta": {},
+            "agent_events_text": "\n".join(json.dumps(event) for event in events),
+        }
+    )
+
+    spans = _dependency_install_spans(run)
+
+    assert len(spans) == 1
+    assert spans[0]["duration_source"] == "background_task"
+    assert spans[0]["duration_seconds"] == 83
+    assert _dependency_install_total_seconds(run) == 83
 
 
 def test_cost_comparison_treats_missing_dependency_install_spans_as_zero():

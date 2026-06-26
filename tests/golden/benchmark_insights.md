@@ -266,7 +266,7 @@ Dependency policy note: accelerator-capable framework installs are valid for acc
 
 Cost numbers are descriptive only. Quality gates decide whether a cost comparison is meaningful.
 
-`Runtime seconds` is total elapsed time minus captured dependency-install command time. `Dependency install seconds` is captured dependency-install command time. `Non-install command seconds` is summed duration of captured non-install shell/tool commands, so it can be lower than runtime when the agent spends time reasoning, waiting, or using non-command tools.
+`Runtime seconds` is total elapsed time minus captured dependency-install command/background-task time. `Dependency install seconds` is captured dependency-install command/background-task time. `Non-install command seconds` is summed duration of captured non-install shell/tool commands, so it can be lower than runtime when the agent spends time reasoning, waiting, or using non-command tools.
 Command span timing is operation-level evidence, not a strict wall-clock partition; it can differ from total elapsed time when agent event timestamps overlap, are truncated, or come from a different clock than the harness timer.
 
 | Signal | No skills baseline | With skills | Delta right-left |
@@ -302,7 +302,7 @@ Command span timing is operation-level evidence, not a strict wall-clock partiti
 | With skills | 240s | 60s | 180s | 170s |
 | No skills baseline | 180s | 30s | 150s | 140s |
 
-`Runtime after install` is total elapsed time minus captured dependency-install command time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.
+`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.
 
 **Longest command comparison**
 

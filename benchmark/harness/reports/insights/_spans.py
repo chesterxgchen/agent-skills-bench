@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -29,6 +30,7 @@ from .._events import (
     command_succeeded,
     fmt_seconds_with_unit,
     is_dependency_install_command,
+    parse_event_timestamp,
 )
 from .._text import fmt_number, strip_ansi
 from ._plugin_view import dependency_install_attempted, event_type_count, run_summary
@@ -141,10 +143,70 @@ def _format_command_span_list(label: str, spans: list[dict[str, Any]]) -> str:
     return f"{label}: " + "; ".join(_format_command_span(span) for span in spans)
 
 
+def _background_task_durations_by_tool_id(run: dict[str, Any]) -> dict[str, float]:
+    task_by_tool_id: dict[str, str] = {}
+    starts = {}
+    ends = {}
+    for line in str(run.raw.get("agent_events_text") or "").splitlines():
+        try:
+            payload = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        timestamp = parse_event_timestamp(payload.get("harness_timestamp") or payload.get("timestamp"))
+        event_type = str(payload.get("event_type") or payload.get("type") or "")
+        if event_type == "system.task_started":
+            task_id = str(payload.get("task_id") or "")
+            tool_id = str(payload.get("tool_use_id") or "")
+            if task_id and tool_id:
+                task_by_tool_id[tool_id] = task_id
+                if timestamp:
+                    starts[task_id] = timestamp
+            continue
+        if event_type not in {"system.task_updated", "system.task_notification"}:
+            continue
+        task_id = str(payload.get("task_id") or "")
+        if not task_id or not timestamp:
+            continue
+        patch = payload.get("patch") if isinstance(payload.get("patch"), dict) else {}
+        status = str(payload.get("status") or patch.get("status") or "").lower()
+        if status in {"completed", "failed", "killed", "stopped"}:
+            ends[task_id] = timestamp
+
+    durations = {}
+    for tool_id, task_id in task_by_tool_id.items():
+        start = starts.get(task_id)
+        end = ends.get(task_id)
+        if not start or not end:
+            continue
+        duration = (end - start).total_seconds()
+        if duration >= 0:
+            durations[tool_id] = duration
+    return durations
+
+
+def _span_uses_background_task(span: dict[str, Any]) -> bool:
+    output = str(span.get("output") or "")
+    return "Command running in background with ID:" in output
+
+
 def _dependency_install_spans(run: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        span for span in agent_command_spans(run.raw) if is_dependency_install_command(str(span.get("command") or ""))
-    ]
+    background_durations = _background_task_durations_by_tool_id(run)
+    spans = []
+    for span in agent_command_spans(run.raw):
+        if not is_dependency_install_command(str(span.get("command") or "")):
+            continue
+        tool_id = str(span.get("id") or "")
+        background_duration = background_durations.get(tool_id)
+        if background_duration is not None and _span_uses_background_task(span):
+            adjusted = dict(span)
+            adjusted["duration_seconds"] = background_duration
+            adjusted["duration_source"] = "background_task"
+            spans.append(adjusted)
+        else:
+            spans.append(span)
+    return spans
 
 
 def _package_name_from_install_token(token: str) -> str:
