@@ -55,8 +55,6 @@ build:
       build_env_value: "0"
       reuse_existing: false
       wheel_globs:
-        - nvflare-*.whl
-        - nvflare_nightly-*.whl
         - "*no_skills*.whl"
 
 # Optional SDK verification run after wheel install.
@@ -67,8 +65,8 @@ docker:
 skills:
   setup:
     type: command
-    install_command: nvflare --format json agent skills install --agent "${BENCHMARK_DOCKER_AGENT}" --target "${BENCHMARK_AGENT_HOME}/skills"
-    list_command: nvflare --format json agent skills list --agent "${BENCHMARK_DOCKER_AGENT}" --target "${BENCHMARK_AGENT_HOME}/skills"
+    install_command: nvflare agent skills install --agent "${BENCHMARK_DOCKER_AGENT}" --target "${BENCHMARK_AGENT_HOME}/skills" --format json
+    list_command: nvflare agent skills list --agent "${BENCHMARK_DOCKER_AGENT}" --target "${BENCHMARK_AGENT_HOME}/skills" --format json
     install_output: skills_build_install.json
     list_output: skills_list.json
     expected_source: local_sdk_wheel

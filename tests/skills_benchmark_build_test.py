@@ -177,8 +177,11 @@ def test_nvflare_sdk_adapter_loads_build_contract():
     assert skills.wheel_exclude_globs == ("*no_skills*.whl",)
     assert baseline.build_env_value == "0"
     assert baseline.reuse_existing is False
-    assert baseline.wheel_globs == ("nvflare-*.whl", "nvflare_nightly-*.whl", "*no_skills*.whl")
-    assert build_args["SKILLS_INSTALL_COMMAND"].startswith("nvflare --format json agent skills install")
+    assert baseline.wheel_globs == ("*no_skills*.whl",)
+    assert build_args["SKILLS_INSTALL_COMMAND"].startswith("nvflare agent skills install")
+    assert build_args["SKILLS_INSTALL_COMMAND"].endswith("--format json")
+    assert build_args["SKILLS_LIST_COMMAND"].startswith("nvflare agent skills list")
+    assert build_args["SKILLS_LIST_COMMAND"].endswith("--format json")
 
 
 def test_configurable_sdk_adapter_loads_non_nvflare_contract(tmp_path):

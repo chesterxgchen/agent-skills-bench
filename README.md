@@ -296,11 +296,11 @@ Verify the default NVFlare SDK and packaged skills in the skills image:
 ```bash
 # Codex
 docker run --rm agent-skills-benchmark:codex-skills \
-  /bin/bash -lc 'nvflare --version; nvflare --format json agent skills list --agent codex'
+  /bin/bash -lc 'nvflare --version; nvflare agent skills list --agent codex --format json'
 
 # Claude
 docker run --rm agent-skills-benchmark:claude-skills \
-  /bin/bash -lc 'nvflare --version; nvflare --format json agent skills list --agent claude'
+  /bin/bash -lc 'nvflare --version; nvflare agent skills list --agent claude --format json'
 ```
 
 The images do not install job-specific training dependencies. Installing
@@ -527,7 +527,7 @@ Useful checks inside the container:
 python --version
 uv --version
 nvflare --version
-nvflare --format json agent skills list --agent codex
+nvflare agent skills list --agent codex --format json
 ls -la /workspace/input
 ls -la /workspace/prompts
 ```
