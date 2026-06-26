@@ -173,10 +173,10 @@ def test_nvflare_sdk_adapter_loads_build_contract():
     assert source.repo_markers == ("pyproject.toml", "nvflare/")
     assert sdk.build_env_name == "NVFLARE_PACKAGE_AGENT_SKILLS"
     assert skills.build_env_value == "1"
-    assert skills.reuse_existing is False
+    assert skills.reuse_existing is True
     assert skills.wheel_exclude_globs == ("*no_skills*.whl",)
     assert baseline.build_env_value == "0"
-    assert baseline.reuse_existing is False
+    assert baseline.reuse_existing is True
     assert baseline.wheel_globs == ("*no_skills*.whl",)
     assert build_args["SKILLS_INSTALL_COMMAND"].startswith("nvflare agent skills install")
     assert build_args["SKILLS_INSTALL_COMMAND"].endswith("--format json")
