@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import nullcontext, suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -58,6 +58,8 @@ AGENT_TERMINATE_GRACE_SECONDS = 10
 MAX_STDOUT_TAIL_LINES = 1000
 MAX_STDOUT_TAIL_LINE_BYTES = 4096
 STDOUT_TAIL_TRUNCATED_MARKER = "...[truncated]"
+SOURCE_INPUT_CACHE_DIR_NAMES = {"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
+SOURCE_INPUT_ROOT_RUNTIME_DIR_NAMES = {"outputs"}
 
 
 def epoch_nanoseconds() -> int:
@@ -437,6 +439,10 @@ def validate_input_symlinks(input_dir: Path) -> None:
     root = input_dir.resolve()
     for dirpath, dirnames, filenames in os.walk(input_dir, followlinks=False):
         current = Path(dirpath)
+        skip_names = set(SOURCE_INPUT_CACHE_DIR_NAMES)
+        if current.resolve() == root:
+            skip_names.update(SOURCE_INPUT_ROOT_RUNTIME_DIR_NAMES)
+        dirnames[:] = [name for name in dirnames if name not in skip_names]
         for name in [*dirnames, *filenames]:
             path = current / name
             if not path.is_symlink():
@@ -448,14 +454,36 @@ def validate_input_symlinks(input_dir: Path) -> None:
                 raise RuntimeError(f"Job input symlink escapes input directory: {rel} -> {target}")
 
 
+def source_input_copy_ignore(root_dir: Path) -> Callable[[str, list[str]], set[str]]:
+    root = root_dir.resolve()
+
+    def ignore(dirpath: str, names: list[str]) -> set[str]:
+        skip_names = set(SOURCE_INPUT_CACHE_DIR_NAMES)
+        if Path(dirpath).resolve() == root:
+            skip_names.update(SOURCE_INPUT_ROOT_RUNTIME_DIR_NAMES)
+        return {name for name in names if name in skip_names}
+
+    return ignore
+
+
 def prepare_input_workspace(config: AgentRunConfig) -> tuple[int, int]:
     start = epoch_seconds()
     config.run_root.mkdir(parents=True, exist_ok=True)
     for name in ("input", "generated", "job_config", "workspace"):
         shutil.rmtree(config.run_root / name, ignore_errors=True)
     validate_input_symlinks(config.job_input_dir)
-    shutil.copytree(config.job_input_dir, config.run_input_dir, symlinks=False)
-    shutil.copytree(config.run_input_dir, config.run_workspace_dir, symlinks=False)
+    shutil.copytree(
+        config.job_input_dir,
+        config.run_input_dir,
+        symlinks=False,
+        ignore=source_input_copy_ignore(config.job_input_dir),
+    )
+    shutil.copytree(
+        config.run_input_dir,
+        config.run_workspace_dir,
+        symlinks=False,
+        ignore=source_input_copy_ignore(config.run_input_dir),
+    )
     for name in ("generated", "job_config"):
         (config.run_root / name).mkdir(parents=True, exist_ok=True)
     return start, epoch_seconds()

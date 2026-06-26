@@ -397,6 +397,92 @@ def test_prepare_input_workspace_dereferences_safe_symlinks(tmp_path):
     assert not copied_workspace.is_symlink()
 
 
+def test_prepare_input_workspace_skips_runtime_outputs_but_keeps_input_data(tmp_path):
+    from benchmark.harness.container.agent_run import AgentRunConfig, prepare_input_workspace
+
+    job = tmp_path / "job"
+    job.mkdir()
+    job.joinpath("job.py").write_text("print('train')\n", encoding="utf-8")
+    data_dir = job / "data"
+    data_dir.mkdir()
+    data_dir.joinpath("sample.txt").write_text("fixture\n", encoding="utf-8")
+    src_outputs_dir = job / "src" / "outputs"
+    src_outputs_dir.mkdir(parents=True)
+    src_outputs_dir.joinpath("expected.txt").write_text("source fixture\n", encoding="utf-8")
+    outputs_dir = job / "outputs"
+    outputs_dir.mkdir()
+    outputs_dir.joinpath("best_model.ckpt").write_bytes(b"checkpoint")
+    outputs_dir.joinpath("metrics.json").write_text("{}\n", encoding="utf-8")
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    config = AgentRunConfig(
+        mode="with_skills",
+        use_preinstalled_skills=True,
+        job_input_dir=job,
+        result_dir=result_dir,
+        records_dir=result_dir / "records",
+        run_root=tmp_path / "run",
+        prompt_source=tmp_path / "prompt.txt",
+        progress_interval_seconds=0,
+        sdk_image_kind="test-skills",
+        agent="test",
+        agent_model="test-model",
+        agent_home=tmp_path / ".agent",
+        agent_model_was_explicit=False,
+    )
+
+    prepare_input_workspace(config)
+
+    assert config.run_input_dir.joinpath("job.py").is_file()
+    assert config.run_workspace_dir.joinpath("job.py").is_file()
+    assert config.run_input_dir.joinpath("data", "sample.txt").read_text(encoding="utf-8") == "fixture\n"
+    assert config.run_workspace_dir.joinpath("data", "sample.txt").read_text(encoding="utf-8") == "fixture\n"
+    assert config.run_input_dir.joinpath("src", "outputs", "expected.txt").read_text(encoding="utf-8") == "source fixture\n"
+    assert (
+        config.run_workspace_dir.joinpath("src", "outputs", "expected.txt").read_text(encoding="utf-8")
+        == "source fixture\n"
+    )
+    assert not config.run_input_dir.joinpath("outputs").exists()
+    assert not config.run_workspace_dir.joinpath("outputs").exists()
+
+
+def test_validate_input_symlinks_ignores_skipped_runtime_outputs(tmp_path):
+    if not hasattr(os, "symlink"):
+        return
+    from benchmark.harness.container.agent_run import AgentRunConfig, prepare_input_workspace
+
+    job = tmp_path / "job"
+    job.mkdir()
+    job.joinpath("job.py").write_text("print('train')\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("generated\n", encoding="utf-8")
+    outputs_dir = job / "outputs"
+    outputs_dir.mkdir()
+    outputs_dir.joinpath("latest.txt").symlink_to(outside)
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    config = AgentRunConfig(
+        mode="with_skills",
+        use_preinstalled_skills=True,
+        job_input_dir=job,
+        result_dir=result_dir,
+        records_dir=result_dir / "records",
+        run_root=tmp_path / "run",
+        prompt_source=tmp_path / "prompt.txt",
+        progress_interval_seconds=0,
+        sdk_image_kind="test-skills",
+        agent="test",
+        agent_model="test-model",
+        agent_home=tmp_path / ".agent",
+        agent_model_was_explicit=False,
+    )
+
+    prepare_input_workspace(config)
+
+    assert config.run_input_dir.joinpath("job.py").is_file()
+    assert not config.run_input_dir.joinpath("outputs").exists()
+
+
 def test_validate_input_symlinks_does_not_traverse_symlinked_directory_loop(tmp_path):
     if not hasattr(os, "symlink"):
         return
