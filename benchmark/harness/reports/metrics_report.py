@@ -32,6 +32,7 @@ from ._loader import (
     final_record_path,
     first_non_empty,
     mode_dir_for_benchmark,
+    expected_validation_metric_name,
     validation_metric_from_record,
 )
 from ._runs import read_text
@@ -98,11 +99,7 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
             runtime_image = {}
         if not isinstance(workspace_delta, dict):
             workspace_delta = {}
-        expected_metric = (
-            record.get("validation_metric_policy", {}).get("expected_primary_metric")
-            if isinstance(record.get("validation_metric_policy"), dict)
-            else None
-        )
+        expected_metric = expected_validation_metric_name(record)
         record_metric = validation_metric_from_record(record)
         artifact_metric = validation_metric_from_workspace_delta_manifest(
             workspace_delta,
@@ -171,11 +168,7 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             workspace_delta = {}
         validation_metric = row.get("validation_metric") if isinstance(row.get("validation_metric"), dict) else {}
         if not validation_metric:
-            expected_metric = (
-                record.get("validation_metric_policy", {}).get("expected_primary_metric")
-                if isinstance(record.get("validation_metric_policy"), dict)
-                else None
-            )
+            expected_metric = expected_validation_metric_name(record)
             artifact_metric = validation_metric_from_workspace_delta_manifest(
                 workspace_delta if isinstance(workspace_delta, dict) else {},
                 workspace_delta_path,

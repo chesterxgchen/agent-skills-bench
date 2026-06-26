@@ -13,10 +13,10 @@ Result root: `<RESULT_ROOT>`
 
 ### Run Context
 
-| Run | Agent/model | FL algorithm/workflow | Captured generated artifacts |
-|---|---|---|---|
-| No skills baseline | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
-| With skills | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| Run | Job | Framework | Agent/model | FL algorithm/workflow | Captured generated artifacts |
+|---|---|---|---|---|---|
+| No skills baseline | ames | NA | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| With skills | ames | NA | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
 
 ## FL Algorithm / Workflow
 

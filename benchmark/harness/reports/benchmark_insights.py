@@ -150,6 +150,110 @@ def _compact_result_gate(outcome: str) -> str:
     return outcome or "NA"
 
 
+def _first_run_value(runs: dict[str, RunEvidence], *keys: str) -> str:
+    for run in runs.values():
+        raw = run.raw if isinstance(run.raw, dict) else {}
+        for key in keys:
+            value = raw.get(key)
+            if value:
+                return str(value)
+    return ""
+
+
+def _infer_framework_from_text(*values: str) -> str:
+    text = " ".join(value for value in values if value).lower()
+    if not text:
+        return ""
+    if "lightning" in text or "pytorch_lightning" in text:
+        return "Lightning"
+    if "pytorch" in text or re.search(r"(^|[^a-z])torch([^a-z]|$)", text):
+        return "PyTorch"
+    return ""
+
+
+def _run_job_name(run: RunEvidence) -> str:
+    raw = run.raw if isinstance(run.raw, dict) else {}
+    job_name = raw.get("job_name") or raw.get("job_slug")
+    if job_name:
+        return str(job_name)
+    if run.mode_dir:
+        for part in run.mode_dir.parts:
+            if part.startswith("job="):
+                return part.split("=", 1)[1].replace("_", "-")
+    return ""
+
+
+def _run_framework_display(run: RunEvidence) -> str:
+    raw = run.raw if isinstance(run.raw, dict) else {}
+    summary = run.summary if isinstance(run.summary, dict) else {}
+    record = run.record if isinstance(run.record, dict) else {}
+    target_framework = _infer_framework_from_text(
+        str(raw.get("framework") or ""),
+        str(raw.get("job_name") or ""),
+        str(raw.get("job_slug") or ""),
+        str(raw.get("job_path") or ""),
+    )
+    skill_framework = _infer_framework_from_text(
+        str(summary.get("observed_skill_name") or ""),
+        str(summary.get("skill_name") or ""),
+        str(summary.get("skill") or ""),
+        str(record.get("observed_skill_name") or ""),
+        str(record.get("skill_name") or ""),
+        str(record.get("skill") or ""),
+    )
+    parts = []
+    if target_framework:
+        parts.append(f"{target_framework} target")
+    if skill_framework and skill_framework != target_framework:
+        parts.append(f"{skill_framework} skill")
+    if not parts and skill_framework:
+        parts.append(skill_framework)
+    return "; ".join(parts)
+
+
+def _run_skill_framework(run: RunEvidence) -> str:
+    summary = run.summary if isinstance(run.summary, dict) else {}
+    record = run.record if isinstance(run.record, dict) else {}
+    return _infer_framework_from_text(
+        str(summary.get("observed_skill_name") or ""),
+        str(summary.get("skill_name") or ""),
+        str(summary.get("skill") or ""),
+        str(record.get("observed_skill_name") or ""),
+        str(record.get("skill_name") or ""),
+        str(record.get("skill") or ""),
+    )
+
+
+def _benchmark_target_section(runs: dict[str, RunEvidence]) -> list[str]:
+    job_name = _first_run_value(runs, "job_name") or _first_run_value(runs, "job_slug")
+    job_path = _first_run_value(runs, "job_path")
+    scenario_name = _first_run_value(runs, "scenario_name")
+    target_framework = _infer_framework_from_text(
+        _first_run_value(runs, "framework"),
+        job_name,
+        _first_run_value(runs, "job_slug"),
+        job_path,
+    )
+    framework_values = [f"{target_framework} target"] if target_framework else []
+    for run in runs.values():
+        skill_framework = _run_skill_framework(run)
+        if skill_framework and skill_framework != target_framework:
+            value = f"{skill_framework} skill"
+            if value not in framework_values:
+                framework_values.append(value)
+    framework = "; ".join(framework_values)
+    if not any((job_name, job_path, framework)):
+        return []
+    return [
+        "### Benchmark Target",
+        "",
+        "| Job | Framework | Scenario | Job path |",
+        "|---|---|---|---|",
+        f"| {markdown_cell(job_name or 'NA')} | {markdown_cell(framework or 'NA')} | "
+        f"{markdown_cell(scenario_name or 'NA')} | {markdown_cell(job_path or 'NA')} |",
+    ]
+
+
 def _run_status_detail_lines(label: str, overall: str, job_status: str, outcome: str) -> list[str]:
     details: list[tuple[str, str]] = []
     if _compact_overall_status(overall) != overall:
@@ -243,8 +347,8 @@ def _executive_summary_section(
     context_lines = [
         "### Run Context",
         "",
-        f"| Run | Agent/model | {markdown_cell(algorithm_label)} | Captured generated artifacts |",
-        "|---|---|---|---|",
+        f"| Run | Job | Framework | Agent/model | {markdown_cell(algorithm_label)} | Captured generated artifacts |",
+        "|---|---|---|---|---|---|",
     ]
     for mode in modes:
         run = runs[mode]
@@ -269,11 +373,17 @@ def _executive_summary_section(
             status_detail_lines.extend(detail)
         context_lines.append(
             f"| {markdown_cell(run.label or mode)} | "
+            f"{markdown_cell(_run_job_name(run) or 'NA')} | "
+            f"{markdown_cell(_run_framework_display(run) or 'NA')} | "
             f"{markdown_cell(agent_model)} | "
             f"{markdown_cell(fl_algorithm_display(run, ctx.algorithm(mode)))} | "
             f"{markdown_cell(artifact_summary(run))} |"
         )
-    summary_lines = ["## Executive Summary", "", *status_lines]
+    target_lines = _benchmark_target_section(runs)
+    summary_lines = ["## Executive Summary", ""]
+    if target_lines:
+        summary_lines.extend([*target_lines, ""])
+    summary_lines.extend(status_lines)
     if len(status_detail_lines) > 2:
         summary_lines.extend(["", *status_detail_lines])
     summary_lines.extend(["", *context_lines])

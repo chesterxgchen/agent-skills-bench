@@ -152,18 +152,25 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
                 "agent": "codex",
                 "agent_model": "default",
                 "model_source": "scenario",
+                "scenario_name": "pair codex ames-lightning",
+                "job_name": "ames-lightning",
+                "job_slug": "ames_lightning",
+                "job_path": "/tmp/jobs/ames-lightning",
                 "record_dir": str(record_dir.relative_to(tmp_path)),
             }
         )
+        run_summary = {
+            "mode": mode,
+            "elapsed_seconds": 10 + index,
+            "token_count": 100 + index,
+            "agent_exit_code": 0,
+            "final_container_exit_code": 0,
+        }
+        if mode == WITH_SKILLS_MODE:
+            run_summary["observed_skill_name"] = "nvflare-convert-pytorch"
         write_json(
             record_dir / "run_summary.json",
-            {
-                "mode": mode,
-                "elapsed_seconds": 10 + index,
-                "token_count": 100 + index,
-                "agent_exit_code": 0,
-                "final_container_exit_code": 0,
-            },
+            run_summary,
         )
         write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
         write_json(record_dir / "agent_activity.json", {"command_count": index})
@@ -180,8 +187,13 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     assert runs[NO_SKILLS_MODE]["available"] is True
     assert runs[NO_SKILLS_MODE]["agent"] == "codex"
     assert runs[NO_SKILLS_MODE]["agent_model"] == "default"
+    assert runs[NO_SKILLS_MODE]["job_name"] == "ames-lightning"
     assert runs[WITH_SKILLS_MODE]["record"]["reported_validation_metric"]["name"] == "AUROC"
     insights = benchmark_report(tmp_path, runs)
+    assert "### Benchmark Target" in insights
+    assert "| ames-lightning | Lightning target; PyTorch skill | pair codex ames-lightning | /tmp/jobs/ames-lightning |" in insights
+    assert "| No skills baseline | ames-lightning | Lightning target | agent=codex, model=default |" in insights
+    assert "| With skills | ames-lightning | Lightning target; PyTorch skill | agent=codex, model=default |" in insights
     assert "## Run Identity" in insights
     assert "| No skills baseline | codex | default | scenario | without_skills |" in insights
     assert "## Cost And Work Comparison" in insights
@@ -667,6 +679,105 @@ def test_metrics_report_recovers_validation_metric_from_runtime_artifacts(tmp_pa
     assert abs(summary["comparison"]["validation_metric_AUROC_with_skills_minus_without_skills"] - 0.05) < 1e-12
     metrics_markdown = (tmp_path / "metrics_report.md").read_text(encoding="utf-8")
     assert "| Metrics (AUROC) | AUROC 0.7200 | AUROC 0.7700 |" in metrics_markdown
+
+
+def test_replay_recovers_metric_artifact_when_policy_is_missing(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import WITH_SKILLS_MODE
+    from benchmark.harness.reports import metrics_report
+    from benchmark.harness.reports.benchmark_insights import collect_benchmark_runs
+
+    record_dir = (
+        tmp_path
+        / "records"
+        / "agent=claude"
+        / "model=default"
+        / "workflow=default"
+        / "job=ames_lightning"
+        / f"mode={WITH_SKILLS_MODE}"
+    )
+    record_dir.mkdir(parents=True)
+    write_json(
+        tmp_path / "run_plan.json",
+        {
+            "entries": [
+                {
+                    "run_id": "run_00002",
+                    "mode": WITH_SKILLS_MODE,
+                    "agent": "claude",
+                    "agent_model": "default",
+                    "record_dir": str(record_dir.relative_to(tmp_path)),
+                }
+            ]
+        },
+    )
+    write_json(record_dir / "run_summary.json", {"mode": WITH_SKILLS_MODE, "final_container_exit_code": 0})
+    write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+    write_json(
+        record_dir / "benchmark_record.json",
+        {
+            "mode": WITH_SKILLS_MODE,
+            "reported_validation_metric": {
+                "name": "AUROC",
+                "value": None,
+                "reported_values": [],
+                "source": "agent_last_message",
+            },
+            "quality_signals": {
+                "job_guidance_primary_validation_metric": {
+                    "status": "not_available",
+                    "expected_primary_metric": None,
+                    "reported_validation_metric": {"name": "AUROC", "value": None, "reported_values": []},
+                }
+            },
+        },
+    )
+    delta_dir = record_dir / "workspace_delta"
+    artifact_path = (
+        delta_dir
+        / "runtime_artifacts"
+        / "runtime_workspaces"
+        / "ames_scaffold"
+        / "server"
+        / "simulate_job"
+        / "metrics"
+        / "metrics_summary.json"
+    )
+    artifact_path.parent.mkdir(parents=True)
+    write_json(
+        artifact_path,
+        {
+            "final_aggregated_metrics": [
+                {"name": "loss", "value": 0.536},
+                {"name": "accuracy", "value": 0.712},
+                {"name": "auroc", "value": 0.7648461238800156},
+            ]
+        },
+    )
+    write_json(
+        record_dir / "workspace_delta_manifest.json",
+        {
+            "delta_dir": str(delta_dir),
+            "runtime_artifacts": [
+                {
+                    "artifact_path": (
+                        "runtime_artifacts/runtime_workspaces/ames_scaffold/server/"
+                        "simulate_job/metrics/metrics_summary.json"
+                    )
+                }
+            ],
+        },
+    )
+
+    runs = collect_benchmark_runs(tmp_path)
+    metric = runs[WITH_SKILLS_MODE]["validation_metric"]
+    assert metric["source"] == "metrics_artifact"
+    assert metric["name"] == "AUROC"
+    assert metric["value"] == 0.7648461238800156
+
+    summary = metrics_report.write_reports(tmp_path, "Synthetic Metrics")
+    with_skills_row = next(row for row in summary["runs"] if row["mode"] == WITH_SKILLS_MODE)
+    assert with_skills_row["validation_metric"]["value"] == 0.7648461238800156
 
 
 def test_cost_comparison_separates_dependency_install_time():
@@ -2153,6 +2264,57 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
     assert "Result quality issue" in why
     assert "Result metric" in why
     assert "Slowdown driver comparison" not in why
+
+
+def test_why_section_renders_when_both_runs_fail_result_gate():
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import why_section
+
+    def failed_metric_run(mode: str, label: str, evidence: str, metric: dict):
+        return {
+            "available": True,
+            "mode": mode,
+            "label": label,
+            "container_exit": {"exit_code": 0},
+            "run": {"final_container_exit_code": 0, "elapsed_seconds": 100, "token_count": 1000},
+            "record": {
+                "quality_signals": {
+                    "job_guidance_primary_validation_metric": {
+                        "status": "fail",
+                        "expected_primary_metric": "AUROC",
+                        "evidence": evidence,
+                        "reported_validation_metric": metric,
+                    }
+                }
+            },
+            "validation_metric": metric,
+        }
+
+    runs = {
+        NO_SKILLS_MODE: failed_metric_run(
+            NO_SKILLS_MODE,
+            "No skills baseline",
+            "AUROC was reported, but no FL-level scalar value was found.",
+            {"name": "AUROC", "value": None, "reported_values": [0.72, 0.756]},
+        ),
+        WITH_SKILLS_MODE: failed_metric_run(
+            WITH_SKILLS_MODE,
+            "With skills",
+            "final response mentioned AUROC but did not report a plausible numeric value.",
+            {"name": "AUROC", "value": None, "reported_values": []},
+        ),
+    }
+
+    why = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
+
+    assert "## Why" in why
+    assert "**Why the comparison needs review**" in why
+    assert "Both runs need review; neither side is a valid comparison winner" in why
+    assert "Failed check `primary_metric_reporting`" in why
+    assert "partial: 2 reported values, no single result scalar" in why
+    assert "missing scalar: AUROC mentioned without value" in why
+    assert "| Result metric |" in why
+    assert "Why With skills needs more work" not in why
 
 
 def test_metric_mismatch_evidence_includes_integer_metric_value():

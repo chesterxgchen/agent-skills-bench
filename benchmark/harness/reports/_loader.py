@@ -117,6 +117,32 @@ def validation_metric_from_record(record: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def expected_validation_metric_name(record: dict[str, Any]) -> str | None:
+    policy = record.get("validation_metric_policy")
+    if isinstance(policy, dict) and policy.get("expected_primary_metric"):
+        return str(policy.get("expected_primary_metric"))
+    quality = record.get("quality_signals")
+    if isinstance(quality, dict):
+        for key in (
+            "artifact_validation_metric",
+            "job_guidance_primary_validation_metric",
+            "readme_primary_validation_metric",
+        ):
+            signal = quality.get(key)
+            if not isinstance(signal, dict):
+                continue
+            if signal.get("expected_primary_metric"):
+                return str(signal.get("expected_primary_metric"))
+            metric = signal.get("reported_validation_metric")
+            if isinstance(metric, dict) and metric.get("name"):
+                return str(metric.get("name"))
+    for key in ("validation_metric", "artifact_validation_metric", "reported_validation_metric"):
+        metric = record.get(key)
+        if isinstance(metric, dict) and metric.get("name"):
+            return str(metric.get("name"))
+    return None
+
+
 def filter_mode_console(console_text: str, mode: str) -> str:
     if not console_text:
         return ""
@@ -132,6 +158,7 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
     console_text = read_text(root / "console_output.log")
     runs: dict[str, dict[str, Any]] = {}
     run_plan = load_json(root / "run_plan.json", {}) or {}
+    scenario_name = run_plan.get("scenario_name") if isinstance(run_plan, dict) else None
     entries = (
         run_plan.get("entries") if isinstance(run_plan, dict) and isinstance(run_plan.get("entries"), list) else []
     )
@@ -160,11 +187,7 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             run_plan_entry.get("agent_model"),
         )
         record_metric = validation_metric_from_record(record)
-        expected_metric = (
-            record.get("validation_metric_policy", {}).get("expected_primary_metric")
-            if isinstance(record.get("validation_metric_policy"), dict)
-            else None
-        )
+        expected_metric = expected_validation_metric_name(record)
         artifact_metric = validation_metric_from_workspace_delta_manifest(
             workspace_delta,
             workspace_delta_path,
@@ -176,6 +199,11 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "mode": mode,
             "label": spec.label,
             "skills": "with skills" if spec.skills_enabled else "without skills",
+            "run_plan_entry": dict(run_plan_entry) if isinstance(run_plan_entry, dict) else {},
+            "scenario_name": first_non_empty(run_plan_entry.get("scenario_name"), scenario_name),
+            "job_name": run_plan_entry.get("job_name"),
+            "job_slug": run_plan_entry.get("job_slug"),
+            "job_path": run_plan_entry.get("job_path"),
             "agent": agent,
             "agent_model": agent_model,
             "model_source": first_non_empty(

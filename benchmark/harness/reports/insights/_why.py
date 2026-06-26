@@ -616,6 +616,61 @@ def _quality_regression_explanation(
     return lines
 
 
+def _job_status_needs_why(run: RunEvidence, ctx: ReportContext | None) -> bool:
+    if ctx is None:
+        return False
+    status = (ctx.job_execution(run.mode).status or "").lower()
+    return bool(status and status not in {"completed", "passed", "pass"})
+
+
+def _run_needs_failure_why(run: RunEvidence, ctx: ReportContext | None) -> bool:
+    ev = ctx.evidence.get(run.mode) if ctx is not None else None
+    return bool(run_quality_issues(run, ev)) or _job_status_needs_why(run, ctx)
+
+
+def _comparison_failure_explanation(
+    runs_by_mode: dict[str, RunEvidence], modes: list[str], ctx: ReportContext | None
+) -> list[str]:
+    failing_modes = [mode for mode in modes if _run_needs_failure_why(runs_by_mode[mode], ctx)]
+    if not failing_modes:
+        return []
+
+    lines = [
+        "**Why the comparison needs review**",
+        "",
+        (
+            "At least one run failed the job/result quality gates, so elapsed time, token use, and artifact count "
+            "should not be treated as benchmark wins until the result issue is resolved."
+        ),
+        "",
+        "| Run | Job run status | Result quality issue | Result metric |",
+        "|---|---|---|---|",
+    ]
+    for mode in modes:
+        run = runs_by_mode[mode]
+        ev = ctx.evidence.get(mode) if ctx is not None else None
+        issues = run_quality_issues(run, ev)
+        lines.append(
+            f"| {markdown_cell(run.label or mode)} | {markdown_cell(_job_status_summary(run, ctx))} | "
+            f"{markdown_cell(issues[0] if issues else 'pass')} | "
+            f"{markdown_cell(run_result_metric_status(run, ev))} |"
+        )
+    if len(failing_modes) == len(modes):
+        lines.extend(
+            [
+                "",
+                (
+                    "Both runs need review; neither side is a valid comparison winner until the result metrics "
+                    "are fixed."
+                ),
+            ]
+        )
+    root_cause_notes = _plugin_narrative(ctx, "why_result_failure")
+    if root_cause_notes:
+        lines.extend(["", *root_cause_notes])
+    return lines
+
+
 def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext | None = None) -> list[str]:
     with_label = with_run.label or "With skills"
     base_label = base_run.label or "No skills baseline"
@@ -836,6 +891,10 @@ def why_section(
     with_quality_issues = run_quality_issues(with_run, ctx.evidence.get(WITH_SKILLS_MODE))
     base_quality_issues = run_quality_issues(base_run, ctx.evidence.get(base_mode))
     quality_is_worse = bool(with_quality_issues) and not base_quality_issues
+    any_failure_needs_why = any(_run_needs_failure_why(_as_run_evidence(runs.get(mode, {})), ctx) for mode in modes)
+    if any_failure_needs_why and not quality_is_worse:
+        runs_by_mode = {mode: _as_run_evidence(runs.get(mode, {})) for mode in modes}
+        sections.append(_comparison_failure_explanation(runs_by_mode, modes, ctx))
     if elapsed_is_slower or runtime_is_slower or quality_is_worse:
         sections.append(_why_slower(with_run, base_run, ctx))
     if with_tokens is not None and base_tokens is not None and with_tokens > base_tokens:

@@ -539,10 +539,15 @@ def synthesize_agent_record(inputs: AgentRecordSynthesisInputs) -> None:
     guidance_sources, guidance_text = discover_job_guidance(input_dir, prompt_path)
     event_identity = infer_from_events(events_text)
     job_guidance_metric_signal = metric_signal(guidance_sources, guidance_text, last_message)
+    expected_artifact_metric = job_guidance_metric_signal.get("expected_primary_metric")
+    if not expected_artifact_metric:
+        reported_metric = job_guidance_metric_signal.get("reported_validation_metric")
+        if isinstance(reported_metric, dict) and reported_metric.get("name"):
+            expected_artifact_metric = reported_metric.get("name")
     artifact_validation_metric = validation_metric_from_workspace_delta_manifest(
         workspace_delta,
         workspace_delta_manifest_path,
-        job_guidance_metric_signal.get("expected_primary_metric"),
+        expected_artifact_metric,
     )
     existing_skill = str(record_skill(existing_agent_record) or "") if isinstance(existing_agent_record, dict) else ""
     existing_case = str(record_case(existing_agent_record) or "") if isinstance(existing_agent_record, dict) else ""
