@@ -234,7 +234,7 @@
       "job_scale": null,
       "job_slug": null,
       "mode": "with_skills",
-      "observed_skill_name": null,
+      "observed_skill_name": "nvflare-convert-pytorch",
       "phase_seconds": null,
       "prompt_hash": null,
       "quality_gate": {

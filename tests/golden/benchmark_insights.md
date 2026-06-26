@@ -13,10 +13,10 @@ Result root: `<RESULT_ROOT>`
 
 ### Run Context
 
-| Run | Job | Framework | Agent/model | FL algorithm/workflow | Captured generated artifacts |
-|---|---|---|---|---|---|
-| No skills baseline | ames | NA | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
-| With skills | ames | NA | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| Run | Job | Framework | Skills used (tool calls) | Agent/model | FL algorithm/workflow | Captured generated artifacts |
+|---|---|---|---|---|---|---|
+| No skills baseline | ames | NA | none | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| With skills | ames | NA | nvflare-convert-pytorch | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
 
 ## FL Algorithm / Workflow
 

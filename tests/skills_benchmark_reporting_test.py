@@ -168,6 +168,23 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
         }
         if mode == WITH_SKILLS_MODE:
             run_summary["observed_skill_name"] = "nvflare-convert-pytorch"
+            (record_dir / "agent_events.jsonl").write_text(
+                json.dumps(
+                    {
+                        "message": {
+                            "content": [
+                                {
+                                    "input": {"skill": "nvflare-convert-pytorch"},
+                                    "name": "Skill",
+                                    "type": "tool_use",
+                                }
+                            ]
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         write_json(
             record_dir / "run_summary.json",
             run_summary,
@@ -191,9 +208,13 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     assert runs[WITH_SKILLS_MODE]["record"]["reported_validation_metric"]["name"] == "AUROC"
     insights = benchmark_report(tmp_path, runs)
     assert "### Benchmark Target" in insights
-    assert "| ames-lightning | Lightning target; PyTorch skill | pair codex ames-lightning | /tmp/jobs/ames-lightning |" in insights
-    assert "| No skills baseline | ames-lightning | Lightning target | agent=codex, model=default |" in insights
-    assert "| With skills | ames-lightning | Lightning target; PyTorch skill | agent=codex, model=default |" in insights
+    assert "| ames-lightning | Lightning target | pair codex ames-lightning | /tmp/jobs/ames-lightning |" in insights
+    assert "| Run | Job | Framework | Skills used (tool calls) | Agent/model | Algorithm/workflow |" in insights
+    assert "| No skills baseline | ames-lightning | Lightning target | none | agent=codex, model=default |" in insights
+    assert (
+        "| With skills | ames-lightning | Lightning target | nvflare-convert-pytorch | agent=codex, model=default |"
+        in insights
+    )
     assert "## Run Identity" in insights
     assert "| No skills baseline | codex | default | scenario | without_skills |" in insights
     assert "## Cost And Work Comparison" in insights

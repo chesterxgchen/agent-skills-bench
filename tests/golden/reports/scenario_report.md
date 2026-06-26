@@ -11,10 +11,10 @@ This report was regenerated from captured artifacts; no agent or Docker run was 
 
 ## Run Identity
 
-| Run ID | Label | Agent | Model | Model source | Mode |
-|---|---|---|---|---|---|
-| run_00001 | without_skills | codex | default | NA | without_skills |
-| run_00002 | with_skills | codex | default | NA | with_skills |
+| Run ID | Label | Agent | Model | Model source | Mode | Skills used (tool calls) |
+|---|---|---|---|---|---|---|
+| run_00001 | without_skills | codex | default | NA | without_skills | none |
+| run_00002 | with_skills | codex | default | NA | with_skills | nvflare-convert-pytorch |
 
 ## Aggregate Results
 

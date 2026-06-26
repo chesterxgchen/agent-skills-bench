@@ -72,6 +72,7 @@ from ._events import (  # noqa: F401
 from ._loader import sanitized_validation_metric  # noqa: F401
 from ._loader import collect_benchmark_runs
 from ._runs import combined_text, manifest_paths, run_record, run_workspace_delta, unique_paths  # noqa: F401
+from ._skill_usage import skill_usage_display
 from ._text import (  # noqa: F401
     _command_count_display,
     _is_file_inspection_segment,
@@ -185,42 +186,47 @@ def _run_job_name(run: RunEvidence) -> str:
 
 def _run_framework_display(run: RunEvidence) -> str:
     raw = run.raw if isinstance(run.raw, dict) else {}
-    summary = run.summary if isinstance(run.summary, dict) else {}
-    record = run.record if isinstance(run.record, dict) else {}
     target_framework = _infer_framework_from_text(
         str(raw.get("framework") or ""),
         str(raw.get("job_name") or ""),
         str(raw.get("job_slug") or ""),
         str(raw.get("job_path") or ""),
     )
-    skill_framework = _infer_framework_from_text(
-        str(summary.get("observed_skill_name") or ""),
-        str(summary.get("skill_name") or ""),
-        str(summary.get("skill") or ""),
-        str(record.get("observed_skill_name") or ""),
-        str(record.get("skill_name") or ""),
-        str(record.get("skill") or ""),
-    )
-    parts = []
-    if target_framework:
-        parts.append(f"{target_framework} target")
-    if skill_framework and skill_framework != target_framework:
-        parts.append(f"{skill_framework} skill")
-    if not parts and skill_framework:
-        parts.append(skill_framework)
-    return "; ".join(parts)
+    return f"{target_framework} target" if target_framework else ""
 
 
-def _run_skill_framework(run: RunEvidence) -> str:
+def _skill_name_from_mapping(mapping: dict[str, Any]) -> str:
+    for key in ("observed_skill_name", "skill_name", "skill"):
+        value = mapping.get(key)
+        if value:
+            return str(value).strip()
+    for nested_key, nested_value_key in (
+        ("skill_discovery", "selected_skill"),
+        ("event_identity_inference", "skill"),
+    ):
+        nested = mapping.get(nested_key)
+        if isinstance(nested, dict):
+            value = nested.get(nested_value_key)
+            if value:
+                return str(value).strip()
+    return ""
+
+
+def _run_skill_display(run: RunEvidence) -> str:
     summary = run.summary if isinstance(run.summary, dict) else {}
     record = run.record if isinstance(run.record, dict) else {}
-    return _infer_framework_from_text(
-        str(summary.get("observed_skill_name") or ""),
-        str(summary.get("skill_name") or ""),
-        str(summary.get("skill") or ""),
-        str(record.get("observed_skill_name") or ""),
-        str(record.get("skill_name") or ""),
-        str(record.get("skill") or ""),
+    raw = run.raw if isinstance(run.raw, dict) else {}
+    observed_skill_name = ""
+    for source in (summary, record, raw):
+        skill_name = _skill_name_from_mapping(source)
+        if skill_name:
+            observed_skill_name = skill_name
+            break
+    skills_enabled = any(bool(source.get("skills_enabled")) for source in (summary, record, raw))
+    return skill_usage_display(
+        events_text=str(raw.get("agent_events_text") or ""),
+        observed_skill_name=observed_skill_name,
+        skills_enabled=skills_enabled or raw.get("skills") == "with skills",
     )
 
 
@@ -234,14 +240,7 @@ def _benchmark_target_section(runs: dict[str, RunEvidence]) -> list[str]:
         _first_run_value(runs, "job_slug"),
         job_path,
     )
-    framework_values = [f"{target_framework} target"] if target_framework else []
-    for run in runs.values():
-        skill_framework = _run_skill_framework(run)
-        if skill_framework and skill_framework != target_framework:
-            value = f"{skill_framework} skill"
-            if value not in framework_values:
-                framework_values.append(value)
-    framework = "; ".join(framework_values)
+    framework = f"{target_framework} target" if target_framework else ""
     if not any((job_name, job_path, framework)):
         return []
     return [
@@ -347,8 +346,8 @@ def _executive_summary_section(
     context_lines = [
         "### Run Context",
         "",
-        f"| Run | Job | Framework | Agent/model | {markdown_cell(algorithm_label)} | Captured generated artifacts |",
-        "|---|---|---|---|---|---|",
+        f"| Run | Job | Framework | Skills used (tool calls) | Agent/model | {markdown_cell(algorithm_label)} | Captured generated artifacts |",
+        "|---|---|---|---|---|---|---|",
     ]
     for mode in modes:
         run = runs[mode]
@@ -375,6 +374,7 @@ def _executive_summary_section(
             f"| {markdown_cell(run.label or mode)} | "
             f"{markdown_cell(_run_job_name(run) or 'NA')} | "
             f"{markdown_cell(_run_framework_display(run) or 'NA')} | "
+            f"{markdown_cell(_run_skill_display(run))} | "
             f"{markdown_cell(agent_model)} | "
             f"{markdown_cell(fl_algorithm_display(run, ctx.algorithm(mode)))} | "
             f"{markdown_cell(artifact_summary(run))} |"

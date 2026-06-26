@@ -171,12 +171,17 @@
         "final_container_exit_code": 0,
         "mode": "with_skills",
         "model_source": "scenario",
+        "observed_skill_name": "nvflare-convert-pytorch",
         "reported_validation_metric": {
           "name": "AUROC",
           "summary_value_label": "aggregated best validation metric",
           "value": 0.7689,
           "value_scope": "fl_summary_metric"
         },
+        "skill_discovery": {
+          "selected_skill": "nvflare-convert-pytorch"
+        },
+        "skill_name": "nvflare-convert-pytorch",
         "validation_metric_policy": {
           "expected_primary_metric": "AUROC"
         },
@@ -233,6 +238,11 @@
         "final_container_exit_code": 0,
         "mode": "with_skills",
         "model_source": "scenario",
+        "observed_skill_name": "nvflare-convert-pytorch",
+        "skill_discovery": {
+          "selected_skill": "nvflare-convert-pytorch"
+        },
+        "skill_name": "nvflare-convert-pytorch",
         "token_count": 15000
       },
       "usage": {

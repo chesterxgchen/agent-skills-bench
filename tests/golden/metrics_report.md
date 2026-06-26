@@ -6,10 +6,10 @@ Status: No skills baseline: passed; With skills: passed
 
 ## Runs
 
-| Run | Agent | Model | Status | Skills | Elapsed seconds | Tokens | Commands | Root cause |
+| Run | Agent | Model | Status | Skills used (tool calls) | Elapsed seconds | Tokens | Commands | Root cause |
 |---|---|---|---|---|---:|---:|---:|---|
-| No skills baseline | codex | default | passed | no | 180 | 12000 | 4 | NA |
-| With skills | codex | default | passed | yes | 240 | 15000 | 5 | NA |
+| No skills baseline | codex | default | passed | none | 180 | 12000 | 4 | NA |
+| With skills | codex | default | passed | nvflare-convert-pytorch | 240 | 15000 | 5 | NA |
 
 ## Metrics
 

@@ -68,6 +68,7 @@ _MODE_INPUTS = {
     WITH_SKILLS_MODE: {
         "label": "With skills",
         "skills_enabled": True,
+        "skill_name": "nvflare-convert-pytorch",
         "elapsed_seconds": 240,
         "token_count": 15000,
         "command_count": 5,
@@ -135,6 +136,27 @@ def _command_event_lines(command: str, description: str, start: str, end: str, o
 
 def _agent_events_text(mode: str) -> str:
     lines: list[str] = []
+    skill_name = str(_MODE_INPUTS[mode].get("skill_name") or "")
+    if skill_name:
+        lines.append(
+            json.dumps(
+                {
+                    "event_type": "assistant",
+                    "harness_timestamp": "2026-06-13T19:59:59Z",
+                    "message": {
+                        "content": [
+                            {
+                                "input": {"skill": skill_name},
+                                "name": "Skill",
+                                "type": "tool_use",
+                            }
+                        ]
+                    },
+                    "tool_kind": "Skill",
+                    "type": "assistant",
+                }
+            )
+        )
     for index, (command, description, start, end, output) in enumerate(_MODE_INPUTS[mode]["commands"], start=1):
         lines.extend(_command_event_lines(command, description, start, end, output, f"{mode}-cmd-{index}"))
     return "\n".join(lines) + "\n"
@@ -176,20 +198,27 @@ def _job_source() -> str:
 
 def _populate_mode_dir(mode_dir: Path, mode: str) -> None:
     inputs = _MODE_INPUTS[mode]
+    skill_name = str(inputs.get("skill_name") or "")
 
-    _write_json(
-        mode_dir / "run_summary.json",
-        {
-            "mode": mode,
-            "agent": AGENT,
-            "agent_model": AGENT_MODEL,
-            "model_source": "scenario",
-            "elapsed_seconds": inputs["elapsed_seconds"],
-            "token_count": inputs["token_count"],
-            "agent_exit_code": 0,
-            "final_container_exit_code": 0,
-        },
-    )
+    run_summary = {
+        "mode": mode,
+        "agent": AGENT,
+        "agent_model": AGENT_MODEL,
+        "model_source": "scenario",
+        "elapsed_seconds": inputs["elapsed_seconds"],
+        "token_count": inputs["token_count"],
+        "agent_exit_code": 0,
+        "final_container_exit_code": 0,
+    }
+    if skill_name:
+        run_summary.update(
+            {
+                "observed_skill_name": skill_name,
+                "skill_discovery": {"selected_skill": skill_name},
+                "skill_name": skill_name,
+            }
+        )
+    _write_json(mode_dir / "run_summary.json", run_summary)
     _write_json(mode_dir / "container_exit_code.json", {"exit_code": 0})
     # Fixed usage/activity. The runner replay path overwrites these from
     # agent_events.jsonl using the real adapter parsers; both produce stable
@@ -258,24 +287,30 @@ def _populate_mode_dir(mode_dir: Path, mode: str) -> None:
     )
     (mode_dir / "agent_stderr.txt").write_text("", encoding="utf-8")
 
-    _write_json(
-        mode_dir / "benchmark_record.json",
-        {
-            "mode": mode,
-            "agent": AGENT,
-            "agent_model": AGENT_MODEL,
-            "model_source": "scenario",
-            "final_container_exit_code": 0,
-            "reported_validation_metric": {
-                "name": "AUROC",
-                "value": inputs["metric_value"],
-                "value_scope": "fl_summary_metric",
-                "summary_value_label": "aggregated best validation metric",
-            },
-            "validation_metric_policy": {"expected_primary_metric": "AUROC"},
-            "workspace_delta": workspace_delta,
+    benchmark_record = {
+        "mode": mode,
+        "agent": AGENT,
+        "agent_model": AGENT_MODEL,
+        "model_source": "scenario",
+        "final_container_exit_code": 0,
+        "reported_validation_metric": {
+            "name": "AUROC",
+            "value": inputs["metric_value"],
+            "value_scope": "fl_summary_metric",
+            "summary_value_label": "aggregated best validation metric",
         },
-    )
+        "validation_metric_policy": {"expected_primary_metric": "AUROC"},
+        "workspace_delta": workspace_delta,
+    }
+    if skill_name:
+        benchmark_record.update(
+            {
+                "observed_skill_name": skill_name,
+                "skill_discovery": {"selected_skill": skill_name},
+                "skill_name": skill_name,
+            }
+        )
+    _write_json(mode_dir / "benchmark_record.json", benchmark_record)
 
 
 def build_result_root(root: Path) -> Path:
