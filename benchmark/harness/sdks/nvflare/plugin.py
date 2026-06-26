@@ -193,8 +193,8 @@ class NvflareReportPlugin(ReportPlugin):
 
     def sections(self, cmp: ComparisonEvidence, plugin: Mapping[str, PluginEvidence]) -> list[ReportSection]:
         # The FL Algorithm/Workflow section, built from this plugin's own AlgorithmSignal
-        # (+ neutral formatting leaves) and merged after the generic Job Run Status block
-        # (E1b §6). The engine no longer renders this section.
+        # (+ neutral formatting leaves) and merged after the generic Executive Summary
+        # block (E1b §6). The engine no longer renders this section.
         rows = [
             "| Run | Algorithm/workflow | Recipe | Rounds | Evidence |",
             "|---|---|---|---:|---|",
@@ -215,7 +215,7 @@ class NvflareReportPlugin(ReportPlugin):
                 id="fl_algorithm",
                 title=self._ALGORITHM_SECTION_TITLE,
                 body=body,
-                anchor="job_run_status",
+                anchor="exec_summary",
                 placement="after",
             )
         ]

@@ -73,7 +73,6 @@ from ._plugin_view import (
 from ._spans import _dependency_install_retry_reason, _dependency_install_spans
 from ._structure import (
     artifact_summary,
-    source_input_protection_display,
     structure_optional_display,
     structure_required_display,
     workspace_change_display,
@@ -277,7 +276,6 @@ def outcome_details_table(runs: dict[str, RunEvidence], modes: list[str], ctx: R
             "Additional/other validation metric values",
             lambda run, ev: additional_or_observed_metric_values_display(run, comparable_name, ev, ctx),
         ),
-        ("Source input protection", lambda run, ev: source_input_protection_display(run)),
         ("Copied workspace changes", lambda run, ev: workspace_change_display(run)),
         ("Captured generated artifacts", lambda run, ev: artifact_summary(run)),
         (

@@ -86,7 +86,7 @@ from .evidence import RunEvidence
 from .insights._charts import *  # noqa: F401,F403
 from .insights._charts import embedded_bar_chart, interpretation_section, outcome_metrics_table
 from .insights._code_quality import *  # noqa: F401,F403
-from .insights._code_quality import generated_code_quality_section
+from .insights._code_quality import fl_algorithm_display, generated_code_quality_section
 from .insights._diagnostics import *  # noqa: F401,F403
 from .insights._metrics import *  # noqa: F401,F403
 from .insights._metrics import benchmark_outcome, run_quality_issues, run_result_metric_status, status_summary
@@ -184,6 +184,46 @@ def _compose_report(generic_blocks: list[tuple[str, list[str]]], plugin_sections
     return lines
 
 
+def _executive_summary_section(
+    runs: dict[str, RunEvidence],
+    modes: list[str],
+    ctx: ReportContext,
+) -> str:
+    algorithm_label = _section_copy(ctx, "exec_summary.algorithm_workflow_label", "Algorithm/workflow")
+    status_lines = [
+        "### Run Status",
+        "",
+        "| Run | Overall status | Job run status | Result quality gate | Result metric |",
+        "|---|---|---|---|---|",
+    ]
+    context_lines = [
+        "### Run Context",
+        "",
+        f"| Run | Agent/model | {markdown_cell(algorithm_label)} | Captured generated artifacts |",
+        "|---|---|---|---|",
+    ]
+    for mode in modes:
+        run = runs[mode]
+        ev = ctx.evidence.get(mode)
+        job_exec = ctx.job_execution(mode)
+        agent_model = f"agent={run.agent or 'NA'}, model={run.agent_model or 'NA'}"
+        job_status = job_exec.status
+        if job_exec.status_reason:
+            job_status = f"{job_status}: {job_exec.status_reason}"
+        status_lines.append(
+            f"| {markdown_cell(run.label or mode)} | {markdown_cell(human_readable_status(run, ev))} | "
+            f"{markdown_cell(job_status)} | {markdown_cell(benchmark_outcome(run, ev))} | "
+            f"{markdown_cell(run_result_metric_status(run, ev))} |"
+        )
+        context_lines.append(
+            f"| {markdown_cell(run.label or mode)} | "
+            f"{markdown_cell(agent_model)} | "
+            f"{markdown_cell(fl_algorithm_display(run, ctx.algorithm(mode)))} | "
+            f"{markdown_cell(artifact_summary(run))} |"
+        )
+    return "\n".join(["## Executive Summary", "", *status_lines, "", *context_lines])
+
+
 def benchmark_report(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) -> str:
     # Resolve the SDK report plugin once by captured identity (§4.2): absent id ->
     # null plugin (Inversion 3). Imported lazily to avoid a module-load import cycle
@@ -210,18 +250,6 @@ def benchmark_report(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) 
     ctx = _report_context(runs, modes, plugin)
     missing_metrics = missing_result_metrics_section(runs, modes, ctx)
     cost_comparison = cost_comparison_section(runs, modes)
-    quality_gate_summary = "; ".join(
-        f"{runs[mode].label or mode}: {benchmark_outcome(runs[mode], ctx.evidence.get(mode))}" for mode in modes
-    )
-    missing_metric_summary = "; ".join(
-        f"{runs[mode].label or mode}: {run_result_metric_status(runs[mode], ctx.evidence.get(mode))}"
-        for mode in modes
-        if run_quality_issues(runs[mode], ctx.evidence.get(mode))
-    )
-    input_protection_summary = "; ".join(
-        f"{runs[mode].label or mode}: {source_input_protection_display(runs[mode])}" for mode in modes
-    )
-    artifact_summary_text = "; ".join(f"{runs[mode].label or mode}: {artifact_summary(runs[mode])}" for mode in modes)
     # Named generic section blocks (E1b §6). Each block owns its exact slice INCLUDING its
     # trailing "" so the composer is pure concatenation (byte-identical). The one resolved
     # ``ctx`` is threaded into every builder here -- no builder re-resolves a context.
@@ -233,30 +261,12 @@ def benchmark_report(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) 
                 "",
                 f"Result root: `{root}`",
                 "",
-                "## Executive Summary",
-                "",
-                "| Signal | Value |",
-                "|---|---|",
-                f"| Status | {markdown_cell(status_summary(runs, modes, ctx))} |",
-                f"| Agent/model | {markdown_cell(run_identity_summary(runs, modes))} |",
-                f"| Job execution | {markdown_cell(job_execution_summary(runs, modes, ctx))} |",
-                f"| {_section_copy(ctx, 'exec_summary.algorithm_workflow_label', 'algorithm/workflow')} | {markdown_cell(fl_algorithm_summary(runs, modes, ctx))} |",
-                f"| {_result_term(ctx)}result quality gate | {markdown_cell(quality_gate_summary)} |",
-                f"| Missing/partial result metrics | {markdown_cell(missing_metric_summary or 'none')} |",
-                f"| Source input protection | {markdown_cell(input_protection_summary)} |",
-                f"| Captured generated artifacts | {markdown_cell(artifact_summary_text)} |",
+                _executive_summary_section(runs, modes, ctx),
                 "",
             ],
         ),
-        ("status", ["## Status", "", status_table(runs, modes, ctx), ""]),
         ("run_identity", ["## Run Identity", "", run_identity_table(runs, modes), ""]),
-        ("job_run_status", [job_run_status_section(runs, modes, ctx), ""]),
-        # The algorithm/workflow section is plugin-contributed (E1b): NVFLARE's
-        # sections() inserts it after "job_run_status"; a flat/null SDK contributes none.
-        ("failure_analysis", ["## Failure Analysis", "", failure_analysis_section(runs, modes, ctx), ""]),
     ]
-    if missing_metrics:
-        generic_blocks.append(("missing_metrics", [missing_metrics, ""]))
     generic_blocks.extend(
         [
             (
@@ -271,6 +281,13 @@ def benchmark_report(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) 
                 ],
             ),
             ("quality_signals", ["## Quality Signals", "", quality_signal_table(runs, modes, ctx), ""]),
+        ]
+    )
+    if missing_metrics:
+        generic_blocks.append(("missing_metrics", [missing_metrics, ""]))
+    generic_blocks.extend(
+        [
+            ("failure_analysis", ["## Failure Analysis", "", failure_analysis_section(runs, modes, ctx), ""]),
             ("output_changes", ["## Output Changes", "", output_changes_table(runs, modes), ""]),
             ("outcome_details", ["## Outcome Details", "", outcome_details_table(runs, modes, ctx), ""]),
             (

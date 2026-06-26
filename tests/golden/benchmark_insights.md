@@ -4,39 +4,19 @@ Result root: `<RESULT_ROOT>`
 
 ## Executive Summary
 
-| Signal | Value |
-|---|---|
-| Status | No skills baseline: passed; With skills: passed |
-| Agent/model | No skills baseline: agent=codex, model=default; With skills: agent=codex, model=default |
-| Job execution | No skills baseline: completed (simulation completed — FL workflow reached Finished state); With skills: completed (simulation completed — FL workflow reached Finished state) |
-| FL algorithm/workflow | No skills baseline: FedAvg (3 rounds); With skills: FedAvg (3 rounds) |
-| FL result quality gate | No skills baseline: pass: scalar FL result metric available; With skills: pass: scalar FL result metric available |
-| Missing/partial result metrics | none |
-| Source input protection | No skills baseline: not captured; With skills: not captured |
-| Captured generated artifacts | No skills baseline: 3 changed/generated files, 1 runtime artifacts; With skills: 3 changed/generated files, 1 runtime artifacts |
+### Run Status
 
-## Status
-
-| Run | Status | Analysis |
-|---|---|---|
-| No skills baseline | passed | No failure detected. |
-| With skills | passed | No failure detected. |
-
-## Run Identity
-
-| Run | Agent | Model | Model source | Mode |
+| Run | Overall status | Job run status | Result quality gate | Result metric |
 |---|---|---|---|---|
-| No skills baseline | codex | default | scenario | without_skills |
-| With skills | codex | default | scenario | with_skills |
+| No skills baseline | passed | completed: simulation completed — FL workflow reached Finished state | pass: scalar FL result metric available | AUROC 0.7421 (aggregated best validation metric) |
+| With skills | passed | completed: simulation completed — FL workflow reached Finished state | pass: scalar FL result metric available | AUROC 0.7689 (aggregated best validation metric) |
 
-## Job Run Status
+### Run Context
 
-This section tracks whether the generated NVFLARE job or simulator actually ran. Agent/container exit code 0 only means the agent process finished; it does not prove the generated job executed.
-
-| Run | Job run status | Evidence | Action |
+| Run | Agent/model | FL algorithm/workflow | Captured generated artifacts |
 |---|---|---|---|
-| No skills baseline | completed | simulation completed — FL workflow reached Finished state | Use job logs and reported metrics for quality comparison. |
-| With skills | completed | simulation completed — FL workflow reached Finished state | Use job logs and reported metrics for quality comparison. |
+| No skills baseline | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| With skills | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
 
 ## FL Algorithm / Workflow
 
@@ -47,19 +27,12 @@ This section reports the FL workflow captured in generated/runtime NVFLARE serve
 | No skills baseline | FedAvg | fedavg-pt | 3 | config_fed_server.json: nvflare.app_common.workflows.fedavg.FedAvg; recipe fedavg-pt |
 | With skills | FedAvg | fedavg-pt | 3 | config_fed_server.json: nvflare.app_common.workflows.fedavg.FedAvg; recipe fedavg-pt |
 
-## Failure Analysis
+## Run Identity
 
-### No skills baseline
-
-- Job run status: completed — simulation completed — FL workflow reached Finished state
-- Outcome: passed. AUROC 0.7421 (aggregated best validation metric).
-- Dependency reference: `requirements.txt` provenance: not found in captured input or workspace manifests.
-
-### With skills
-
-- Job run status: completed — simulation completed — FL workflow reached Finished state
-- Outcome: passed. AUROC 0.7689 (aggregated best validation metric).
-- Dependency reference: `requirements-train.txt` provenance: not found in captured input or workspace manifests.
+| Run | Agent | Model | Model source | Mode |
+|---|---|---|---|---|
+| No skills baseline | codex | default | scenario | without_skills |
+| With skills | codex | default | scenario | with_skills |
 
 ## Metrics
 
@@ -156,6 +129,20 @@ This section reports the FL workflow captured in generated/runtime NVFLARE serve
 | No skills baseline | AUROC | AUROC 0.7421 (aggregated best validation metric) | NA | NA |
 | With skills | AUROC | AUROC 0.7689 (aggregated best validation metric) | NA | NA |
 
+## Failure Analysis
+
+### No skills baseline
+
+- Job run status: completed — simulation completed — FL workflow reached Finished state
+- Outcome: passed. AUROC 0.7421 (aggregated best validation metric).
+- Dependency reference: `requirements.txt` provenance: not found in captured input or workspace manifests.
+
+### With skills
+
+- Job run status: completed — simulation completed — FL workflow reached Finished state
+- Outcome: passed. AUROC 0.7689 (aggregated best validation metric).
+- Dependency reference: `requirements-train.txt` provenance: not found in captured input or workspace manifests.
+
 ## Output Changes
 
 | Run | Changed files | Added | Modified | Notable files |
@@ -171,7 +158,6 @@ This section reports the FL workflow captured in generated/runtime NVFLARE serve
 | FL result quality gate | pass: scalar FL result metric available | pass: scalar FL result metric available |
 | Reported validation metric | AUROC 0.7421 | AUROC 0.7689 |
 | Additional/other validation metric values | AUROC 0.7421 | AUROC 0.7689 |
-| Source input protection | not captured | not captured |
 | Copied workspace changes | 3 changed | 3 changed |
 | Captured generated artifacts | 3 changed/generated files, 1 runtime artifacts | 3 changed/generated files, 1 runtime artifacts |
 | Required structure files | 0/3 present; missing client.py, model.py, job.py; nested copies ignored for current-structure score: nvflare_jobs/ames_fedavg | 0/3 present; missing client.py, model.py, job.py; nested copies ignored for current-structure score: nvflare_jobs/ames_fedavg |
@@ -215,24 +201,6 @@ Final workspace:
                         `-- config_fed_server.json
 ```
 
-Changed/generated files:
-
-```text
-.
-|-- nvflare_jobs
-|   `-- ames_fedavg
-|       |-- client.py
-|       |-- job.py
-|       `-- model.py
-`-- runtime_workspaces
-    `-- job
-        `-- server
-            `-- simulate_job
-                `-- app_server
-                    `-- config
-                        `-- config_fed_server.json
-```
-
 #### With skills
 
 Final workspace:
@@ -240,24 +208,6 @@ Final workspace:
 ```text
 .
 |-- download_data.py
-|-- nvflare_jobs
-|   `-- ames_fedavg
-|       |-- client.py
-|       |-- job.py
-|       `-- model.py
-`-- runtime_workspaces
-    `-- job
-        `-- server
-            `-- simulate_job
-                `-- app_server
-                    `-- config
-                        `-- config_fed_server.json
-```
-
-Changed/generated files:
-
-```text
-.
 |-- nvflare_jobs
 |   `-- ames_fedavg
 |       |-- client.py

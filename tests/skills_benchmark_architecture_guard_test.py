@@ -120,7 +120,7 @@ class ToyReportPlugin(ReportPlugin):
     def sections(self, cmp, plugin):
         # The toy SDK contributes its own algorithm/workflow section (neutral vocabulary),
         # mirroring how NVFLARE contributes the FL one (E1b): no engine-owned algorithm
-        # section, each SDK owns its own. Anchored after the generic Job Run Status block.
+        # section, each SDK owns its own. Anchored after the generic Executive Summary block.
         rows = ["| Run | Algorithm/workflow | Recipe | Rounds | Evidence |", "|---|---|---|---:|---|"]
         for mode in cmp.modes:
             run = cmp.runs[mode]
@@ -145,7 +145,7 @@ class ToyReportPlugin(ReportPlugin):
                 id="algorithm",
                 title="## Algorithm / Workflow",
                 body=body,
-                anchor="job_run_status",
+                anchor="exec_summary",
                 placement="after",
             )
         ]
@@ -207,7 +207,7 @@ def test_non_fl_report_has_no_fl_vocabulary(tmp_path, monkeypatch):
     report = _render_under_toy_plugin(tmp_path, monkeypatch)
 
     # Non-vacuous: the always-on sections actually rendered under the toy plugin.
-    for section in ("## Executive Summary", "## Status", "## Job Run Status", "Algorithm / Workflow", "ToyRoutine"):
+    for section in ("## Executive Summary", "### Run Status", "Algorithm / Workflow", "ToyRoutine"):
         assert section in report, f"expected section missing (vacuous render?): {section!r}"
 
     leaks = [term for term in _FL_VOCABULARY if re.search(term, report.lower())]
@@ -672,15 +672,15 @@ def test_compose_inserts_plugin_section_at_its_anchor():
 
     from benchmark.harness.reports.benchmark_insights import _compose_report
 
-    blocks = [("job_run_status", ["## Job Run Status", ""]), ("failure_analysis", ["## Failure Analysis", ""])]
-    after = ReportSection(id="x", title="## X", body="bx", anchor="job_run_status", placement="after")
+    blocks = [("exec_summary", ["## Executive Summary", ""]), ("failure_analysis", ["## Failure Analysis", ""])]
+    after = ReportSection(id="x", title="## X", body="bx", anchor="exec_summary", placement="after")
     out = "\n".join(_compose_report(blocks, [after]))
-    assert out.index("## Job Run Status") < out.index("## X") < out.index("## Failure Analysis")
+    assert out.index("## Executive Summary") < out.index("## X") < out.index("## Failure Analysis")
     before = ReportSection(id="y", title="## Y", body="by", anchor="failure_analysis", placement="before")
     out2 = "\n".join(_compose_report(blocks, [before]))
-    assert out2.index("## Job Run Status") < out2.index("## Y") < out2.index("## Failure Analysis")
+    assert out2.index("## Executive Summary") < out2.index("## Y") < out2.index("## Failure Analysis")
     # Generic blocks are never dropped/replaced.
-    assert "## Job Run Status" in out2 and "## Failure Analysis" in out2
+    assert "## Executive Summary" in out2 and "## Failure Analysis" in out2
 
 
 def test_compose_orders_multiple_sections_at_one_anchor_deterministically():

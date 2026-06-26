@@ -118,7 +118,7 @@ class ReportSection:
     ``title`` + blank line + ``body``, inserted relative to the named ``anchor`` block.
 
     - ``id``: stable identity (tests/diagnostics/dedup/future migration), not the title.
-    - ``anchor``: a named generic block id (e.g. ``"job_run_status"``), or ``"end"`` for a
+    - ``anchor``: a named generic block id (e.g. ``"exec_summary"``), or ``"end"`` for a
       section with no adjacent generic slot. An unknown anchor is appended at the end.
     - ``placement``: ``"after"`` | ``"before"`` the anchored block.
     - ``order``: tie-break when several sections share an anchor/placement.

@@ -302,16 +302,9 @@ def structure_trees_section(runs: dict[str, RunEvidence], modes: list[str]) -> s
             ("final_structure_files", "runtime_artifacts"),
             suffixes=TREE_RUNTIME_SUFFIXES,
         )
-        changed_paths = tree_paths_for_keys(run, ("changed_files", "runtime_artifacts"))
         lines.append("Final workspace:")
         lines.append("")
         lines.append("```text")
         lines.append(tree_from_paths(final_paths))
-        lines.append("```")
-        lines.append("")
-        lines.append("Changed/generated files:")
-        lines.append("")
-        lines.append("```text")
-        lines.append(tree_from_paths(changed_paths))
         lines.append("```")
     return "\n".join(lines)

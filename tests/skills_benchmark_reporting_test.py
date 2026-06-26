@@ -274,15 +274,15 @@ def test_fl_algorithm_section_reads_captured_server_workflow_config(tmp_path):
         fl_algorithm_summary(_evruns(runs), [WITH_SKILLS_MODE], _nv_ctx(runs, [WITH_SKILLS_MODE]))
         == "With skills: SCAFFOLD (3 rounds)"
     )
-    # The FL Algorithm/Workflow section is now plugin-contributed (E1b): NVFLARE builds it
-    # from its own AlgorithmSignal, anchored after the generic Job Run Status block.
+    # The FL Algorithm/Workflow section is plugin-contributed (E1b): NVFLARE builds it
+    # from its own AlgorithmSignal, anchored after the generic Executive Summary block.
     ctx = _nv_ctx(runs, [WITH_SKILLS_MODE])
     cmp = ComparisonEvidence(
         schema_version=SCHEMA_VERSION, runs=_evruns(runs), modes=[WITH_SKILLS_MODE], sdk_metadata={}
     )
     fl_sections = NvflareReportPlugin().sections(cmp, ctx.evidence)
     assert len(fl_sections) == 1
-    assert fl_sections[0].anchor == "job_run_status" and fl_sections[0].placement == "after"
+    assert fl_sections[0].anchor == "exec_summary" and fl_sections[0].placement == "after"
     section = f"{fl_sections[0].title}\n\n{fl_sections[0].body}"
     assert "## FL Algorithm / Workflow" in section
     assert "| With skills | SCAFFOLD | scaffold-pt | 3 |" in section
@@ -1052,13 +1052,13 @@ def test_structure_tree_falls_back_to_final_workspace_when_changed_python_is_emp
     )
 
     assert "Final workspace:" in report
-    assert "Changed/generated files:" in report
+    assert "Changed/generated files:" not in report
     assert "none" not in report
     assert "nvflare_jobs" in report
     assert "client.py" in report
     assert "job.py" in report
-    assert "README.md" in report
-    assert "requirements.txt" in report
+    assert "README.md" not in report
+    assert "requirements.txt" not in report
 
 
 def test_structure_score_does_not_count_nested_job_source_as_current_structure():
@@ -2124,9 +2124,9 @@ def test_job_run_status_section_reports_bash_blocked_not_started(tmp_path):
         encoding="utf-8",
     )
     report = benchmark_report(tmp_path, runs)
-    assert "## Job Run Status" in report
-    assert "| Job execution | No skills baseline: unknown" in report
-    assert "With skills: not_started (Bash blocked 1 time(s)" in report
+    assert "## Job Run Status" not in report
+    assert "| No skills baseline | missing | unknown: run artifacts not available | fail: run artifacts missing | missing |" in report
+    assert "not_started: Bash blocked 1 time(s)" in report
     assert "| With skills | not_started | Bash blocked 1 time(s)" in section
     assert "Fix agent Bash/tool permissions and rerun" in section
     diagnostic = bash_blocked_diagnostic(_ev(run))
