@@ -367,7 +367,7 @@ def job_output_has_failure_status(output: str) -> bool:
 
 def job_output_succeeded(output: str) -> bool:
     text = strip_ansi(output)
-    if job_output_has_failure_status(text):
+    if job_output_has_failure_status(text) or job_output_has_failure_marker(text):
         return False
     return bool(
         re.search(
@@ -381,6 +381,10 @@ def job_output_succeeded(output: str) -> bool:
             flags=re.IGNORECASE,
         )
     )
+
+
+def job_output_has_failure_marker(output: str) -> bool:
+    return bool(re.search(r"\bConfigError\s*:|\bAbort signal triggered\b", strip_ansi(output), flags=re.IGNORECASE))
 
 
 def missing_python_module_name(output: str) -> str:

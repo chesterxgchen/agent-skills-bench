@@ -135,7 +135,7 @@ class ToyReportPlugin(ReportPlugin):
         body = "\n".join(
             [
                 "This section reports the algorithm/workflow captured from the SDK's generated "
-                "configuration; agent final-message text is used only as a fallback.",
+                "configuration; agent planning or final-message text is not counted as runtime workflow evidence.",
                 "",
                 *rows,
             ]

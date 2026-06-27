@@ -33,7 +33,7 @@ Result root: `<RESULT_ROOT>`
 
 ## FL Algorithm / Workflow
 
-This section reports the FL workflow captured in generated/runtime NVFLARE server config. It is derived from artifacts such as `config_fed_server.json`; agent final-message text is used only as a fallback.
+This section reports the FL workflow captured in generated/runtime NVFLARE server config. It is derived from artifacts such as `config_fed_server.json`; agent planning or final-message text is not counted as runtime workflow evidence.
 
 | Run | Algorithm/workflow | Recipe | Rounds | Evidence |
 |---|---|---|---:|---|

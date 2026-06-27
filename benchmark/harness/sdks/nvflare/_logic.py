@@ -63,6 +63,7 @@ from ...reports._events import (
     fmt_seconds_with_unit,
     inline_code_text,
     is_dependency_install_command,
+    job_output_has_failure_marker,
     job_output_succeeded,
     missing_python_module_name,
     parse_event_timestamp,
@@ -594,15 +595,12 @@ def fl_algorithm_info(run: dict[str, Any]) -> dict[str, Any]:
             "workflow_id": workflow.get("id"),
             "workflow_path": workflow_path,
         }
-    text = combined_text(run)
-    for name in ("SCAFFOLD", "FedAvg", "FedOpt", "FedProx", "Cyclic", "FedEval"):
-        if re.search(rf"\b{re.escape(name)}\b", text, flags=re.IGNORECASE):
-            recipe = _recipe_evidence(run)
-            evidence = "agent final message or command text"
-            if recipe:
-                evidence += f"; recipe {recipe}"
-            return {"algorithm": name, "evidence": evidence, "num_rounds": None, "recipe": recipe}
-    return {"algorithm": "not captured", "evidence": "no server workflow config or algorithm mention captured"}
+    if job_run_status(run) == "not_started":
+        return {
+            "algorithm": "not captured",
+            "evidence": "no server workflow config captured; job was not started",
+        }
+    return {"algorithm": "not captured", "evidence": "no server workflow config captured"}
 
 
 def _recipe_expected_algorithms(recipe: str) -> set[str]:
@@ -675,6 +673,8 @@ def job_command_succeeded(event: dict[str, Any]) -> bool:
     command = str(event.get("command") or "")
     output = str(event.get("output") or "")
     if not command_succeeded(event):
+        return False
+    if job_output_has_failure_marker(output):
         return False
     job_match = job_entrypoint_match(command)
     if job_match == "direct":

@@ -202,12 +202,61 @@ def metric_entries_from_payload(
     return entries
 
 
+def _named_numeric_metric_names(items: Any) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    names = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        name = canonical_metric_name(item.get("name"))
+        if name and is_numeric_metric_value(item.get("value")):
+            names.append(name)
+    return names
+
+
+def _single_metric_name(items: Any) -> str:
+    names = _named_numeric_metric_names(items)
+    unique_names = []
+    seen = set()
+    for name in names:
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_names.append(name)
+    return unique_names[0] if len(unique_names) == 1 else ""
+
+
+def inferred_metric_name_from_payload(payload: Any) -> str:
+    """Infer the primary metric only from explicit structured artifact metadata."""
+
+    if not isinstance(payload, Mapping):
+        return ""
+    key_metric = payload.get("key_metric")
+    if isinstance(key_metric, Mapping):
+        name = canonical_metric_name(key_metric.get("name"))
+        if name:
+            return name
+    for key in ("best_metrics", "final_aggregated_metrics"):
+        name = _single_metric_name(payload.get(key))
+        if name:
+            return name
+    return ""
+
+
 def validation_metric_from_artifact(path: Path, expected_metric: str | None) -> dict[str, Any]:
     metric_name = canonical_metric_name(expected_metric)
+    payloads = list(load_artifact_payloads(path))
+    if not metric_name:
+        for payload in payloads:
+            metric_name = inferred_metric_name_from_payload(payload)
+            if metric_name:
+                break
     if not metric_name:
         return {}
     entries: list[dict[str, Any]] = []
-    for payload in load_artifact_payloads(path):
+    for payload in payloads:
         entries.extend(metric_entries_from_payload(payload, metric_name, path))
     if not entries:
         return {}

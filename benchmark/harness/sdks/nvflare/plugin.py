@@ -181,8 +181,8 @@ class NvflareReportPlugin(ReportPlugin):
     _ALGORITHM_SECTION_TITLE = "## FL Algorithm / Workflow"
     _ALGORITHM_SECTION_INTRO = (
         "This section reports the FL workflow captured in generated/runtime NVFLARE server config. It is "
-        "derived from artifacts such as `config_fed_server.json`; agent final-message text is used only as "
-        "a fallback."
+        "derived from artifacts such as `config_fed_server.json`; agent planning or final-message text is "
+        "not counted as runtime workflow evidence."
     )
     def section_copy(self, key: str) -> str | None:
         return self._SECTION_COPY.get(key)

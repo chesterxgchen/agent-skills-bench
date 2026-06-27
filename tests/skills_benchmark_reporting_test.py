@@ -1321,6 +1321,35 @@ def test_fl_algorithm_recipe_mismatch_is_quality_issue(tmp_path):
     ]
 
 
+def test_fl_algorithm_does_not_infer_from_text_when_job_never_started():
+    from benchmark.harness.sdks.nvflare._logic import fl_algorithm_info
+
+    run = {
+        "available": True,
+        "agent_last_message": "I plan to use SCAFFOLD.",
+        "activity": {"commands": ["python - <<'PY'\nprint('SCAFFOLD')\nPY"]},
+        "agent_events_text": json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "content": "SCAFFOLD planning note",
+                        }
+                    ]
+                },
+            }
+        ),
+        "workspace_delta": {},
+    }
+
+    info = fl_algorithm_info(run)
+
+    assert info["algorithm"] == "not captured"
+    assert "job was not started" in info["evidence"]
+
+
 def test_mode_dir_for_benchmark_does_not_guess_ambiguous_canonical_layout(tmp_path):
     from benchmark.harness.modes import NO_SKILLS_MODE
     from benchmark.harness.reports._loader import mode_dir_for_benchmark
@@ -4786,6 +4815,31 @@ def test_job_success_detects_execution_after_wrapped_file_inspection():
     assert job_run_status(run) == "completed"
 
 
+def test_job_success_rejects_direct_job_with_config_error_finished_marker():
+    from benchmark.harness.sdks.nvflare._logic import job_command_succeeded, job_run_status
+
+    event = {
+        "command": "python job.py",
+        "exit_code": 0,
+        "output": (
+            "ConfigError: executors are not specified\n"
+            "Abort signal triggered. Finishing FedAvg.\n"
+            "Finished FedAvg.\n"
+        ),
+        "status": "completed",
+    }
+    run = {
+        "available": True,
+        "activity": {"commands": [event["command"]]},
+        "agent_events_text": json.dumps(
+            {"item": {"type": "command_execution", "aggregated_output": event["output"], **event}}
+        ),
+    }
+
+    assert job_command_succeeded(event) is False
+    assert job_run_status(run) == "started_failed"
+
+
 def test_job_success_ignores_grep_pattern_with_inline_semicolon():
     from benchmark.harness.sdks.nvflare._logic import job_command_succeeded, job_run_status
 
@@ -5021,6 +5075,16 @@ def test_job_output_failure_status_vetoes_legacy_terminal_statuses():
     assert not job_output_succeeded("Result location: /tmp/r\nStatus: ABORTED")
     # Legacy success form must still pass.
     assert job_output_succeeded("Result location: /tmp/r\nJob Status: FINISHED_OK")
+
+
+def test_job_output_config_error_vetoes_finished_marker():
+    from benchmark.harness.reports._events import job_output_succeeded
+
+    assert not job_output_succeeded(
+        "ConfigError: executors are not specified\n"
+        "Abort signal triggered. Finishing FedAvg.\n"
+        "Finished FedAvg.\n"
+    )
 
 
 def test_recovered_by_later_success_requires_simulation_success_evidence():
