@@ -466,6 +466,83 @@ def test_benchmark_target_infers_plain_pytorch_framework_from_captured_evidence(
     assert "| With skills | not recorded | nvflare-convert-pytorch | none |" in report
 
 
+def test_framework_inference_ignores_skill_usage_names(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import benchmark_report, collect_benchmark_runs
+
+    entries = []
+    for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
+        record_dir = tmp_path / "records" / "agent=codex" / "model=default" / "job=ames" / f"mode={mode}"
+        record_dir.mkdir(parents=True)
+        entries.append(
+            {
+                "run_id": f"run_{index:05d}",
+                "mode": mode,
+                "agent": "codex",
+                "agent_model": "default",
+                "job_name": "ames",
+                "job_slug": "ames",
+                "job_path": "/tmp/jobs/ames",
+                "record_dir": str(record_dir.relative_to(tmp_path)),
+            }
+        )
+        write_json(
+            record_dir / "run_summary.json",
+            {
+                "mode": mode,
+                "elapsed_seconds": 10,
+                "token_count": 100,
+                "agent_exit_code": 0,
+                "final_container_exit_code": 0,
+            },
+        )
+        write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+        write_json(record_dir / "benchmark_record.json", {"mode": mode})
+        (record_dir / "agent_last_message.txt").write_text(
+            "Ran nvflare agent inspect: detected plain PyTorch, not converted.\n",
+            encoding="utf-8",
+        )
+        if mode == WITH_SKILLS_MODE:
+            (record_dir / "agent_events.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "item": {
+                                    "type": "command_execution",
+                                    "command": (
+                                        "/bin/bash -lc \"sed -n '1,260p' "
+                                        "/workspace/.codex/skills/nvflare-convert-lightning/SKILL.md\""
+                                    ),
+                                }
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "item": {
+                                    "type": "command_execution",
+                                    "command": (
+                                        "/bin/bash -lc \"sed -n '1,260p' "
+                                        "/workspace/.codex/skills/nvflare-convert-pytorch/SKILL.md\""
+                                    ),
+                                }
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+    write_json(tmp_path / "run_plan.json", {"entries": entries})
+
+    report = benchmark_report(tmp_path, collect_benchmark_runs(tmp_path))
+
+    assert "| ames | PyTorch target | NA | /tmp/jobs/ames |" in report
+    assert "Lightning target" not in report
+    assert "| With skills | not recorded | nvflare-convert-lightning; nvflare-convert-pytorch | none |" in report
+
+
 def test_common_dl_metric_aliases_are_recognized_and_unknown_names_kept_verbatim():
     """Characterization (pins the metric-vocabulary contract after the de-hardcode +
     restore churn): the harness keeps a small RECOGNITION vocabulary of common DL metrics

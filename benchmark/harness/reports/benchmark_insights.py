@@ -202,7 +202,6 @@ def _run_framework_display(run: RunEvidence) -> str:
         str(raw.get("job_name") or ""),
         str(raw.get("job_slug") or ""),
         str(raw.get("job_path") or ""),
-        _run_skill_display(run),
         run.agent_last_message,
         _nested_text(record, "agent_exit_summary", "classification_excerpt"),
         _nested_text(summary, "agent_exit_summary", "classification_excerpt"),
