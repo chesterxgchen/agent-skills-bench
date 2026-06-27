@@ -27,13 +27,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..agent_identity import MAX_AGENT_EVENTS_TEXT_BYTES, resolve_agent_model
 from ..common import load_json
 from ..metric_artifacts import validation_metric_from_workspace_delta_manifest
 from ..modes import BENCHMARK_RUNS
 from ..quality_signals import canonical_metric_name, is_numeric_metric_value, reported_metric_payload
 from ._runs import read_text
-
-MAX_AGENT_EVENTS_TEXT_BYTES = 20 * 1024 * 1024
 
 
 def first_non_empty(*values: Any) -> Any:
@@ -181,10 +180,23 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
         if not isinstance(workspace_delta, dict):
             workspace_delta = {}
         agent = first_non_empty(summary.get("agent"), record.get("agent"), run_plan_entry.get("agent"))
-        agent_model = first_non_empty(
+        configured_agent_model = first_non_empty(
             summary.get("agent_model"),
             record.get("agent_model"),
             run_plan_entry.get("agent_model"),
+        )
+        configured_model_source = first_non_empty(
+            summary.get("model_source"), record.get("model_source"), run_plan_entry.get("model_source")
+        )
+        agent_events_text = (
+            read_text(mode_dir / "agent_events.jsonl", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES)
+            if mode_dir.exists()
+            else ""
+        )
+        agent_model, model_source = resolve_agent_model(
+            configured_agent_model,
+            configured_model_source,
+            agent_events_text,
         )
         record_metric = validation_metric_from_record(record)
         expected_metric = expected_validation_metric_name(record)
@@ -206,9 +218,7 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "job_path": run_plan_entry.get("job_path"),
             "agent": agent,
             "agent_model": agent_model,
-            "model_source": first_non_empty(
-                summary.get("model_source"), record.get("model_source"), run_plan_entry.get("model_source")
-            ),
+            "model_source": model_source,
             "run": summary,
             "record": record,
             "container_exit": load_json(mode_dir / "container_exit_code.json", {}) if mode_dir.exists() else {},
@@ -218,11 +228,7 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "runtime_image": load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {},
             "agent_last_message": read_text(mode_dir / "agent_last_message.txt") if mode_dir.exists() else "",
             "agent_stderr": read_text(mode_dir / "agent_stderr.txt") if mode_dir.exists() else "",
-            "agent_events_text": (
-                read_text(mode_dir / "agent_events.jsonl", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES)
-                if mode_dir.exists()
-                else ""
-            ),
+            "agent_events_text": agent_events_text,
             "console_text": mode_console_text,
             "validation_metric": artifact_metric or record_metric,
         }

@@ -179,6 +179,71 @@ def test_benchmark_insights_caps_agent_events_text(tmp_path, monkeypatch):
     assert run["agent_events_text"] == "01234567"
 
 
+def test_reports_resolve_unspecified_agent_model_from_agent_events(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import collect_benchmark_runs
+    from benchmark.harness.reports.metrics_report import collect_runs
+    from benchmark.harness.scenario_summaries import write_scenario_summaries
+
+    record_dir = tmp_path / "records" / "agent=claude" / "model=unspecified_default" / "mode=without_skills"
+    record_dir.mkdir(parents=True)
+    events_text = "\n".join(
+        [
+            json.dumps({"event_type": "system.init", "model": "claude-opus-4-8[1m]"}),
+            json.dumps({"type": "assistant", "message": {"model": "claude-opus-4-8"}}),
+        ]
+    )
+    (record_dir / "agent_events.jsonl").write_text(events_text + "\n", encoding="utf-8")
+    write_json(
+        record_dir / "run_summary.json",
+        {
+            "agent": "claude",
+            "agent_model": "unspecified_default",
+            "model_source": "adapter_default",
+            "agent_process_passed": True,
+            "final_container_exit_code": 0,
+        },
+    )
+    write_json(record_dir / "benchmark_record.json", {"agent_model": "unspecified_default"})
+    write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+    write_json(
+        tmp_path / "run_plan.json",
+        {
+            "entries": [
+                {
+                    "run_id": "run_00001",
+                    "mode": NO_SKILLS_MODE,
+                    "agent": "claude",
+                    "agent_model": "unspecified_default",
+                    "model_source": "adapter_default",
+                    "record_dir": str(record_dir.relative_to(tmp_path)),
+                },
+                {
+                    "run_id": "run_00002",
+                    "mode": WITH_SKILLS_MODE,
+                    "agent": "claude",
+                    "agent_model": "explicit-model",
+                    "model_source": "scenario",
+                    "record_dir": "missing",
+                },
+            ]
+        },
+    )
+
+    insight_runs = collect_benchmark_runs(tmp_path)
+    metrics_rows = {row["mode"]: row for row in collect_runs(tmp_path)}
+    scenario_summary = write_scenario_summaries(tmp_path, {"run_00001": 0})
+
+    assert insight_runs[NO_SKILLS_MODE]["agent_model"] == "claude-opus-4-8"
+    assert insight_runs[NO_SKILLS_MODE]["model_source"] == "agent_events"
+    assert metrics_rows[NO_SKILLS_MODE]["agent_model"] == "claude-opus-4-8"
+    assert metrics_rows[NO_SKILLS_MODE]["model_source"] == "agent_events"
+    assert scenario_summary["runs"][0]["agent_model"] == "claude-opus-4-8"
+    assert scenario_summary["runs"][0]["model_source"] == "agent_events"
+    assert insight_runs[WITH_SKILLS_MODE]["agent_model"] == "explicit-model"
+
+
 def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE

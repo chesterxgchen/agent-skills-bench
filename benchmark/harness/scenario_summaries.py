@@ -20,6 +20,7 @@ import statistics
 from pathlib import Path
 from typing import Any, Mapping
 
+from .agent_identity import OBSERVED_AGENT_MODEL_SOURCE, resolve_agent_model_from_events_path
 from .common import load_json
 from .common import write_json_atomic as common_write_json_atomic
 from .quality_signals import critical_quality_checks_failed, required_validation_metric_status
@@ -38,6 +39,13 @@ from .scenario_common import (
 
 def is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
 
 
 def number_or_none(value: Any) -> float | None:
@@ -215,9 +223,15 @@ def run_summary_for_entry(
     token_count = summary.get("token_count")
     if token_count is None:
         token_count = process_metrics.get("token_count")
+    agent_model, model_source = resolve_agent_model_from_events_path(
+        first_non_empty(summary.get("agent_model"), record.get("agent_model"), entry.get("agent_model")),
+        first_non_empty(summary.get("model_source"), record.get("model_source"), entry.get("model_source")),
+        artifacts["record_dir"] / "agent_events.jsonl",
+    )
     payload = {key: entry.get(key) for key in SUMMARY_RUN_FIELDS}
     payload.update(
         {
+            "agent_model": agent_model,
             "status": "passed" if not failures else "failed",
             "host_status": status,
             "quality_gate_passed": not failures,
@@ -253,6 +267,8 @@ def run_summary_for_entry(
             "artifact_paths": entry.get("artifact_paths") or {},
         }
     )
+    if model_source == OBSERVED_AGENT_MODEL_SOURCE:
+        payload["model_source"] = model_source
     return payload
 
 

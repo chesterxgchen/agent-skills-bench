@@ -21,13 +21,13 @@ import html
 from pathlib import Path
 from typing import Any
 
+from ..agent_identity import MAX_AGENT_EVENTS_TEXT_BYTES, resolve_agent_model
 from ..common import flatten_numbers, load_json, write_json
 from ..metric_artifacts import validation_metric_from_workspace_delta_manifest
 from ..modes import BENCHMARK_RUNS, NO_SKILLS_MODE, WITH_SKILLS_MODE
 from ..quality_signals import canonical_metric_name, is_plausible_metric_value
 from ._context import ReportContext
 from ._loader import (
-    MAX_AGENT_EVENTS_TEXT_BYTES,
     filter_mode_console,
     final_record_path,
     first_non_empty,
@@ -109,6 +109,26 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
             expected_metric,
         )
         validation_metric = artifact_metric or record_metric
+        agent_events_text = (
+            read_text(mode_dir / "agent_events.jsonl", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES)
+            if mode_dir.exists()
+            else ""
+        )
+        configured_agent_model = first_non_empty(
+            summary.get("agent_model"),
+            record.get("agent_model"),
+            run_plan_entry.get("agent_model"),
+        )
+        configured_model_source = first_non_empty(
+            summary.get("model_source"),
+            record.get("model_source"),
+            run_plan_entry.get("model_source"),
+        )
+        agent_model, model_source = resolve_agent_model(
+            configured_agent_model,
+            configured_model_source,
+            agent_events_text,
+        )
         runs.append(
             {
                 "mode": spec.mode,
@@ -116,16 +136,8 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
                 "available": mode_dir.exists(),
                 "skills_enabled": spec.skills_enabled,
                 "agent": first_non_empty(summary.get("agent"), record.get("agent"), run_plan_entry.get("agent")),
-                "agent_model": first_non_empty(
-                    summary.get("agent_model"),
-                    record.get("agent_model"),
-                    run_plan_entry.get("agent_model"),
-                ),
-                "model_source": first_non_empty(
-                    summary.get("model_source"),
-                    record.get("model_source"),
-                    run_plan_entry.get("model_source"),
-                ),
+                "agent_model": agent_model,
+                "model_source": model_source,
                 "summary": summary,
                 "record": record,
                 "activity": activity,
@@ -178,6 +190,24 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             )
             validation_metric = artifact_metric or validation_metric_from_record(record)
         mode_console_text = read_text(root / f"{mode}.console.log") or filter_mode_console(console_text, mode)
+        agent_events_text = (
+            read_text(mode_dir / "agent_events.jsonl", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES) if available else ""
+        )
+        configured_agent_model = first_non_empty(
+            row.get("agent_model"),
+            summary.get("agent_model"),
+            record.get("agent_model"),
+        )
+        configured_model_source = first_non_empty(
+            row.get("model_source"),
+            summary.get("model_source"),
+            record.get("model_source"),
+        )
+        agent_model, model_source = resolve_agent_model(
+            configured_agent_model,
+            configured_model_source,
+            agent_events_text,
+        )
         runs[mode] = {
             "available": available,
             "mode": mode,
@@ -185,16 +215,8 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             "mode_dir": mode_dir,
             "skills": "with skills" if spec.skills_enabled else "without skills",
             "agent": first_non_empty(row.get("agent"), summary.get("agent"), record.get("agent")),
-            "agent_model": first_non_empty(
-                row.get("agent_model"),
-                summary.get("agent_model"),
-                record.get("agent_model"),
-            ),
-            "model_source": first_non_empty(
-                row.get("model_source"),
-                summary.get("model_source"),
-                record.get("model_source"),
-            ),
+            "agent_model": agent_model,
+            "model_source": model_source,
             "run": summary,
             "record": record,
             "container_exit": load_json(mode_dir / "container_exit_code.json", {}) if available else {},
@@ -204,9 +226,7 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             "runtime_image": runtime_image,
             "agent_last_message": read_text(mode_dir / "agent_last_message.txt") if available else "",
             "agent_stderr": read_text(mode_dir / "agent_stderr.txt") if available else "",
-            "agent_events_text": (
-                read_text(mode_dir / "agent_events.jsonl", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES) if available else ""
-            ),
+            "agent_events_text": agent_events_text,
             "console_text": mode_console_text,
             "validation_metric": validation_metric or validation_metric_from_record(record),
         }
