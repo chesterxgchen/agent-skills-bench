@@ -39,6 +39,7 @@ from ._runs import read_text
 from .benchmark_insights import (
     _report_context,
     _run_skill_available_display,
+    _run_skill_inspection_display,
     _run_shared_skill_display,
     _run_skill_display,
     activity_insights_table,
@@ -369,8 +370,8 @@ def markdown_report(
         "",
         "## Runs",
         "",
-        "| Run | Agent | Model | Status | Skills available | Skills triggered/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |",
-        "|---|---|---|---|---|---|---|---:|---:|---:|---|",
+        "| Run | Agent | Model | Status | Skills available | Skills inspected | Skills applied/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |",
+        "|---|---|---|---|---|---|---|---|---:|---:|---:|---|",
     ]
     for row in summary["runs"]:
         run = insight_runs[row["mode"]]
@@ -382,6 +383,7 @@ def markdown_report(
             f"| {markdown_cell(row['label'])} | {markdown_cell(run.agent)} | "
             f"{markdown_cell(run.agent_model)} | {markdown_cell(human_readable_status(run, ev))} | "
             f"{markdown_cell(_run_skill_available_display(run))} | "
+            f"{markdown_cell(_run_skill_inspection_display(run))} | "
             f"{markdown_cell(_run_skill_display(run))} | {markdown_cell(_run_shared_skill_display(run))} | "
             f"{fmt(run_summary.get('elapsed_seconds'))} | "
             f"{fmt(run_summary.get('token_count'))} | {fmt(activity.get('command_count'))} | "
@@ -430,6 +432,7 @@ def html_report(
             f"<td>{html.escape(fmt(run.agent_model))}</td>"
             f"<td>{html.escape(human_readable_status(run, ctx.evidence.get(row['mode'])))}</td>"
             f"<td>{html.escape(_run_skill_available_display(run))}</td>"
+            f"<td>{html.escape(_run_skill_inspection_display(run))}</td>"
             f"<td>{html.escape(_run_skill_display(run))}</td>"
             f"<td>{html.escape(_run_shared_skill_display(run))}</td>"
             f"<td>{html.escape(fmt(run_summary.get('elapsed_seconds')))}</td>"
@@ -457,7 +460,7 @@ def html_report(
   <p>Result root: <code>{html.escape(summary['result_root'])}</code></p>
   <p>Status: {html.escape(summary['status'])}</p>
   <table>
-    <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Status</th><th>Skills available</th><th>Skills triggered/used</th><th>Shared refs read</th><th>Elapsed seconds</th><th>Tokens</th></tr></thead>
+    <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Status</th><th>Skills available</th><th>Skills inspected</th><th>Skills applied/used</th><th>Shared refs read</th><th>Elapsed seconds</th><th>Tokens</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
   {chart}

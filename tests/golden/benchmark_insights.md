@@ -8,7 +8,7 @@ Result root: `<RESULT_ROOT>`
 
 | Job | Framework | Scenario | Job path |
 |---|---|---|---|
-| ames | PyTorch target | ames_fedavg | NA |
+| ames | NA | ames_fedavg | NA |
 
 ### Run Status
 
@@ -22,14 +22,14 @@ Result root: `<RESULT_ROOT>`
 | Run | Job | Framework | Agent/model | FL algorithm/workflow | Captured generated artifacts |
 |---|---|---|---|---|---|
 | No skills baseline | ames | NA | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
-| With skills | ames | PyTorch target | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| With skills | ames | NA | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
 
 ### Skill Evidence
 
-| Run | Skills available | Skills triggered/used | Shared refs read |
-|---|---|---|---|
-| No skills baseline | not enabled | none | none |
-| With skills | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | nvflare-convert-pytorch | none |
+| Run | Skills available | Skills inspected | Skills applied/used | Shared refs read |
+|---|---|---|---|---|
+| No skills baseline | not enabled | none | none | none |
+| With skills | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | none | nvflare-convert-pytorch | none |
 
 ## FL Algorithm / Workflow
 

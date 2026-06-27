@@ -72,7 +72,12 @@ from ._events import (  # noqa: F401
 from ._loader import sanitized_validation_metric  # noqa: F401
 from ._loader import collect_benchmark_runs
 from ._runs import combined_text, manifest_paths, run_record, run_workspace_delta, unique_paths  # noqa: F401
-from ._skill_usage import shared_skill_usage_display, skill_availability_display, skill_usage_display
+from ._skill_usage import (
+    shared_skill_usage_display,
+    skill_availability_display,
+    skill_inspection_display,
+    skill_usage_display,
+)
 from ._text import (  # noqa: F401
     _command_count_display,
     _is_file_inspection_segment,
@@ -254,6 +259,11 @@ def _run_skill_display(run: RunEvidence) -> str:
     )
 
 
+def _run_skill_inspection_display(run: RunEvidence) -> str:
+    raw = run.raw if isinstance(run.raw, dict) else {}
+    return skill_inspection_display(str(raw.get("agent_events_text") or ""))
+
+
 def _run_shared_skill_display(run: RunEvidence) -> str:
     raw = run.raw if isinstance(run.raw, dict) else {}
     return shared_skill_usage_display(str(raw.get("agent_events_text") or ""))
@@ -397,8 +407,8 @@ def _executive_summary_section(
     skill_lines = [
         "### Skill Evidence",
         "",
-        "| Run | Skills available | Skills triggered/used | Shared refs read |",
-        "|---|---|---|---|",
+        "| Run | Skills available | Skills inspected | Skills applied/used | Shared refs read |",
+        "|---|---|---|---|---|",
     ]
     for mode in modes:
         run = runs[mode]
@@ -432,6 +442,7 @@ def _executive_summary_section(
         skill_lines.append(
             f"| {markdown_cell(run.label or mode)} | "
             f"{markdown_cell(_run_skill_available_display(run))} | "
+            f"{markdown_cell(_run_skill_inspection_display(run))} | "
             f"{markdown_cell(_run_skill_display(run))} | "
             f"{markdown_cell(_run_shared_skill_display(run))} |"
         )

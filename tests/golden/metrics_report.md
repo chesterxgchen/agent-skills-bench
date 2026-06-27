@@ -6,10 +6,10 @@ Status: No skills baseline: passed; With skills: passed
 
 ## Runs
 
-| Run | Agent | Model | Status | Skills available | Skills triggered/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |
-|---|---|---|---|---|---|---|---:|---:|---:|---|
-| No skills baseline | codex | default | passed | not enabled | none | none | 180 | 12000 | 4 | NA |
-| With skills | codex | default | passed | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | nvflare-convert-pytorch | none | 240 | 15000 | 5 | NA |
+| Run | Agent | Model | Status | Skills available | Skills inspected | Skills applied/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |
+|---|---|---|---|---|---|---|---|---:|---:|---:|---|
+| No skills baseline | codex | default | passed | not enabled | none | none | none | 180 | 12000 | 4 | NA |
+| With skills | codex | default | passed | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | none | nvflare-convert-pytorch | none | 240 | 15000 | 5 | NA |
 
 ## Metrics
 

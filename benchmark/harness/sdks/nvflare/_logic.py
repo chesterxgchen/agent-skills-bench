@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from ...common import load_json
+from ...quality_signals import canonical_metric_name, metric_names_match
 from ...reports._events import (
     _job_rerun_reason,
     _span_total_seconds,
@@ -544,22 +545,23 @@ def _server_config_items(run: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
         values = delta.get(key)
         if not isinstance(values, list):
             continue
-        for item in values:
+        for item_index, item in enumerate(values):
             if not isinstance(item, dict):
                 continue
             path = str(item.get("path") or item.get("artifact_path") or "")
             if Path(path).name != "config_fed_server.json":
                 continue
-            items.append((key, item))
+            items.append((key, item_index, item))
 
-    def priority(entry: tuple[str, dict[str, Any]]) -> tuple[int, int, str]:
-        key, item = entry
+    def priority(entry: tuple[str, int, dict[str, Any]]) -> tuple[int, int, int, int, str]:
+        key, item_index, item = entry
         path = str(item.get("path") or item.get("artifact_path") or "")
         key_priority = 0 if key == "runtime_artifacts" else 1
         server_priority = 0 if re.search(r"(^|/)(server|app_server)(/|$)", path) else 1
-        return key_priority, server_priority, path
+        probe_priority = 1 if "probe" in path.lower() else 0
+        return key_priority, server_priority, probe_priority, item_index, path
 
-    return sorted(items, key=priority)
+    return [(key, item) for key, _item_index, item in sorted(items, key=priority)]
 
 
 def fl_algorithm_info(run: dict[str, Any]) -> dict[str, Any]:
@@ -985,6 +987,287 @@ def _background_task_interruption_summary(run: dict[str, Any]) -> str:
             details.append("notification " + ", ".join(f"`{status}`" for status in notifications))
         return f"Background task `{task_id}` was interrupted after launch ({'; '.join(details)})."
     return ""
+
+
+# --- NVFLARE generated-code quality comparison -----------------------------
+
+
+def _runtime_python_sources(run: dict[str, Any], *, max_files: int = 8) -> list[tuple[str, str]]:
+    delta = run_workspace_delta(run)
+    values = delta.get("runtime_artifacts")
+    if not isinstance(values, list):
+        return []
+    items: list[tuple[int, int, str, dict[str, Any]]] = []
+    for item_index, item in enumerate(values):
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or item.get("artifact_path") or "")
+        if Path(path).suffix != ".py" or "/custom/" not in path:
+            continue
+        probe_priority = 1 if "probe" in path.lower() else 0
+        server_priority = 0 if "/server/simulate_job/" in path else 1
+        items.append((probe_priority, server_priority, path, item))
+
+    sources = []
+    for _probe_priority, _server_priority, rel_path, item in sorted(items, key=lambda entry: entry[:3]):
+        artifact_path = _workspace_artifact_path(run, item)
+        if not artifact_path or not artifact_path.exists():
+            continue
+        sources.append((rel_path, read_text(artifact_path, max_bytes=128_000)))
+        if len(sources) >= max_files:
+            break
+    return sources
+
+
+def _workspace_text(run: dict[str, Any]) -> str:
+    sources = list(_workspace_python_sources(run))
+    seen_names = {Path(rel_path).name for rel_path, _text in sources}
+    for rel_path, text in _runtime_python_sources(run, max_files=16):
+        name = Path(rel_path).name
+        if name in seen_names:
+            continue
+        sources.append((rel_path, text))
+        seen_names.add(name)
+        if len(sources) >= 16:
+            break
+    return "\n\n".join(f"# {rel_path}\n{text}" for rel_path, text in sources[:16])
+
+
+def _detect_training_control_path(text: str) -> str:
+    if "nvflare.client.lightning" in text or "flare.patch(trainer)" in text:
+        return "Lightning Client API patch (`flare.patch(trainer)`)"
+    if "flare.receive" in text and "flare.send" in text and "FLModel(" in text:
+        return "manual Client API loop (`receive` / train / `send FLModel`)"
+    if "flare.receive" in text or "flare.send" in text:
+        return "manual Client API loop"
+    return "not captured"
+
+
+def _detect_partitioning(text: str) -> str:
+    if re.search(r"\.sample\([^)]*random_state\s*=\s*seed", text) and "iloc[index::num_clients]" in text:
+        return "seeded shuffled site partition"
+    if "self.site_index :: self.num_clients" in text or "iloc[self.site_index :: self.num_clients]" in text:
+        return "deterministic stride partition without shuffle"
+    if "site_partition(" in text:
+        return "site partition helper"
+    return "not captured"
+
+
+def _detect_class_weighting(text: str) -> str:
+    if "positive_class_weight(train_frame" in text:
+        return "per-site loss weight from local training partition"
+    pos_weight_match = re.search(r"['\"]?pos_weight['\"]?\s*:\s*([0-9]+(?:\.[0-9]+)?)", text)
+    if not pos_weight_match:
+        pos_weight_match = re.search(r"--pos-weight['\"]?\s*,\s*['\"]([0-9]+(?:\.[0-9]+)?)['\"]", text)
+    if pos_weight_match:
+        return f"fixed/global `pos_weight={pos_weight_match.group(1)}` passed to clients"
+    if "--pos-weight" in text:
+        return "fixed/global `pos_weight` passed to clients"
+    if "neg_count / max(pos_count" in text:
+        return "loss weight computed from loaded training data"
+    return "not captured"
+
+
+def _detect_metric_reporting(text: str) -> str:
+    if "BinaryAUROC" in text or "torchmetrics" in text:
+        return "Lightning/torchmetrics validation metrics"
+    if "binary_auroc(" in text:
+        return "manual AUROC from validation predictions"
+    if "metrics=" in text and "FLModel(" in text:
+        return "manual client-reported metric dict"
+    return "not captured"
+
+
+def _detect_data_packaging(text: str) -> str:
+    if "add_file_to_clients(str(args.data_dir), dest_dir=\"data\")" in text or "add_file_to_clients(str(args.data_dir)" in text:
+        return "packages dataset into client app (`dest_dir=\"data\"`)"
+    if "--data-dir {args.data_dir.resolve()}" in text or "args.data_dir.resolve()" in text:
+        return "passes absolute workspace data path to clients"
+    if "--data-dir" in text:
+        return "passes data directory argument"
+    return "not captured"
+
+
+def _detect_execution_model(text: str) -> str:
+    if "launch_external_process=False" in text:
+        details = ["in-process Client API executor"]
+        if "server_expected_format=ExchangeFormat.PYTORCH" in text:
+            details.append("PyTorch exchange format")
+        if "TransferType.FULL" in text:
+            details.append("full parameter transfer")
+        return "; ".join(details)
+    if "launch_external_process=True" in text:
+        return "external client process runner"
+    return "not captured"
+
+
+def _round_metric_items(run: dict[str, Any]) -> list[tuple[int, int, dict[str, Any]]]:
+    delta = run_workspace_delta(run)
+    items: list[tuple[int, int, dict[str, Any]]] = []
+    for key_priority, key in enumerate(("runtime_artifacts", "changed_files", "final_structure_files", "final_files")):
+        values = delta.get(key)
+        if not isinstance(values, list):
+            continue
+        for item_index, item in enumerate(values):
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or item.get("artifact_path") or "")
+            if Path(path).name != "round_metrics.jsonl":
+                continue
+            probe_priority = 1 if "probe" in path.lower() else 0
+            items.append((key_priority + probe_priority * 10, item_index, item))
+    return sorted(items, key=lambda entry: (entry[0], entry[1], str(entry[2].get("path") or "")))
+
+
+def _expected_metric_name(run: dict[str, Any]) -> str:
+    metric = run.get("validation_metric") if isinstance(run.get("validation_metric"), dict) else {}
+    name = canonical_metric_name(metric.get("name")) if isinstance(metric, dict) else ""
+    if name:
+        return name
+    record = run_record(run)
+    metric = record.get("reported_validation_metric") if isinstance(record.get("reported_validation_metric"), dict) else {}
+    return canonical_metric_name(metric.get("name")) if isinstance(metric, dict) else ""
+
+
+def _round_metric_progression(run: dict[str, Any]) -> str:
+    expected = _expected_metric_name(run)
+    if not expected:
+        return "not captured"
+    for _priority, _item_index, item in _round_metric_items(run):
+        path = _workspace_artifact_path(run, item)
+        if not path or not path.exists():
+            continue
+        values: list[float] = []
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            metrics = payload.get("aggregated_metrics") if isinstance(payload, dict) else None
+            if not isinstance(metrics, list):
+                continue
+            for metric in metrics:
+                if not isinstance(metric, dict) or not metric_names_match(metric.get("name"), expected):
+                    continue
+                value = as_number(metric.get("value"))
+                if value is not None:
+                    values.append(value)
+                break
+        if values:
+            rendered = " -> ".join(f"{value:.4f}" for value in values)
+            if len(values) > 1 and max(values) - min(values) < 1e-9:
+                rendered += " (flat)"
+            return f"{expected} {rendered}"
+    return "not captured"
+
+
+def conversion_quality_profile(run: dict[str, Any]) -> dict[str, str]:
+    text = _workspace_text(run)
+    return {
+        "training_control": _detect_training_control_path(text),
+        "partitioning": _detect_partitioning(text),
+        "class_weighting": _detect_class_weighting(text),
+        "metric_reporting": _detect_metric_reporting(text),
+        "data_packaging": _detect_data_packaging(text),
+        "execution_model": _detect_execution_model(text),
+        "metric_progression": _round_metric_progression(run),
+    }
+
+
+def _metric_progression_values(value: str) -> list[float]:
+    return [float(match.group(1)) for match in re.finditer(r"\b([0-9]+\.[0-9]+)\b", value)]
+
+
+def _target_framework(run: dict[str, Any] | None) -> str:
+    if not isinstance(run, dict):
+        return ""
+    text = " ".join(
+        str(run.get(key) or "") for key in ("framework", "job_name", "job_slug", "scenario_name")
+    ).lower()
+    if "lightning" in text:
+        return "lightning"
+    if "pytorch" in text or "torch" in text:
+        return "pytorch"
+    return ""
+
+
+def conversion_quality_score(signal: str, value: str, run: dict[str, Any] | None = None) -> str:
+    text = value.lower()
+    if not text or text == "not captured":
+        return "unknown"
+    if signal == "training_control":
+        if "lightning client api patch" in text:
+            return "good"
+        if "manual client api loop" in text:
+            return "caution" if _target_framework(run) == "lightning" else "good"
+    if signal == "partitioning":
+        if "seeded shuffled" in text:
+            return "good"
+        if "deterministic stride" in text:
+            return "bad"
+        if "site partition" in text:
+            return "caution"
+    if signal == "class_weighting":
+        if "per-site" in text or "computed from loaded training data" in text:
+            return "good"
+        if "fixed/global" in text:
+            return "bad"
+    if signal == "metric_reporting":
+        if "auroc" in text or "torchmetrics" in text:
+            return "good"
+        if "metric dict" in text:
+            return "caution"
+    if signal == "data_packaging":
+        if "packages dataset into client app" in text:
+            return "good"
+        if "absolute workspace data path" in text:
+            return "bad"
+        if "data directory argument" in text:
+            return "caution"
+    if signal == "execution_model":
+        if "external client process" in text:
+            return "good"
+        if "in-process client api executor" in text:
+            return "good"
+    if signal == "metric_progression":
+        if "flat" in text:
+            return "bad"
+        values = _metric_progression_values(value)
+        if len(values) >= 2:
+            return "good" if values[-1] > values[0] else "bad"
+        if values:
+            return "caution"
+    return "caution"
+
+
+def conversion_quality_interpretation(signal: str, values: list[str]) -> str:
+    unique_values = [value for value in dict.fromkeys(values) if value and value != "not captured"]
+    if len(unique_values) <= 1:
+        if not unique_values:
+            return "not enough evidence"
+        if any(value == "not captured" for value in values):
+            return "captured for only part of the comparison; inspect generated source/artifacts before treating as equivalent"
+        return "same captured pattern"
+    joined = " | ".join(unique_values).lower()
+    if signal == "metric_progression" and "flat" in joined:
+        return "flat validation metric progression can indicate training, metric, or model-exchange behavior worth investigating"
+    if signal == "partitioning":
+        return "different site split semantics can change class balance and metric comparability"
+    if signal == "class_weighting":
+        return "different BCE loss-weighting policy can materially affect AMES binary classification quality"
+    if signal == "training_control":
+        return "different NVFLARE client integration path; compare model exchange and optimizer lifecycle"
+    if signal == "metric_reporting":
+        return "different metric implementation/reporting path; confirm the same validation population and scalar"
+    if signal == "data_packaging":
+        return "different data path/package strategy; check portability and whether every client sees the intended split"
+    if signal == "execution_model":
+        return "both execution modes are valid; in-process can reduce process-launch overhead while external processes isolate client lifecycles"
+    return "captured implementation differs"
 
 
 def _background_task_interruption_cause(run: dict[str, Any]) -> str:

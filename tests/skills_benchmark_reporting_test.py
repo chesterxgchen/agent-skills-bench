@@ -52,7 +52,11 @@ def _nv_ctx(runs, modes=None):
 
 
 def test_skill_usage_keeps_explicit_skills_and_shared_refs_separate():
-    from benchmark.harness.reports._skill_usage import shared_skill_usage_display, skill_usage_display
+    from benchmark.harness.reports._skill_usage import (
+        shared_skill_usage_display,
+        skill_inspection_display,
+        skill_usage_display,
+    )
 
     events_text = "\n".join(
         [
@@ -99,6 +103,7 @@ def test_skill_usage_keeps_explicit_skills_and_shared_refs_separate():
         ]
     )
 
+    assert skill_inspection_display(events_text) == "none"
     assert skill_usage_display(events_text=events_text, skills_enabled=True) == "nvflare-convert-lightning"
     assert (
         shared_skill_usage_display(events_text)
@@ -110,6 +115,7 @@ def test_skill_usage_separates_availability_from_codex_instruction_reads():
     from benchmark.harness.reports._skill_usage import (
         shared_skill_usage_display,
         skill_availability_display,
+        skill_inspection_display,
         skill_usage_display,
     )
 
@@ -157,8 +163,78 @@ def test_skill_usage_separates_availability_from_codex_instruction_reads():
         == "nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient"
     )
     assert skill_usage_display(events_text="", skills_enabled=True) == "none recorded"
-    assert skill_usage_display(events_text=events_text, skills_enabled=True) == "nvflare-convert-lightning"
+    assert skill_inspection_display(events_text) == "nvflare-convert-lightning"
+    assert skill_usage_display(events_text=events_text, skills_enabled=True) == "none recorded"
     assert shared_skill_usage_display(events_text) == "_shared/dependency-install.md"
+
+
+def test_skill_usage_counts_deeper_codex_references_as_applied_usage():
+    from benchmark.harness.reports._skill_usage import (
+        shared_skill_usage_display,
+        skill_inspection_display,
+        skill_usage_display,
+    )
+
+    events_text = "\n".join(
+        [
+            json.dumps(
+                {
+                    "item": {
+                        "type": "command_execution",
+                        "command": (
+                            "/bin/bash -lc \"sed -n '1,260p' "
+                            "/workspace/.codex/skills/nvflare-convert-lightning/SKILL.md\""
+                        ),
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "item": {
+                        "type": "command_execution",
+                        "command": (
+                            "/bin/bash -lc \"sed -n '1,220p' "
+                            "/workspace/.codex/skills/nvflare-convert-pytorch/SKILL.md\""
+                        ),
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "name": "Read",
+                                "input": {
+                                    "file_path": (
+                                        "/workspace/.codex/skills/nvflare-convert-pytorch/references/"
+                                        "pytorch-client-api-conversion.md"
+                                    )
+                                },
+                            },
+                            {
+                                "name": "Read",
+                                "input": {"file_path": "/workspace/.codex/skills/_shared/dependency-install.md"},
+                            },
+                        ]
+                    }
+                }
+            ),
+        ]
+    )
+
+    assert skill_inspection_display(events_text) == "nvflare-convert-lightning; nvflare-convert-pytorch"
+    assert skill_usage_display(events_text=events_text, skills_enabled=True) == "nvflare-convert-pytorch"
+    assert shared_skill_usage_display(events_text) == "_shared/dependency-install.md"
+
+
+def test_skill_usage_ignores_shared_observed_skill_name_fallback():
+    from benchmark.harness.reports._skill_usage import skill_usage_display
+
+    assert (
+        skill_usage_display(events_text="", observed_skill_name="_shared", skills_enabled=True)
+        == "none recorded"
+    )
 
 
 def test_benchmark_insights_explains_docker_image_failures(tmp_path):
@@ -391,9 +467,9 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
         in insights
     )
     assert "### Skill Evidence" in insights
-    assert "| Run | Skills available | Skills triggered/used | Shared refs read |" in insights
-    assert "| No skills baseline | not enabled | none | none |" in insights
-    assert "| With skills | not recorded | nvflare-convert-pytorch | none |" in insights
+    assert "| Run | Skills available | Skills inspected | Skills applied/used | Shared refs read |" in insights
+    assert "| No skills baseline | not enabled | none | none | none |" in insights
+    assert "| With skills | not recorded | none | nvflare-convert-pytorch | none |" in insights
     assert "## Run Identity" in insights
     assert "| No skills baseline | codex | default | scenario | without_skills |" in insights
     assert "## Cost And Work Comparison" in insights
@@ -463,7 +539,7 @@ def test_benchmark_target_infers_plain_pytorch_framework_from_captured_evidence(
 
     assert "| ames | PyTorch target | pair claude ames | /tmp/jobs/ames |" in report
     assert "| No skills baseline | ames | PyTorch target | agent=claude, model=default |" in report
-    assert "| With skills | not recorded | nvflare-convert-pytorch | none |" in report
+    assert "| With skills | not recorded | none | nvflare-convert-pytorch | none |" in report
 
 
 def test_framework_inference_ignores_skill_usage_names(tmp_path):
@@ -540,7 +616,10 @@ def test_framework_inference_ignores_skill_usage_names(tmp_path):
 
     assert "| ames | PyTorch target | NA | /tmp/jobs/ames |" in report
     assert "Lightning target" not in report
-    assert "| With skills | not recorded | nvflare-convert-lightning; nvflare-convert-pytorch | none |" in report
+    assert (
+        "| With skills | not recorded | nvflare-convert-lightning; nvflare-convert-pytorch | none recorded | none |"
+        in report
+    )
 
 
 def test_common_dl_metric_aliases_are_recognized_and_unknown_names_kept_verbatim():
@@ -641,6 +720,178 @@ def test_fl_algorithm_section_reads_captured_server_workflow_config(tmp_path):
     assert "nvflare.app_common.workflows.scaffold.Scaffold" in section
 
 
+def test_nvflare_conversion_quality_section_compares_sdk_specific_sources(tmp_path):
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.evidence import SCHEMA_VERSION, ComparisonEvidence
+    from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
+
+    def write_source(mode: str, rel_path: str, source: str) -> dict:
+        mode_dir = tmp_path / mode
+        source_path = mode_dir / "workspace_delta" / "changed_files" / rel_path
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text(source, encoding="utf-8")
+        return {
+            "artifact_path": f"changed_files/{rel_path}",
+            "path": rel_path,
+        }
+
+    def write_round_metrics(mode: str, values: list[float]) -> dict:
+        metrics_path = (
+            tmp_path
+            / mode
+            / "workspace_delta"
+            / "runtime_artifacts"
+            / "runtime_workspaces"
+            / "ames-smiles-fedavg"
+            / "server"
+            / "simulate_job"
+            / "metrics"
+            / "round_metrics.jsonl"
+        )
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        metrics_path.write_text(
+            "\n".join(
+                json.dumps({"round": index, "aggregated_metrics": [{"name": "val_auroc", "value": value}]})
+                for index, value in enumerate(values)
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return {
+            "artifact_path": (
+                "runtime_artifacts/runtime_workspaces/ames-smiles-fedavg/server/simulate_job/"
+                "metrics/round_metrics.jsonl"
+            ),
+            "path": "runtime_workspaces/ames-smiles-fedavg/server/simulate_job/metrics/round_metrics.jsonl",
+        }
+
+    no_skill_files = [
+        write_source(
+            NO_SKILLS_MODE,
+            "fl_client.py",
+            """
+import nvflare.client as flare
+from nvflare.client import FLModel
+
+def site_partition(frame, index, num_clients, seed):
+    shuffled = frame.sample(frac=1.0, random_state=seed)
+    return shuffled.iloc[index::num_clients].reset_index(drop=True)
+
+while flare.is_running():
+    model = flare.receive()
+    pos_weight = positive_class_weight(train_frame["label"].to_numpy(dtype=np.float32))
+    auroc = binary_auroc(predictions, labels)
+    flare.send(FLModel(params=model.state_dict(), metrics={"AUROC": auroc}))
+""",
+        ),
+        write_source(
+            NO_SKILLS_MODE,
+            "train.py",
+            """
+train_args = quote_args(["--data-dir", "data"])
+recipe = FedAvgRecipe(
+    name="ames",
+    launch_external_process=True,
+    command=f"{sys.executable} -u",
+    key_metric="auroc",
+)
+recipe.job.add_file_to_clients(str(args.data_dir), dest_dir="data")
+""",
+        ),
+    ]
+    with_skill_files = [
+        write_source(
+            WITH_SKILLS_MODE,
+            "client.py",
+            """
+import nvflare.client.lightning as flare
+import pytorch_lightning as pl
+from torchmetrics.classification import BinaryAUROC
+
+def partition(frame):
+    return frame.iloc[self.site_index :: self.num_clients].reset_index(drop=True)
+
+trainer = pl.Trainer(max_epochs=3)
+flare.patch(trainer)
+while flare.is_running():
+    trainer.fit(model, datamodule=datamodule)
+""",
+        ),
+        write_source(
+            WITH_SKILLS_MODE,
+            "job.py",
+            """
+MODEL_ARGS = {"pos_weight": 0.8750402576489533}
+train_args = [f"--data-dir {args.data_dir.resolve()}", "--pos-weight", "0.8750402576489533"]
+recipe = FedAvgRecipe(
+    name="ames",
+    launch_external_process=False,
+    server_expected_format=ExchangeFormat.PYTORCH,
+    params_transfer_type=TransferType.FULL,
+    key_metric="val_auroc",
+)
+""",
+        ),
+    ]
+    no_metrics = write_round_metrics(NO_SKILLS_MODE, [0.7305, 0.7449, 0.7573])
+    with_metrics = write_round_metrics(WITH_SKILLS_MODE, [0.486, 0.486, 0.486])
+    runs = {
+        NO_SKILLS_MODE: _ev(
+            {
+                "available": True,
+                "job_name": "ames-lightning",
+                "job_slug": "ames_lightning",
+                "label": "No skills baseline",
+                "mode": NO_SKILLS_MODE,
+                "mode_dir": tmp_path / NO_SKILLS_MODE,
+                "validation_metric": {"name": "AUROC", "value": 0.7573},
+                "workspace_delta": {
+                    "changed_files": no_skill_files,
+                    "runtime_artifacts": [no_metrics],
+                },
+            }
+        ),
+        WITH_SKILLS_MODE: _ev(
+            {
+                "available": True,
+                "job_name": "ames-lightning",
+                "job_slug": "ames_lightning",
+                "label": "With skills",
+                "mode": WITH_SKILLS_MODE,
+                "mode_dir": tmp_path / WITH_SKILLS_MODE,
+                "validation_metric": {"name": "AUROC", "value": 0.486},
+                "workspace_delta": {
+                    "changed_files": with_skill_files,
+                    "runtime_artifacts": [with_metrics],
+                },
+            }
+        ),
+    }
+    modes = [NO_SKILLS_MODE, WITH_SKILLS_MODE]
+    cmp = ComparisonEvidence(schema_version=SCHEMA_VERSION, runs=runs, modes=modes, sdk_metadata={})
+
+    plugin = NvflareReportPlugin()
+    sections = plugin.sections(cmp, {mode: plugin.collect(run) for mode, run in runs.items()})
+    section = next(section for section in sections if section.id == "nvflare_conversion_quality")
+    body = f"{section.title}\n\n{section.body}"
+
+    assert section.anchor == "generated_code_quality" and section.placement == "after"
+    assert "## NVFLARE Conversion Quality Comparison" in body
+    assert "caution: manual Client API loop" in body
+    assert "good: Lightning Client API patch" in body
+    assert "good: seeded shuffled site partition" in body
+    assert "bad: deterministic stride partition without shuffle" in body
+    assert "good: per-site loss weight from local training partition" in body
+    assert "bad: fixed/global `pos_weight=0.8750402576489533` passed to clients" in body
+    assert "good: packages dataset into client app" in body
+    assert "bad: passes absolute workspace data path to clients" in body
+    assert "good: external client process runner" in body
+    assert "good: in-process Client API executor" in body
+    assert "good: AUROC 0.7305 -> 0.7449 -> 0.7573" in body
+    assert "bad: AUROC 0.4860 -> 0.4860 -> 0.4860 (flat)" in body
+    assert "flat validation metric progression" in body
+
+
 def test_fl_algorithm_prefers_training_workflow_over_initialization(tmp_path):
     from benchmark.harness.modes import WITH_SKILLS_MODE
     from benchmark.harness.sdks.nvflare._logic import fl_algorithm_info
@@ -699,6 +950,91 @@ def test_fl_algorithm_prefers_training_workflow_over_initialization(tmp_path):
     assert info["algorithm"] == "ScatterAndGather"
     assert info["num_rounds"] == 5
     assert info["workflow_id"] == "train"
+
+
+def test_fl_algorithm_prefers_final_runtime_config_over_probe_config(tmp_path):
+    from benchmark.harness.modes import WITH_SKILLS_MODE
+    from benchmark.harness.sdks.nvflare._logic import fl_algorithm_info
+
+    mode_dir = tmp_path / WITH_SKILLS_MODE
+    final_config = (
+        mode_dir
+        / "workspace_delta"
+        / "runtime_artifacts"
+        / "runtime_workspaces"
+        / "ames-smiles-fedavg"
+        / "ames-smiles-fedavg"
+        / "server"
+        / "simulate_job"
+        / "app_server"
+        / "config"
+        / "config_fed_server.json"
+    )
+    probe_config = (
+        mode_dir
+        / "workspace_delta"
+        / "runtime_artifacts"
+        / "runtime_workspaces"
+        / "ames-smiles-fedavg-inproc-probe"
+        / "ames-smiles-fedavg-inproc-probe"
+        / "server"
+        / "simulate_job"
+        / "app_server"
+        / "config"
+        / "config_fed_server.json"
+    )
+    for path, rounds in ((final_config, 3), (probe_config, 1)):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "workflows": [
+                        {
+                            "id": "controller",
+                            "path": "nvflare.app_common.workflows.fedavg.FedAvg",
+                            "args": {"num_rounds": rounds},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+    run = {
+        "available": True,
+        "mode": WITH_SKILLS_MODE,
+        "mode_dir": mode_dir,
+        "workspace_delta": {
+            "runtime_artifacts": [
+                {
+                    "artifact_path": (
+                        "runtime_artifacts/runtime_workspaces/ames-smiles-fedavg-inproc-probe/"
+                        "ames-smiles-fedavg-inproc-probe/server/simulate_job/app_server/config/"
+                        "config_fed_server.json"
+                    ),
+                    "path": (
+                        "runtime_workspaces/ames-smiles-fedavg-inproc-probe/"
+                        "ames-smiles-fedavg-inproc-probe/server/simulate_job/app_server/config/"
+                        "config_fed_server.json"
+                    ),
+                },
+                {
+                    "artifact_path": (
+                        "runtime_artifacts/runtime_workspaces/ames-smiles-fedavg/ames-smiles-fedavg/"
+                        "server/simulate_job/app_server/config/config_fed_server.json"
+                    ),
+                    "path": (
+                        "runtime_workspaces/ames-smiles-fedavg/ames-smiles-fedavg/server/simulate_job/"
+                        "app_server/config/config_fed_server.json"
+                    ),
+                },
+            ]
+        },
+    }
+
+    info = fl_algorithm_info(run)
+
+    assert info["algorithm"] == "FedAvg"
+    assert info["num_rounds"] == 3
 
 
 def test_fl_algorithm_recipe_prefers_generated_source_over_recipe_list_catalog(tmp_path):

@@ -68,7 +68,7 @@ def captured_metric_artifact_paths(manifest: Mapping[str, Any], manifest_path: P
     """Return copied structured artifact paths from a workspace-delta manifest."""
 
     delta_dirs = _candidate_delta_dirs(manifest, manifest_path)
-    paths: list[tuple[int, Path]] = []
+    paths: list[tuple[int, int, Path]] = []
     seen: set[Path] = set()
     for category_index, key in enumerate(
         ("runtime_artifacts", "changed_files", "workspace_added_files", "workspace_modified_files")
@@ -76,7 +76,7 @@ def captured_metric_artifact_paths(manifest: Mapping[str, Any], manifest_path: P
         items = manifest.get(key)
         if not isinstance(items, list):
             continue
-        for item in items:
+        for item_index, item in enumerate(items):
             if not isinstance(item, dict):
                 continue
             artifact_text = str(item.get("artifact_path") or "")
@@ -92,12 +92,12 @@ def captured_metric_artifact_paths(manifest: Mapping[str, Any], manifest_path: P
                 and is_metric_artifact_path(candidate)
                 and candidate not in seen
             ):
-                paths.append((category_index, candidate))
+                paths.append((category_index, item_index, candidate))
                 seen.add(candidate)
     return [
         path
-        for _category_index, path in sorted(
-            paths, key=lambda item: (item[0], metric_artifact_rank(item[1]), item[1].as_posix())
+        for _category_index, _item_index, path in sorted(
+            paths, key=lambda item: (item[0], metric_artifact_rank(item[2]), item[1], item[2].as_posix())
         )
     ]
 
@@ -115,16 +115,21 @@ def is_metric_artifact_path(path: Path) -> bool:
 def metric_artifact_rank(path: Path) -> int:
     name = path.name.lower()
     if name == "metrics_summary.json":
-        return 0
-    if name.endswith("_summary.json") or name == "summary.json":
-        return 1
-    if name == "round_metrics.jsonl":
-        return 2
-    if "metric" in name:
-        return 3
-    if "result" in name or "score" in name:
-        return 4
-    return 5
+        rank = 0
+    elif name.endswith("_summary.json") or name == "summary.json":
+        rank = 1
+    elif name == "round_metrics.jsonl":
+        rank = 2
+    elif "metric" in name:
+        rank = 3
+    elif "result" in name or "score" in name:
+        rank = 4
+    else:
+        rank = 5
+    text = path.as_posix().lower()
+    if "probe" in text:
+        rank += 10
+    return rank
 
 
 def load_artifact_payloads(path: Path) -> Iterable[Any]:

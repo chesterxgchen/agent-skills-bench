@@ -292,6 +292,69 @@ def test_metric_artifact_parser_prefers_runtime_artifacts_over_changed_files(tmp
     assert "/runtime_artifacts/" in metric["source_path"]
 
 
+def test_metric_artifact_parser_prefers_final_runtime_metrics_over_probe_metrics(tmp_path):
+    from benchmark.harness.metric_artifacts import validation_metric_from_workspace_delta_manifest
+
+    delta = tmp_path / "delta"
+    final_artifact = (
+        delta
+        / "runtime_artifacts"
+        / "runtime_workspaces"
+        / "ames-smiles-fedavg"
+        / "server"
+        / "simulate_job"
+        / "metrics"
+        / "metrics_summary.json"
+    )
+    probe_artifact = (
+        delta
+        / "runtime_artifacts"
+        / "runtime_workspaces"
+        / "ames-smiles-fedavg-inproc-probe"
+        / "server"
+        / "simulate_job"
+        / "metrics"
+        / "metrics_summary.json"
+    )
+    final_artifact.parent.mkdir(parents=True)
+    probe_artifact.parent.mkdir(parents=True)
+    final_artifact.write_text(
+        json.dumps({"final_aggregated_metrics": [{"name": "val_auroc", "value": 0.4860}]}),
+        encoding="utf-8",
+    )
+    probe_artifact.write_text(
+        json.dumps({"final_aggregated_metrics": [{"name": "val_auroc", "value": 0.3984}]}),
+        encoding="utf-8",
+    )
+    manifest = {
+        "delta_dir": str(delta),
+        "runtime_artifacts": [
+            {
+                "path": "runtime_workspaces/ames-smiles-fedavg/server/simulate_job/metrics/metrics_summary.json",
+                "artifact_path": (
+                    "runtime_artifacts/runtime_workspaces/ames-smiles-fedavg/server/simulate_job/metrics/"
+                    "metrics_summary.json"
+                ),
+            },
+            {
+                "path": (
+                    "runtime_workspaces/ames-smiles-fedavg-inproc-probe/server/simulate_job/metrics/"
+                    "metrics_summary.json"
+                ),
+                "artifact_path": (
+                    "runtime_artifacts/runtime_workspaces/ames-smiles-fedavg-inproc-probe/server/simulate_job/"
+                    "metrics/metrics_summary.json"
+                ),
+            },
+        ],
+    }
+
+    metric = validation_metric_from_workspace_delta_manifest(manifest, tmp_path / "delta_manifest.json", "AUROC")
+
+    assert metric["value"] == 0.4860
+    assert "inproc-probe" not in metric["source_path"]
+
+
 def test_metric_artifact_parser_ignores_config_thresholds(tmp_path):
     from benchmark.harness.metric_artifacts import validation_metric_from_workspace_delta_manifest
 

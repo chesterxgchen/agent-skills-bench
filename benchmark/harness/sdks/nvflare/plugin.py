@@ -187,6 +187,21 @@ class NvflareReportPlugin(ReportPlugin):
         "derived from artifacts such as `config_fed_server.json`; agent final-message text is used only as "
         "a fallback."
     )
+    _QUALITY_COMPARISON_TITLE = "## NVFLARE Conversion Quality Comparison"
+    _QUALITY_COMPARISON_INTRO = (
+        "This SDK-specific section compares generated NVFLARE implementation choices that can explain quality "
+        "differences even when both runs complete. These signals are derived from captured generated source and "
+        "runtime metric artifacts."
+    )
+    _QUALITY_COMPARISON_ROWS = (
+        ("training_control", "Client training/control path"),
+        ("partitioning", "Site data partitioning"),
+        ("class_weighting", "Loss weighting (`pos_weight`)"),
+        ("metric_reporting", "Metric implementation/reporting"),
+        ("data_packaging", "Data packaging/path"),
+        ("execution_model", "Client execution/model exchange"),
+        ("metric_progression", "Round metric progression"),
+    )
 
     def section_copy(self, key: str) -> str | None:
         return self._SECTION_COPY.get(key)
@@ -195,6 +210,7 @@ class NvflareReportPlugin(ReportPlugin):
         # The FL Algorithm/Workflow section, built from this plugin's own AlgorithmSignal
         # (+ neutral formatting leaves) and merged after the generic Executive Summary
         # block (E1b §6). The engine no longer renders this section.
+        sections: list[ReportSection] = []
         rows = [
             "| Run | Algorithm/workflow | Recipe | Rounds | Evidence |",
             "|---|---|---|---:|---|",
@@ -210,7 +226,7 @@ class NvflareReportPlugin(ReportPlugin):
                 f"{markdown_cell(fmt_number(info.get('num_rounds')))} | {markdown_cell(info.get('evidence'))} |"
             )
         body = "\n".join([self._ALGORITHM_SECTION_INTRO, "", *rows])
-        return [
+        sections.append(
             ReportSection(
                 id="fl_algorithm",
                 title=self._ALGORITHM_SECTION_TITLE,
@@ -218,7 +234,44 @@ class NvflareReportPlugin(ReportPlugin):
                 anchor="exec_summary",
                 placement="after",
             )
+        )
+        quality_section = self._conversion_quality_section(cmp)
+        if quality_section is not None:
+            sections.append(quality_section)
+        return sections
+
+    def _conversion_quality_section(self, cmp: ComparisonEvidence) -> ReportSection | None:
+        if len(cmp.modes) < 2:
+            return None
+        profiles = {mode: _logic.conversion_quality_profile(cmp.runs[mode].raw) for mode in cmp.modes}
+        table = [
+            "| Signal | " + " | ".join(markdown_cell(cmp.runs[mode].label or mode) for mode in cmp.modes) + " | Interpretation |",
+            "|---|" + "|".join("---" for _mode in cmp.modes) + "|---|",
         ]
+        useful = False
+        for key, label in self._QUALITY_COMPARISON_ROWS:
+            values = [profiles[mode].get(key, "not captured") for mode in cmp.modes]
+            interpretation = _logic.conversion_quality_interpretation(key, values)
+            if interpretation not in {"same captured pattern", "not enough evidence"}:
+                useful = True
+            scored_values = [
+                f"{_logic.conversion_quality_score(key, value, cmp.runs[mode].raw)}: {value}"
+                for mode, value in zip(cmp.modes, values)
+            ]
+            table.append(
+                f"| {markdown_cell(label)} | "
+                + " | ".join(markdown_cell(value) for value in scored_values)
+                + f" | {markdown_cell(interpretation)} |"
+            )
+        if not useful:
+            return None
+        return ReportSection(
+            id="nvflare_conversion_quality",
+            title=self._QUALITY_COMPARISON_TITLE,
+            body="\n".join([self._QUALITY_COMPARISON_INTRO, "", *table]),
+            anchor="generated_code_quality",
+            placement="after",
+        )
 
     def metric_log_patterns(self) -> tuple:
         # FL-aggregation metric lines (aggregated/global/server validation): the

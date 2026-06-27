@@ -39,14 +39,41 @@ def _skill_relative_path(file_path: str) -> str:
     return ""
 
 
-def _skill_name_from_path(file_path: str) -> str:
-    rel_path = _skill_relative_path(file_path)
+def _valid_skill_name(skill_name: str) -> str:
+    skill_name = str(skill_name or "").strip()
+    if not skill_name or skill_name == "_shared" or skill_name.startswith("."):
+        return ""
+    return skill_name
+
+
+def _skill_name_from_relative_path(rel_path: str) -> str:
     if not rel_path:
         return ""
     top_level = rel_path.split("/", 1)[0]
-    if top_level == "_shared" or top_level.startswith("."):
+    return _valid_skill_name(top_level)
+
+
+def _skill_name_from_path(file_path: str) -> str:
+    return _skill_name_from_relative_path(_skill_relative_path(file_path))
+
+
+def _is_top_level_skill_md(rel_path: str) -> bool:
+    parts = PurePosixPath(rel_path).parts
+    return len(parts) == 2 and parts[1].lower() == "skill.md"
+
+
+def _skill_inspection_name_from_path(file_path: str) -> str:
+    rel_path = _skill_relative_path(file_path)
+    if not _is_top_level_skill_md(rel_path):
         return ""
-    return top_level
+    return _skill_name_from_relative_path(rel_path)
+
+
+def _skill_reference_name_from_path(file_path: str) -> str:
+    rel_path = _skill_relative_path(file_path)
+    if not rel_path or _is_top_level_skill_md(rel_path):
+        return ""
+    return _skill_name_from_relative_path(rel_path)
 
 
 def _shared_ref_from_path(file_path: str) -> str:
@@ -58,6 +85,28 @@ def _shared_ref_from_path(file_path: str) -> str:
 
 def _skill_paths_from_text(text: str) -> list[str]:
     return [match.group(1) for match in _SKILL_PATH_RE.finditer(str(text or ""))]
+
+
+def _event_read_tool_paths(event: dict[str, Any]) -> list[str]:
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return []
+    paths: list[str] = []
+    for item in message.get("content") or []:
+        if not isinstance(item, dict) or item.get("name") != "Read":
+            continue
+        tool_input = item.get("input")
+        if not isinstance(tool_input, dict):
+            continue
+        paths.append(str(tool_input.get("file_path") or ""))
+    return paths
+
+
+def _event_skill_paths(event: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    paths.extend(_skill_paths_from_text(_event_command_text(event)))
+    paths.extend(_event_read_tool_paths(event))
+    return paths
 
 
 def _event_command_text(event: dict[str, Any]) -> str:
@@ -101,19 +150,42 @@ def skill_instruction_reads(events_text: str) -> list[str]:
             continue
         if not isinstance(event, dict):
             continue
-        command = _event_command_text(event)
-        for file_path in _skill_paths_from_text(command):
+        for file_path in _event_skill_paths(event):
             _append_unique(skills, seen, _skill_name_from_path(file_path))
-        message = event.get("message")
-        if not isinstance(message, dict):
+    return skills
+
+
+def skill_inspection_reads(events_text: str) -> list[str]:
+    """Return skills whose top-level SKILL.md was read while routing/inspecting."""
+
+    skills: list[str] = []
+    seen: set[str] = set()
+    for line in events_text.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
             continue
-        for item in message.get("content") or []:
-            if not isinstance(item, dict) or item.get("name") != "Read":
-                continue
-            tool_input = item.get("input")
-            if not isinstance(tool_input, dict):
-                continue
-            _append_unique(skills, seen, _skill_name_from_path(str(tool_input.get("file_path") or "")))
+        if not isinstance(event, dict):
+            continue
+        for file_path in _event_skill_paths(event):
+            _append_unique(skills, seen, _skill_inspection_name_from_path(file_path))
+    return skills
+
+
+def skill_reference_reads(events_text: str) -> list[str]:
+    """Return skills with deeper non-shared instruction/reference evidence."""
+
+    skills: list[str] = []
+    seen: set[str] = set()
+    for line in events_text.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        for file_path in _event_skill_paths(event):
+            _append_unique(skills, seen, _skill_reference_name_from_path(file_path))
     return skills
 
 
@@ -127,19 +199,7 @@ def shared_skill_reference_reads(events_text: str) -> list[str]:
             continue
         if not isinstance(event, dict):
             continue
-        command = _event_command_text(event)
-        for file_path in _skill_paths_from_text(command):
-            _append_unique(refs, seen, _shared_ref_from_path(file_path))
-        message = event.get("message")
-        if not isinstance(message, dict):
-            continue
-        for item in message.get("content") or []:
-            if not isinstance(item, dict) or item.get("name") != "Read":
-                continue
-            tool_input = item.get("input")
-            if not isinstance(tool_input, dict):
-                continue
-            file_path = str(tool_input.get("file_path") or "").strip()
+        for file_path in _event_skill_paths(event):
             _append_unique(refs, seen, _shared_ref_from_path(file_path))
     return refs
 
@@ -163,7 +223,8 @@ def available_skill_names(skills_list: Any) -> list[str]:
             name = str(item.get("name") or "").strip()
         else:
             name = str(item or "").strip()
-        if not name or name == "_shared" or name.startswith("."):
+        name = _valid_skill_name(name)
+        if not name:
             continue
         _append_unique(names, seen, name)
     return names
@@ -185,13 +246,18 @@ def skill_usage_display(*, events_text: str = "", observed_skill_name: Any = Non
     explicit = explicit_skill_tool_calls(events_text)
     if explicit:
         return "; ".join(explicit)
-    instruction_reads = skill_instruction_reads(events_text)
-    if instruction_reads:
-        return "; ".join(instruction_reads)
-    observed = str(observed_skill_name or "").strip()
+    reference_reads = skill_reference_reads(events_text)
+    if reference_reads:
+        return "; ".join(reference_reads)
+    observed = _valid_skill_name(str(observed_skill_name or ""))
     if observed:
         return observed
     return "none recorded" if skills_enabled else "none"
+
+
+def skill_inspection_display(events_text: str = "") -> str:
+    inspected = skill_inspection_reads(events_text)
+    return "; ".join(inspected) if inspected else "none"
 
 
 def shared_skill_usage_display(events_text: str = "") -> str:
