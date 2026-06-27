@@ -2624,6 +2624,139 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
     assert "Slowdown driver comparison" not in why
 
 
+def test_incomplete_background_runtime_overrides_successful_launch_status(tmp_path):
+    from benchmark.harness.modes import WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import why_section
+    from benchmark.harness.sdks.nvflare._logic import job_run_status, job_run_status_reason
+
+    mode_dir = tmp_path / WITH_SKILLS_MODE
+    artifact_root = mode_dir / "workspace_delta" / "runtime_artifacts"
+
+    def runtime_artifact(rel_path: str, text: str):
+        path = artifact_root / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return {
+            "artifact_path": f"runtime_artifacts/{rel_path}",
+            "path": rel_path,
+            "size_bytes": len(text.encode("utf-8")),
+        }
+
+    runtime_artifacts = [
+        runtime_artifact(
+            "runtime_workspaces/ames_fedavg_lightning/server/log_fl.txt",
+            "\n".join(
+                [
+                    "2026-06-26 23:58:05,843 - FedAvg - INFO - Start FedAvg.",
+                    "2026-06-26 23:58:05,843 - FedAvg - INFO - Round 0 started.",
+                ]
+            ),
+        ),
+        runtime_artifact("runtime_workspaces/ames_fedavg_lightning/server/error_log.txt", ""),
+        runtime_artifact(
+            "runtime_workspaces/ames_fedavg_lightning/site-1/log_fl.txt",
+            "Epoch 0:  40%|####      | 36/91 [00:20<00:31, 1.74it/s]\n",
+        ),
+    ]
+    events = [
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_job",
+                        "input": {
+                            "command": "python3 job.py > /tmp/nvflare/sim_run.log 2>&1",
+                            "description": "Re-run 3-site 3-round FedAvg simulation",
+                            "run_in_background": True,
+                        },
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "user",
+            "message": {
+                "content": [
+                    {
+                        "content": "Command running in background with ID: badr1qlpf.",
+                        "is_error": False,
+                        "tool_use_id": "toolu_job",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"backgroundTaskId": "badr1qlpf"},
+        },
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_wakeup",
+                        "input": {"delaySeconds": 270},
+                        "name": "ScheduleWakeup",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "result.success",
+            "harness_timestamp": "2026-06-26T23:58:28.557Z",
+            "stop_reason": "end_turn",
+            "subtype": "success",
+            "terminal_reason": "completed",
+            "type": "result",
+        },
+    ]
+    run = {
+        "available": True,
+        "mode": WITH_SKILLS_MODE,
+        "label": "With skills",
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0, "elapsed_seconds": 997, "token_count": 5_508_753},
+        "record": {},
+        "activity": {
+            "command_count": 1,
+            "commands": ["python3 job.py > /tmp/nvflare/sim_run.log 2>&1"],
+            "hint_counts": {"simulation": 1, "python_job_py": 1},
+        },
+        "agent_events_text": "\n".join(json.dumps(event) for event in events),
+        "mode_dir": mode_dir,
+        "workspace_delta": {"runtime_artifacts": runtime_artifacts},
+    }
+
+    assert job_run_status(run) == "started_failed"
+    assert "no terminal `Finished` marker" in job_run_status_reason(run)
+
+    from benchmark.harness.modes import NO_SKILLS_MODE
+
+    runs = {
+        NO_SKILLS_MODE: {
+            "available": True,
+            "mode": NO_SKILLS_MODE,
+            "label": "No skills baseline",
+            "container_exit": {"exit_code": 0},
+            "run": {"final_container_exit_code": 0, "elapsed_seconds": 1321, "token_count": 4_989_109},
+            "record": {},
+            "validation_metric": {"name": "AUROC", "value": 0.7469},
+        },
+        WITH_SKILLS_MODE: run,
+    }
+    modes = [NO_SKILLS_MODE, WITH_SKILLS_MODE]
+    typed = _evruns(runs)
+    ctx = _nv_ctx(runs, modes)
+    why = why_section(typed, modes, ctx)
+    assert "**Root cause of missing FL result**" in why
+    assert "agent run ended while the background simulation was still running" in why
+    assert "scheduled wakeup did not keep the non-interactive benchmark run alive" in why
+    assert "`Round 0 started`" in why
+    assert "`metrics_summary.json` was not captured" in why
+
+
 def test_why_section_renders_when_both_runs_fail_result_gate():
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import why_section

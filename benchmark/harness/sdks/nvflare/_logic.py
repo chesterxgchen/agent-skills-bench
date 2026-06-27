@@ -725,6 +725,18 @@ def last_successful_job_event(run: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _runtime_started_but_incomplete(run: dict[str, Any]) -> bool:
+    """Return true when captured NVFLARE artifacts show a started, unfinished run."""
+
+    if _has_scalar_result_metric(run):
+        return False
+    progress = _server_progress_summary(run)
+    if not progress or "no terminal `Finished` marker was captured" not in progress:
+        return False
+    metrics = _metrics_artifact_summary(run)
+    return "`metrics_summary.json` was not captured" in metrics
+
+
 def job_run_status(run: dict[str, Any]) -> str:
     """Return one of 'completed', 'started_failed', 'not_started', or 'unknown'."""
     if not run.get("available"):
@@ -745,6 +757,8 @@ def job_run_status(run: dict[str, Any]) -> str:
         if is_simulation_or_job_command(command) and "--help" not in command and "--export" not in command
     ]
     attempted = bool(executed_events or attempted_commands)
+    if _runtime_started_but_incomplete(run):
+        return "started_failed"
     if last_successful_job_event(run):
         return "completed"
     if artifact_validation_metric_is_runtime_evidence(run):
@@ -795,6 +809,13 @@ def job_run_status_reason(run: dict[str, Any]) -> str:
         return "simulation not attempted — no captured job.py or simulator command"
 
     if status == "started_failed":
+        if _runtime_started_but_incomplete(run):
+            parts = [
+                "simulation started but did not complete",
+                _server_progress_summary(run),
+                _metrics_artifact_summary(run),
+            ]
+            return "; ".join(part for part in parts if part)
         if bash_blocked_count > 0:
             return (
                 f"simulation command ran but Bash was blocked {bash_blocked_count} time(s); "
@@ -1067,7 +1088,9 @@ def _error_log_summary(run: dict[str, Any]) -> str:
 def result_failure_root_cause_block(run: dict[str, Any]) -> str:
     """Explain missing NVFLARE result metrics from captured runtime artifacts."""
 
-    if not run.get("available") or _has_scalar_result_metric(run) or job_run_status(run) != "started_failed":
+    if not run.get("available") or _has_scalar_result_metric(run):
+        return ""
+    if job_run_status(run) != "started_failed" and not _runtime_started_but_incomplete(run):
         return ""
     rows = [
         ("Interruption cause", _background_task_interruption_cause(run)),
