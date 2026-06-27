@@ -65,6 +65,15 @@ export SDK_REPO=/path/to/NVFLARE
 ./bin/run.sh pair --prompt /path/to/prompt.txt /path/to/job-folder
 ```
 
+Common pair command with a custom results root:
+
+```bash
+./bin/run.sh pair \
+  --prompt /path/to/prompt.txt \
+  /path/to/job-folder \
+  --results-root /path/to/results
+```
+
 (Optional) install the harness package so `benchmark.harness` is importable
 without `bin/*.sh` setting `PYTHONPATH`:
 
@@ -397,8 +406,18 @@ Set the parent directory for timestamped results:
 ```bash
 ./bin/run.sh pair \
   --prompt ./prompt.txt \
-  --results-root /path/to/results \
-  /path/to/job-folder
+  /path/to/job-folder \
+  --results-root /path/to/results
+```
+
+The positional job folder and trailing options can be combined in the same
+style used for local NVFLARE benchmark fixtures:
+
+```bash
+./bin/run.sh pair \
+  --prompt /path/to/prompt.txt \
+  /path/to/job-folder \
+  --results-root /path/to/results
 ```
 
 Write a comparison to an exact directory:
