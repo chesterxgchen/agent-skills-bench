@@ -4512,6 +4512,190 @@ def test_runtime_path_note_includes_baseline_fallback_command_time():
     assert "nl -ba nvflare_scaffold_job.py" not in note
 
 
+def test_runtime_path_note_explains_slow_lightning_round_against_prior_rounds(tmp_path):
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.evidence import SCHEMA_VERSION, ComparisonEvidence
+    from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
+
+    def command_events(command, start, end, item_id, output="ok"):
+        return [
+            {
+                "timestamp": start,
+                "type": "item.started",
+                "item": {
+                    "command": command,
+                    "id": item_id,
+                    "status": "in_progress",
+                    "type": "command_execution",
+                },
+            },
+            {
+                "timestamp": end,
+                "type": "item.completed",
+                "item": {
+                    "aggregated_output": output,
+                    "command": command,
+                    "exit_code": 0,
+                    "id": item_id,
+                    "status": "completed",
+                    "type": "command_execution",
+                },
+            },
+        ]
+
+    mode_dir = tmp_path / WITH_SKILLS_MODE
+    client_path = mode_dir / "workspace_delta" / "changed_files" / "client.py"
+    client_path.parent.mkdir(parents=True)
+    client_path.write_text(
+        """
+import pytorch_lightning as pl
+import nvflare.client.lightning as flare
+
+trainer = pl.Trainer(max_epochs=args.epochs)
+flare.patch(trainer)
+
+while flare.is_running():
+    trainer.validate(model, datamodule=datamodule, verbose=False)
+    trainer.fit(model, datamodule=datamodule)
+""",
+        encoding="utf-8",
+    )
+    runtime_artifacts = []
+    for site, third_round_end in {
+        "site-1": "2026-06-13 08:15:40,000",
+        "site-2": "2026-06-13 08:15:41,000",
+        "site-3": "2026-06-13 08:15:39,000",
+    }.items():
+        log_path = mode_dir / "workspace_delta" / "runtime_artifacts" / "runtime_workspaces" / "job" / site / "log.txt"
+        log_path.parent.mkdir(parents=True)
+        log_path.write_text(
+            "\n".join(
+                [
+                    f"2026-06-13 08:00:00,000 - TaskScriptRunner - INFO - {site} | round=1 task=train",
+                    "2026-06-13 08:00:16,000 - rank_zero - INFO - `Trainer.fit` stopped: `max_epochs=1` reached.",
+                    f"2026-06-13 08:00:20,000 - TaskScriptRunner - INFO - {site} | round=2 task=train",
+                    "2026-06-13 08:00:36,000 - rank_zero - INFO - `Trainer.fit` stopped: `max_epochs=2` reached.",
+                    f"2026-06-13 08:00:40,000 - TaskScriptRunner - INFO - {site} | round=3 task=train",
+                    f"{third_round_end} - rank_zero - INFO - `Trainer.fit` stopped: `max_epochs=3` reached.",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        config_path = (
+            mode_dir
+            / "workspace_delta"
+            / "runtime_artifacts"
+            / "runtime_workspaces"
+            / "job"
+            / site
+            / "simulate_job"
+            / f"app_{site}"
+            / "config"
+            / "config_fed_client.json"
+        )
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "executors": [
+                        {
+                            "executor": {
+                                "args": {
+                                    "task_script_args": "--data-path /workspace/input --epochs 1 --device cpu"
+                                }
+                            }
+                        }
+                    ]
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        runtime_artifacts.extend(
+            [
+                {
+                    "artifact_path": f"runtime_artifacts/runtime_workspaces/job/{site}/log.txt",
+                    "path": f"runtime_workspaces/job/{site}/log.txt",
+                },
+                {
+                    "artifact_path": (
+                        f"runtime_artifacts/runtime_workspaces/job/{site}/simulate_job/app_{site}/config/"
+                        "config_fed_client.json"
+                    ),
+                    "path": f"runtime_workspaces/job/{site}/simulate_job/app_{site}/config/config_fed_client.json",
+                },
+            ]
+        )
+
+    with_output = "\n".join(
+        [
+            "2026-06-13 08:00:00,000 - INFO - Round 0 started.",
+            "2026-06-13 08:00:18,000 - INFO - Aggregated 3/3 results",
+            "2026-06-13 08:00:20,000 - INFO - Round 1 started.",
+            "2026-06-13 08:00:39,000 - INFO - Aggregated 3/3 results",
+            "2026-06-13 08:00:40,000 - INFO - Round 2 started.",
+            "2026-06-13 08:15:42,000 - INFO - Aggregated 3/3 results",
+            "PTInProcessClientAPIExecutor - INFO - result received",
+            "Finished FedAvg.",
+        ]
+    )
+    with_run = {
+        "available": True,
+        "label": "With skills",
+        "mode": WITH_SKILLS_MODE,
+        "mode_dir": mode_dir,
+        "run": {"elapsed_seconds": 950},
+        "agent_events_text": "\n".join(
+            json.dumps(event)
+            for event in command_events(
+                "python job.py",
+                "2026-06-13T08:00:00Z",
+                "2026-06-13T08:15:45Z",
+                "with_job",
+                output=with_output,
+            )
+        ),
+        "workspace_delta": {
+            "changed_files": [{"artifact_path": "changed_files/client.py", "path": "client.py"}],
+            "runtime_artifacts": runtime_artifacts,
+        },
+    }
+    base_run = {
+        "available": True,
+        "label": "No skills baseline",
+        "mode": NO_SKILLS_MODE,
+        "run": {"elapsed_seconds": 120},
+        "agent_events_text": "\n".join(
+            json.dumps(event)
+            for event in command_events(
+                "python run_job.py",
+                "2026-06-13T08:00:00Z",
+                "2026-06-13T08:01:00Z",
+                "base_job",
+                output="2026-06-13 08:00:10,000 - INFO - Round 0 started.\nFinished FedAvg.\n",
+            )
+        ),
+    }
+
+    plugin = NvflareReportPlugin()
+    modes = [WITH_SKILLS_MODE, NO_SKILLS_MODE]
+    runs = {WITH_SKILLS_MODE: _ev(with_run), NO_SKILLS_MODE: _ev(base_run)}
+    cmp = ComparisonEvidence(schema_version=SCHEMA_VERSION, runs=runs, modes=modes, sdk_metadata={})
+    evidence = {mode: plugin.collect(runs[mode]) for mode in modes}
+    note = "\n".join(fragment.text for fragment in plugin.explain(cmp, evidence))
+
+    assert "Slow FL round evidence" in note
+    assert "Slow Lightning client evidence" in note
+    assert "server Round 2 / client round 3" in note
+    assert "previous client rounds were shorter (round 1 max 16s; round 2 max 16s)" in note
+    assert "client round 3 fit timings: site-1 900s, site-2 901s, site-3 899s" in note
+    assert "this points to local Lightning `Trainer.fit`, not NVFLARE transfer/aggregation" in note
+    assert "Lightning stopped at max_epochs=3" in note
+    assert "site config passed --epochs 1" in note
+    assert "reuses it for repeated `trainer.fit(...)` calls" in note
+
+
 def test_longest_command_table_empty_cells_preserve_threshold():
     from benchmark.harness.reports.benchmark_insights import _longest_command_comparison_note
 

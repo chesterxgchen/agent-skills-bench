@@ -254,6 +254,7 @@ class NvflareReportPlugin(ReportPlugin):
         blocks = self._runtime_path_slowdown_blocks(
             with_je=(plugin.get(WITH_SKILLS_MODE) or PluginEvidence()).job_execution or JobExecutionSignal(),
             base_je=(plugin.get(base_mode) or PluginEvidence()).job_execution or JobExecutionSignal(),
+            with_run=cmp.runs.get(WITH_SKILLS_MODE),
             base_run=cmp.runs.get(base_mode),
         )
         fragments.extend(NarrativeFragment(text=block, anchor="why_slowdown") for block in blocks)
@@ -263,6 +264,7 @@ class NvflareReportPlugin(ReportPlugin):
     def _runtime_path_slowdown_blocks(
         with_je: JobExecutionSignal,
         base_je: JobExecutionSignal,
+        with_run: RunEvidence | None,
         base_run: RunEvidence | None,
     ) -> list[str]:
         with_jobs = list(with_je.successful_job_spans)
@@ -344,6 +346,13 @@ class NvflareReportPlugin(ReportPlugin):
                     f"minutes before all client results returned{base_text}. This elapsed round time can include useful "
                     "training/validation work, NVFLARE result transfer, synchronization wait, or a mixture of those."
                 )
+                lightning_diagnostic = (
+                    _logic.lightning_slow_round_diagnostics(with_run.raw, with_round, with_max * 0.8)
+                    if with_run is not None
+                    else ""
+                )
+                if lightning_diagnostic:
+                    lines.append(f"- **Slow Lightning client evidence**: {lightning_diagnostic}")
         with_tx = _logic._max_download_tx_elapsed(str(with_job.get("output") or ""))
         base_tx = _logic._max_download_tx_elapsed(str(base_job.get("output") or "")) if base_job else None
         if with_tx is not None and with_tx >= 120 and (base_tx is None or with_tx > base_tx * 5):

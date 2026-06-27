@@ -1903,3 +1903,156 @@ def _round_durations_from_output(output: str) -> list[tuple[int, float]]:
                 durations.append((current_round, (last_timestamp - start).total_seconds()))
             current_round = None
     return durations
+
+
+def _runtime_artifact_texts(
+    run: dict[str, Any], pattern: str, *, max_bytes: int = 128_000
+) -> list[tuple[str, str]]:
+    delta = run_workspace_delta(run)
+    texts: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in delta.get("runtime_artifacts") or []:
+        if not isinstance(item, dict):
+            continue
+        rel_path = str(item.get("path") or item.get("artifact_path") or "").replace("\\", "/")
+        if not rel_path or rel_path in seen or not re.search(pattern, rel_path):
+            continue
+        path = _workspace_artifact_path(run, item)
+        if not path or not path.exists():
+            continue
+        texts.append((rel_path, read_text(path, max_bytes=max_bytes)))
+        seen.add(rel_path)
+    return texts
+
+
+def _log_timestamp(line: str) -> datetime | None:
+    match = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})", line)
+    return parse_event_timestamp(match.group(1)) if match else None
+
+
+def _lightning_site_fit_timings(run: dict[str, Any]) -> list[dict[str, Any]]:
+    timings: list[dict[str, Any]] = []
+    for rel_path, text in _runtime_artifact_texts(run, r"(^|/)site-[^/]+/log\.txt$"):
+        site_match = re.search(r"(^|/)(site-[^/]+)/log\.txt$", rel_path)
+        site = site_match.group(2) if site_match else "site"
+        current: dict[str, Any] | None = None
+        for line in strip_ansi(text).splitlines():
+            timestamp = _log_timestamp(line)
+            round_match = re.search(r"\bsite-[^|]+\|\s*round=(\d+)\b", line)
+            if round_match and timestamp:
+                current = {
+                    "site": site,
+                    "round": int(round_match.group(1)),
+                    "start": timestamp,
+                    "max_epochs": None,
+                }
+                continue
+            stop_match = re.search(r"`Trainer\.fit`\s+stopped:\s+`max_epochs=(\d+)`\s+reached", line)
+            if stop_match and timestamp and current:
+                current["stop"] = timestamp
+                current["seconds"] = (timestamp - current["start"]).total_seconds()
+                current["max_epochs"] = int(stop_match.group(1))
+                timings.append(current)
+                current = None
+    return timings
+
+
+def _client_config_epoch_values(run: dict[str, Any]) -> list[int]:
+    values: list[int] = []
+    for _rel_path, text in _runtime_artifact_texts(run, r"(^|/)config_fed_client\.json$"):
+        try:
+            payload = json.loads(text)
+        except Exception:
+            continue
+        executors = payload.get("executors") if isinstance(payload, dict) else None
+        if not isinstance(executors, list):
+            continue
+        for executor_entry in executors:
+            if not isinstance(executor_entry, dict):
+                continue
+            executor = executor_entry.get("executor")
+            args = executor.get("args") if isinstance(executor, dict) and isinstance(executor.get("args"), dict) else {}
+            task_args = str(args.get("task_script_args") or "")
+            match = re.search(r"(?:^|\s)--epochs\s+(\d+)(?:\s|$)", task_args)
+            if match:
+                values.append(int(match.group(1)))
+    return values
+
+
+def _reuses_patched_lightning_trainer_across_rounds(run: dict[str, Any]) -> bool:
+    text = _generated_python_source_text(run)
+    if not text:
+        return False
+    loop_match = re.search(r"\bwhile\s+flare\.is_running\s*\(\)\s*:", text)
+    if not loop_match:
+        return False
+    pre_loop = text[: loop_match.start()]
+    loop_body, has_loop = _fl_client_loop_body(text)
+    return bool(
+        has_loop
+        and re.search(r"\btrainer\s*=\s*pl\.Trainer\s*\(", pre_loop)
+        and re.search(r"\bflare\.patch\s*\(\s*trainer\s*\)", pre_loop)
+        and re.search(r"\btrainer\.fit\s*\(", loop_body)
+    )
+
+
+def _group_timings_by_round(timings: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    groups: dict[int, list[dict[str, Any]]] = {}
+    for timing in timings:
+        round_number = int(timing.get("round") or 0)
+        if round_number > 0:
+            groups.setdefault(round_number, []).append(timing)
+    return groups
+
+
+def lightning_slow_round_diagnostics(run: dict[str, Any], server_round: int, min_seconds: float = 300) -> str:
+    timings = _lightning_site_fit_timings(run)
+    if not timings:
+        return ""
+    client_round = server_round + 1
+    round_timings = [timing for timing in timings if timing.get("round") == client_round]
+    if not round_timings:
+        groups = _group_timings_by_round(timings)
+        if not groups:
+            return ""
+        client_round, round_timings = max(
+            groups.items(),
+            key=lambda item: max(float(timing.get("seconds") or 0) for timing in item[1]),
+        )
+    max_fit = max(float(timing.get("seconds") or 0) for timing in round_timings)
+    if max_fit < min_seconds:
+        return ""
+
+    round_maxes = {
+        round_number: max(float(timing.get("seconds") or 0) for timing in group)
+        for round_number, group in _group_timings_by_round(timings).items()
+    }
+    previous_round_parts = [
+        f"round {round_number} max {fmt_seconds_with_unit(seconds)}"
+        for round_number, seconds in sorted(round_maxes.items())
+        if round_number < client_round
+    ]
+    site_parts = [
+        f"{timing.get('site')} {fmt_seconds_with_unit(float(timing.get('seconds') or 0))}"
+        for timing in sorted(round_timings, key=lambda item: str(item.get("site") or ""))
+    ]
+    epochs = sorted({int(timing.get("max_epochs") or 0) for timing in round_timings if timing.get("max_epochs")})
+    configured_epochs = sorted(set(_client_config_epoch_values(run)))
+
+    parts = [
+        f"site logs isolate the slowdown to server Round {server_round} / client round {client_round}",
+    ]
+    if previous_round_parts:
+        parts.append(f"previous client rounds were shorter ({'; '.join(previous_round_parts)})")
+    parts.append(f"client round {client_round} fit timings: {', '.join(site_parts)}")
+    parts.append("this points to local Lightning `Trainer.fit`, not NVFLARE transfer/aggregation")
+    if epochs:
+        parts.append(f"Lightning stopped at max_epochs={','.join(str(epoch) for epoch in epochs)}")
+    if configured_epochs:
+        parts.append(f"site config passed --epochs {','.join(str(epoch) for epoch in configured_epochs)}")
+    if _reuses_patched_lightning_trainer_across_rounds(run):
+        parts.append(
+            "generated client creates and patches one `pl.Trainer` before `while flare.is_running()` "
+            "and reuses it for repeated `trainer.fit(...)` calls"
+        )
+    return "; ".join(parts) + "."
