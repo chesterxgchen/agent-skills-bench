@@ -173,12 +173,15 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
         record = load_json(final_record_path(root, mode), {}) if mode_dir.exists() else {}
         workspace_delta_path = mode_dir / "workspace_delta_manifest.json"
         workspace_delta = load_json(workspace_delta_path, {}) if mode_dir.exists() else {}
+        skills_list = load_json(mode_dir / "skills_list.json", {}) if mode_dir.exists() else {}
         if not isinstance(summary, dict):
             summary = {}
         if not isinstance(record, dict):
             record = {}
         if not isinstance(workspace_delta, dict):
             workspace_delta = {}
+        if not isinstance(skills_list, dict):
+            skills_list = {}
         agent = first_non_empty(summary.get("agent"), record.get("agent"), run_plan_entry.get("agent"))
         configured_agent_model = first_non_empty(
             summary.get("agent_model"),
@@ -225,6 +228,7 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "usage": load_json(mode_dir / "agent_usage.json", {}) if mode_dir.exists() else {},
             "activity": load_json(mode_dir / "agent_activity.json", {}) if mode_dir.exists() else {},
             "workspace_delta": workspace_delta,
+            "skills_list": skills_list,
             "runtime_image": load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {},
             "agent_last_message": read_text(mode_dir / "agent_last_message.txt") if mode_dir.exists() else "",
             "agent_stderr": read_text(mode_dir / "agent_stderr.txt") if mode_dir.exists() else "",

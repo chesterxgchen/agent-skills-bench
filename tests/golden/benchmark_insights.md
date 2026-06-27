@@ -19,10 +19,17 @@ Result root: `<RESULT_ROOT>`
 
 ### Run Context
 
-| Run | Job | Framework | Skills used (tool calls) | Shared skill refs used | Agent/model | FL algorithm/workflow | Captured generated artifacts |
-|---|---|---|---|---|---|---|---|
-| No skills baseline | ames | NA | none | none | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
-| With skills | ames | PyTorch target | nvflare-convert-pytorch | none | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| Run | Job | Framework | Agent/model | FL algorithm/workflow | Captured generated artifacts |
+|---|---|---|---|---|---|
+| No skills baseline | ames | NA | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| With skills | ames | PyTorch target | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+
+### Skill Evidence
+
+| Run | Skills available | Skills triggered/used | Shared refs read |
+|---|---|---|---|
+| No skills baseline | not enabled | none | none |
+| With skills | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | nvflare-convert-pytorch | none |
 
 ## FL Algorithm / Workflow
 
@@ -272,7 +279,7 @@ Dependency policy note: accelerator-capable framework installs are valid for acc
 
 Cost numbers are descriptive only. Quality gates decide whether a cost comparison is meaningful.
 
-`Runtime seconds` is total elapsed time minus captured dependency-install command/background-task time. `Dependency install seconds` is captured dependency-install command/background-task time. `Non-install command seconds` is summed duration of captured non-install shell/tool commands, so it can be lower than runtime when the agent spends time reasoning, waiting, or using non-command tools.
+`Runtime seconds` is total elapsed time minus captured dependency-install command/background-task time. `Dependency install seconds` is captured dependency-install command/background-task time. `Non-install command seconds` is summed duration of captured non-install shell/tool commands, so it can be lower than runtime when the agent spends time reasoning, waiting, or using non-command tools. `Agent/model interaction seconds` is the remaining runtime after subtracting captured non-install command spans; it is a residual signal for model round trips, tool orchestration, background command gaps, and other time not attributed to command spans.
 Command span timing is operation-level evidence, not a strict wall-clock partition; it can differ from total elapsed time when agent event timestamps overlap, are truncated, or come from a different clock than the harness timer.
 
 | Signal | No skills baseline | With skills | Delta right-left |
@@ -281,6 +288,7 @@ Command span timing is operation-level evidence, not a strict wall-clock partiti
 | Runtime seconds | 150 | 180 | 30 |
 | Dependency install seconds | 30 | 60 | 30 |
 | Non-install command seconds | 140 | 170 | 30 |
+| Agent/model interaction seconds | 10 | 10 | 0 |
 | Total tokens | 12.0k | 15.0k | 3.0k |
 | Commands | 4 | 5 | 1 |
 | Unique commands | 3 | 4 | 1 |
@@ -303,12 +311,12 @@ Command span timing is operation-level evidence, not a strict wall-clock partiti
 
 **Elapsed time accounting**
 
-| Run | Total | Dependency install | Runtime after install | Captured non-install commands |
-|---|---:|---:|---:|---:|
-| With skills | 240s | 60s | 180s | 170s |
-| No skills baseline | 180s | 30s | 150s | 140s |
+| Run | Total | Dependency install | Runtime after install | Captured non-install commands | Agent/model interaction residual |
+|---|---:|---:|---:|---:|---:|
+| With skills | 240s | 60s | 180s | 170s | 10s |
+| No skills baseline | 180s | 30s | 150s | 140s | 10s |
 
-`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.
+`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time. The residual column is the best available indicator that wall time came from agent/model round trips, tool orchestration, background command gaps, or other non-command activity.
 
 **Longest command comparison**
 

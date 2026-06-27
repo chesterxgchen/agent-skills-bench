@@ -62,6 +62,7 @@ class RunEvidence:
     usage: Mapping[str, Any]
     activity: Mapping[str, Any]
     workspace_delta: Mapping[str, Any]
+    skills_list: Mapping[str, Any]
     runtime_image: Mapping[str, Any]
     container_exit: Mapping[str, Any]
     validation_metric: Mapping[str, Any] | None
@@ -103,6 +104,7 @@ def _run_evidence_from_bundle(bundle: Mapping[str, Any]) -> RunEvidence:
         usage=bundle.get("usage") or {},
         activity=bundle.get("activity") or {},
         workspace_delta=bundle.get("workspace_delta") or {},
+        skills_list=bundle.get("skills_list") or {},
         runtime_image=bundle.get("runtime_image") or {},
         container_exit=bundle.get("container_exit") or {},
         validation_metric=bundle.get("validation_metric"),

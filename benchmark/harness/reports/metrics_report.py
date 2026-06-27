@@ -38,6 +38,7 @@ from ._loader import (
 from ._runs import read_text
 from .benchmark_insights import (
     _report_context,
+    _run_skill_available_display,
     _run_shared_skill_display,
     _run_skill_display,
     activity_insights_table,
@@ -89,6 +90,7 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
         runtime_image = load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {}
         workspace_delta_path = mode_dir / "workspace_delta_manifest.json"
         workspace_delta = load_json(workspace_delta_path, {}) if mode_dir.exists() else {}
+        skills_list = load_json(mode_dir / "skills_list.json", {}) if mode_dir.exists() else {}
         if not isinstance(summary, dict):
             summary = {}
         if not isinstance(record, dict):
@@ -101,6 +103,8 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
             runtime_image = {}
         if not isinstance(workspace_delta, dict):
             workspace_delta = {}
+        if not isinstance(skills_list, dict):
+            skills_list = {}
         expected_metric = expected_validation_metric_name(record)
         record_metric = validation_metric_from_record(record)
         artifact_metric = validation_metric_from_workspace_delta_manifest(
@@ -143,6 +147,7 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
                 "activity": activity,
                 "usage": usage,
                 "runtime_image": runtime_image,
+                "skills_list": skills_list,
                 "validation_metric": validation_metric,
                 "metrics": flatten_numbers(
                     {
@@ -178,8 +183,15 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             if isinstance(row.get("workspace_delta"), dict)
             else load_json(workspace_delta_path, {}) if available else {}
         )
+        skills_list = (
+            row.get("skills_list")
+            if isinstance(row.get("skills_list"), dict)
+            else load_json(mode_dir / "skills_list.json", {}) if available else {}
+        )
         if not isinstance(workspace_delta, dict):
             workspace_delta = {}
+        if not isinstance(skills_list, dict):
+            skills_list = {}
         validation_metric = row.get("validation_metric") if isinstance(row.get("validation_metric"), dict) else {}
         if not validation_metric:
             expected_metric = expected_validation_metric_name(record)
@@ -223,6 +235,7 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             "usage": usage,
             "activity": activity,
             "workspace_delta": workspace_delta,
+            "skills_list": skills_list,
             "runtime_image": runtime_image,
             "agent_last_message": read_text(mode_dir / "agent_last_message.txt") if available else "",
             "agent_stderr": read_text(mode_dir / "agent_stderr.txt") if available else "",
@@ -356,8 +369,8 @@ def markdown_report(
         "",
         "## Runs",
         "",
-        "| Run | Agent | Model | Status | Skills used (tool calls) | Shared skill refs used | Elapsed seconds | Tokens | Commands | Root cause |",
-        "|---|---|---|---|---|---|---:|---:|---:|---|",
+        "| Run | Agent | Model | Status | Skills available | Skills triggered/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |",
+        "|---|---|---|---|---|---|---|---:|---:|---:|---|",
     ]
     for row in summary["runs"]:
         run = insight_runs[row["mode"]]
@@ -368,6 +381,7 @@ def markdown_report(
         lines.append(
             f"| {markdown_cell(row['label'])} | {markdown_cell(run.agent)} | "
             f"{markdown_cell(run.agent_model)} | {markdown_cell(human_readable_status(run, ev))} | "
+            f"{markdown_cell(_run_skill_available_display(run))} | "
             f"{markdown_cell(_run_skill_display(run))} | {markdown_cell(_run_shared_skill_display(run))} | "
             f"{fmt(run_summary.get('elapsed_seconds'))} | "
             f"{fmt(run_summary.get('token_count'))} | {fmt(activity.get('command_count'))} | "
@@ -415,6 +429,7 @@ def html_report(
             f"<td>{html.escape(fmt(run.agent))}</td>"
             f"<td>{html.escape(fmt(run.agent_model))}</td>"
             f"<td>{html.escape(human_readable_status(run, ctx.evidence.get(row['mode'])))}</td>"
+            f"<td>{html.escape(_run_skill_available_display(run))}</td>"
             f"<td>{html.escape(_run_skill_display(run))}</td>"
             f"<td>{html.escape(_run_shared_skill_display(run))}</td>"
             f"<td>{html.escape(fmt(run_summary.get('elapsed_seconds')))}</td>"
@@ -442,7 +457,7 @@ def html_report(
   <p>Result root: <code>{html.escape(summary['result_root'])}</code></p>
   <p>Status: {html.escape(summary['status'])}</p>
   <table>
-    <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Status</th><th>Skills used (tool calls)</th><th>Shared skill refs used</th><th>Elapsed seconds</th><th>Tokens</th></tr></thead>
+    <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Status</th><th>Skills available</th><th>Skills triggered/used</th><th>Shared refs read</th><th>Elapsed seconds</th><th>Tokens</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
   {chart}

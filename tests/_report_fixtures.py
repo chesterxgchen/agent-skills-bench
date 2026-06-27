@@ -196,6 +196,34 @@ def _job_source() -> str:
     )
 
 
+def _skills_list(mode: str) -> dict:
+    if not _MODE_INPUTS[mode]["skills_enabled"]:
+        return {
+            "installed": [],
+            "reason": "skills intentionally removed for baseline run",
+            "status": "skipped",
+        }
+    return {
+        "schema_version": "1",
+        "status": "ok",
+        "data": {
+            "available": [
+                {"name": "nvflare-convert-lightning"},
+                {"name": "nvflare-convert-pytorch"},
+                {"name": "nvflare-diagnose-job"},
+                {"name": "nvflare-orient"},
+            ],
+            "installed": [
+                {"name": "_shared"},
+                {"name": "nvflare-convert-lightning"},
+                {"name": "nvflare-convert-pytorch"},
+                {"name": "nvflare-diagnose-job"},
+                {"name": "nvflare-orient"},
+            ],
+        },
+    }
+
+
 def _populate_mode_dir(mode_dir: Path, mode: str) -> None:
     inputs = _MODE_INPUTS[mode]
     skill_name = str(inputs.get("skill_name") or "")
@@ -235,6 +263,7 @@ def _populate_mode_dir(mode_dir: Path, mode: str) -> None:
         mode_dir / "runtime_image.json",
         {"image": "agent-skills-benchmark:codex-baseline", "digest": "sha256:fixed-fixture-digest"},
     )
+    _write_json(mode_dir / "skills_list.json", _skills_list(mode))
 
     structure_root = "nvflare_jobs/ames_fedavg"
     changed_files = [

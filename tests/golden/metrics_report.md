@@ -6,10 +6,10 @@ Status: No skills baseline: passed; With skills: passed
 
 ## Runs
 
-| Run | Agent | Model | Status | Skills used (tool calls) | Shared skill refs used | Elapsed seconds | Tokens | Commands | Root cause |
-|---|---|---|---|---|---|---:|---:|---:|---|
-| No skills baseline | codex | default | passed | none | none | 180 | 12000 | 4 | NA |
-| With skills | codex | default | passed | nvflare-convert-pytorch | none | 240 | 15000 | 5 | NA |
+| Run | Agent | Model | Status | Skills available | Skills triggered/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |
+|---|---|---|---|---|---|---|---:|---:|---:|---|
+| No skills baseline | codex | default | passed | not enabled | none | none | 180 | 12000 | 4 | NA |
+| With skills | codex | default | passed | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | nvflare-convert-pytorch | none | 240 | 15000 | 5 | NA |
 
 ## Metrics
 
@@ -143,12 +143,12 @@ Read cost winners only after checking the quality gates; a cheaper run that does
 
 **Elapsed time accounting**
 
-| Run | Total | Dependency install | Runtime after install | Captured non-install commands |
-|---|---:|---:|---:|---:|
-| With skills | 240s | 60s | 180s | 170s |
-| No skills baseline | 180s | 30s | 150s | 140s |
+| Run | Total | Dependency install | Runtime after install | Captured non-install commands | Agent/model interaction residual |
+|---|---:|---:|---:|---:|---:|
+| With skills | 240s | 60s | 180s | 170s | 10s |
+| No skills baseline | 180s | 30s | 150s | 140s | 10s |
 
-`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.
+`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time. The residual column is the best available indicator that wall time came from agent/model round trips, tool orchestration, background command gaps, or other non-command activity.
 
 **Longest command comparison**
 

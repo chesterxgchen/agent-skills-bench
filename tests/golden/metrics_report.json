@@ -97,6 +97,11 @@
         "image": "agent-skills-benchmark:codex-baseline"
       },
       "skills_enabled": false,
+      "skills_list": {
+        "installed": [],
+        "reason": "skills intentionally removed for baseline run",
+        "status": "skipped"
+      },
       "summary": {
         "agent": "codex",
         "agent_exit_code": 0,
@@ -230,6 +235,43 @@
         "image": "agent-skills-benchmark:codex-baseline"
       },
       "skills_enabled": true,
+      "skills_list": {
+        "data": {
+          "available": [
+            {
+              "name": "nvflare-convert-lightning"
+            },
+            {
+              "name": "nvflare-convert-pytorch"
+            },
+            {
+              "name": "nvflare-diagnose-job"
+            },
+            {
+              "name": "nvflare-orient"
+            }
+          ],
+          "installed": [
+            {
+              "name": "_shared"
+            },
+            {
+              "name": "nvflare-convert-lightning"
+            },
+            {
+              "name": "nvflare-convert-pytorch"
+            },
+            {
+              "name": "nvflare-diagnose-job"
+            },
+            {
+              "name": "nvflare-orient"
+            }
+          ]
+        },
+        "schema_version": "1",
+        "status": "ok"
+      },
       "summary": {
         "agent": "codex",
         "agent_exit_code": 0,

@@ -292,6 +292,66 @@ def test_metric_artifact_parser_prefers_runtime_artifacts_over_changed_files(tmp
     assert "/runtime_artifacts/" in metric["source_path"]
 
 
+def test_metric_artifact_parser_ignores_config_thresholds(tmp_path):
+    from benchmark.harness.metric_artifacts import validation_metric_from_workspace_delta_manifest
+
+    delta = tmp_path / "delta"
+    config_artifact = (
+        delta
+        / "runtime_artifacts"
+        / "job"
+        / "server"
+        / "simulate_job"
+        / "app_server"
+        / "config"
+        / "config_fed_server.json"
+    )
+    metric_artifact = (
+        delta
+        / "changed_files"
+        / "nvflare_workspace"
+        / "server"
+        / "simulate_job"
+        / "metrics"
+        / "metrics_summary.json"
+    )
+    config_artifact.parent.mkdir(parents=True)
+    metric_artifact.parent.mkdir(parents=True)
+    config_artifact.write_text(
+        json.dumps({"workflows": [{"args": {"stop_cond": "auroc >= 1.0"}}]}),
+        encoding="utf-8",
+    )
+    metric_artifact.write_text(
+        json.dumps(
+            {
+                "final_aggregated_metrics": [{"name": "auroc", "value": 0.7545324620005226}],
+                "best_metrics": [{"name": "auroc", "value": 0.7545305804440982}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest = {
+        "delta_dir": str(delta),
+        "runtime_artifacts": [
+            {
+                "path": "job/server/simulate_job/app_server/config/config_fed_server.json",
+                "artifact_path": "runtime_artifacts/job/server/simulate_job/app_server/config/config_fed_server.json",
+            }
+        ],
+        "changed_files": [
+            {
+                "path": "nvflare_workspace/server/simulate_job/metrics/metrics_summary.json",
+                "artifact_path": "changed_files/nvflare_workspace/server/simulate_job/metrics/metrics_summary.json",
+            }
+        ],
+    }
+
+    metric = validation_metric_from_workspace_delta_manifest(manifest, tmp_path / "delta_manifest.json", "AUROC")
+
+    assert metric["value"] == 0.7545305804440982
+    assert "metrics_summary.json" in metric["source_path"]
+
+
 def test_parse_usage_activity_scans_hints_from_raw_line_without_json_reserialize(tmp_path, monkeypatch):
     from benchmark.harness import events
 

@@ -72,7 +72,7 @@ from ._events import (  # noqa: F401
 from ._loader import sanitized_validation_metric  # noqa: F401
 from ._loader import collect_benchmark_runs
 from ._runs import combined_text, manifest_paths, run_record, run_workspace_delta, unique_paths  # noqa: F401
-from ._skill_usage import shared_skill_usage_display, skill_usage_display
+from ._skill_usage import shared_skill_usage_display, skill_availability_display, skill_usage_display
 from ._text import (  # noqa: F401
     _command_count_display,
     _is_file_inspection_segment,
@@ -227,6 +227,17 @@ def _skill_name_from_mapping(mapping: dict[str, Any]) -> str:
     return ""
 
 
+def _run_skills_enabled(run: RunEvidence) -> bool:
+    summary = run.summary if isinstance(run.summary, dict) else {}
+    record = run.record if isinstance(run.record, dict) else {}
+    raw = run.raw if isinstance(run.raw, dict) else {}
+    return any(bool(source.get("skills_enabled")) for source in (summary, record, raw)) or raw.get("skills") == "with skills"
+
+
+def _run_skill_available_display(run: RunEvidence) -> str:
+    return skill_availability_display(run.skills_list, skills_enabled=_run_skills_enabled(run))
+
+
 def _run_skill_display(run: RunEvidence) -> str:
     summary = run.summary if isinstance(run.summary, dict) else {}
     record = run.record if isinstance(run.record, dict) else {}
@@ -237,11 +248,10 @@ def _run_skill_display(run: RunEvidence) -> str:
         if skill_name:
             observed_skill_name = skill_name
             break
-    skills_enabled = any(bool(source.get("skills_enabled")) for source in (summary, record, raw))
     return skill_usage_display(
         events_text=str(raw.get("agent_events_text") or ""),
         observed_skill_name=observed_skill_name,
-        skills_enabled=skills_enabled or raw.get("skills") == "with skills",
+        skills_enabled=_run_skills_enabled(run),
     )
 
 
@@ -382,9 +392,14 @@ def _executive_summary_section(
     context_lines = [
         "### Run Context",
         "",
-        f"| Run | Job | Framework | Skills used (tool calls) | Shared skill refs used | "
-        f"Agent/model | {markdown_cell(algorithm_label)} | Captured generated artifacts |",
-        "|---|---|---|---|---|---|---|---|",
+        f"| Run | Job | Framework | Agent/model | {markdown_cell(algorithm_label)} | Captured generated artifacts |",
+        "|---|---|---|---|---|---|",
+    ]
+    skill_lines = [
+        "### Skill Evidence",
+        "",
+        "| Run | Skills available | Skills triggered/used | Shared refs read |",
+        "|---|---|---|---|",
     ]
     for mode in modes:
         run = runs[mode]
@@ -411,11 +426,15 @@ def _executive_summary_section(
             f"| {markdown_cell(run.label or mode)} | "
             f"{markdown_cell(_run_job_name(run) or 'NA')} | "
             f"{markdown_cell(_run_framework_display(run) or 'NA')} | "
-            f"{markdown_cell(_run_skill_display(run))} | "
-            f"{markdown_cell(_run_shared_skill_display(run))} | "
             f"{markdown_cell(agent_model)} | "
             f"{markdown_cell(fl_algorithm_display(run, ctx.algorithm(mode)))} | "
             f"{markdown_cell(artifact_summary(run))} |"
+        )
+        skill_lines.append(
+            f"| {markdown_cell(run.label or mode)} | "
+            f"{markdown_cell(_run_skill_available_display(run))} | "
+            f"{markdown_cell(_run_skill_display(run))} | "
+            f"{markdown_cell(_run_shared_skill_display(run))} |"
         )
     target_lines = _benchmark_target_section(runs)
     summary_lines = ["## Executive Summary", ""]
@@ -425,6 +444,7 @@ def _executive_summary_section(
     if len(status_detail_lines) > 2:
         summary_lines.extend(["", *status_detail_lines])
     summary_lines.extend(["", *context_lines])
+    summary_lines.extend(["", *skill_lines])
     return "\n".join(summary_lines)
 
 

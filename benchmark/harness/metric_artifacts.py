@@ -31,6 +31,19 @@ from .quality_signals import (
 METRIC_NAME_KEYS = frozenset({"name", "metric", "metric_name", "key", "tag"})
 METRIC_VALUE_KEYS = frozenset({"value", "score", "scalar", "mean"})
 ARTIFACT_SUFFIXES = frozenset({".json", ".jsonl"})
+METRIC_FILE_MARKERS = frozenset(
+    {
+        "eval",
+        "metric",
+        "metrics",
+        "result",
+        "results",
+        "score",
+        "scores",
+        "summary",
+        "validation",
+    }
+)
 
 
 def _candidate_delta_dirs(manifest: Mapping[str, Any], manifest_path: Path) -> list[Path]:
@@ -55,13 +68,14 @@ def captured_metric_artifact_paths(manifest: Mapping[str, Any], manifest_path: P
     """Return copied structured artifact paths from a workspace-delta manifest."""
 
     delta_dirs = _candidate_delta_dirs(manifest, manifest_path)
-    paths: list[Path] = []
+    paths: list[tuple[int, Path]] = []
     seen: set[Path] = set()
-    for key in ("runtime_artifacts", "changed_files", "workspace_added_files", "workspace_modified_files"):
+    for category_index, key in enumerate(
+        ("runtime_artifacts", "changed_files", "workspace_added_files", "workspace_modified_files")
+    ):
         items = manifest.get(key)
         if not isinstance(items, list):
             continue
-        category_paths: list[Path] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -72,13 +86,45 @@ def captured_metric_artifact_paths(manifest: Mapping[str, Any], manifest_path: P
                 (delta_dir / artifact_text for delta_dir in delta_dirs if (delta_dir / artifact_text).is_file()),
                 None,
             )
-            if candidate is not None and candidate.suffix.lower() in ARTIFACT_SUFFIXES:
-                category_paths.append(candidate)
-        for candidate in sorted(category_paths, key=lambda path: path.as_posix()):
-            if candidate not in seen:
-                paths.append(candidate)
+            if (
+                candidate is not None
+                and candidate.suffix.lower() in ARTIFACT_SUFFIXES
+                and is_metric_artifact_path(candidate)
+                and candidate not in seen
+            ):
+                paths.append((category_index, candidate))
                 seen.add(candidate)
-    return paths
+    return [
+        path
+        for _category_index, path in sorted(
+            paths, key=lambda item: (item[0], metric_artifact_rank(item[1]), item[1].as_posix())
+        )
+    ]
+
+
+def is_metric_artifact_path(path: Path) -> bool:
+    text = path.as_posix().lower()
+    name = path.name.lower()
+    if "/config/" in text or name.startswith("config_") or name.endswith("_config.json"):
+        return False
+    if "/metrics/" in text or "/metric/" in text:
+        return True
+    return any(marker in name for marker in METRIC_FILE_MARKERS)
+
+
+def metric_artifact_rank(path: Path) -> int:
+    name = path.name.lower()
+    if name == "metrics_summary.json":
+        return 0
+    if name.endswith("_summary.json") or name == "summary.json":
+        return 1
+    if name == "round_metrics.jsonl":
+        return 2
+    if "metric" in name:
+        return 3
+    if "result" in name or "score" in name:
+        return 4
+    return 5
 
 
 def load_artifact_payloads(path: Path) -> Iterable[Any]:

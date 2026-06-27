@@ -106,6 +106,61 @@ def test_skill_usage_keeps_explicit_skills_and_shared_refs_separate():
     )
 
 
+def test_skill_usage_separates_availability_from_codex_instruction_reads():
+    from benchmark.harness.reports._skill_usage import (
+        shared_skill_usage_display,
+        skill_availability_display,
+        skill_usage_display,
+    )
+
+    available = {
+        "status": "ok",
+        "data": {
+            "available": [
+                {"name": "nvflare-convert-lightning"},
+                {"name": "nvflare-convert-pytorch"},
+                {"name": "nvflare-diagnose-job"},
+                {"name": "nvflare-orient"},
+            ],
+            "installed": [{"name": "_shared"}],
+        },
+    }
+    events_text = "\n".join(
+        [
+            json.dumps(
+                {
+                    "item": {
+                        "type": "command_execution",
+                        "command": (
+                            "/bin/bash -lc \"sed -n '1,260p' "
+                            "/workspace/.codex/skills/nvflare-convert-lightning/SKILL.md\""
+                        ),
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "item": {
+                        "type": "command_execution",
+                        "command": (
+                            "/bin/bash -lc \"sed -n '1,220p' "
+                            "/workspace/.codex/skills/_shared/dependency-install.md\""
+                        ),
+                    }
+                }
+            ),
+        ]
+    )
+
+    assert (
+        skill_availability_display(available, skills_enabled=True)
+        == "nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient"
+    )
+    assert skill_usage_display(events_text="", skills_enabled=True) == "none recorded"
+    assert skill_usage_display(events_text=events_text, skills_enabled=True) == "nvflare-convert-lightning"
+    assert shared_skill_usage_display(events_text) == "_shared/dependency-install.md"
+
+
 def test_benchmark_insights_explains_docker_image_failures(tmp_path):
     from benchmark.harness.modes import NO_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import (
@@ -329,16 +384,16 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     insights = benchmark_report(tmp_path, runs)
     assert "### Benchmark Target" in insights
     assert "| ames-lightning | Lightning target | pair codex ames-lightning | /tmp/jobs/ames-lightning |" in insights
+    assert "| Run | Job | Framework | Agent/model | Algorithm/workflow |" in insights
+    assert "| No skills baseline | ames-lightning | Lightning target | agent=codex, model=default |" in insights
     assert (
-        "| Run | Job | Framework | Skills used (tool calls) | Shared skill refs used | Agent/model | "
-        "Algorithm/workflow |"
-    ) in insights
-    assert "| No skills baseline | ames-lightning | Lightning target | none | none | agent=codex, model=default |" in insights
-    assert (
-        "| With skills | ames-lightning | Lightning target | nvflare-convert-pytorch | none | "
-        "agent=codex, model=default |"
+        "| With skills | ames-lightning | Lightning target | agent=codex, model=default |"
         in insights
     )
+    assert "### Skill Evidence" in insights
+    assert "| Run | Skills available | Skills triggered/used | Shared refs read |" in insights
+    assert "| No skills baseline | not enabled | none | none |" in insights
+    assert "| With skills | not recorded | nvflare-convert-pytorch | none |" in insights
     assert "## Run Identity" in insights
     assert "| No skills baseline | codex | default | scenario | without_skills |" in insights
     assert "## Cost And Work Comparison" in insights
@@ -407,8 +462,8 @@ def test_benchmark_target_infers_plain_pytorch_framework_from_captured_evidence(
     report = benchmark_report(tmp_path, collect_benchmark_runs(tmp_path))
 
     assert "| ames | PyTorch target | pair claude ames | /tmp/jobs/ames |" in report
-    assert "| No skills baseline | ames | PyTorch target | none |" in report
-    assert "| With skills | ames | PyTorch target | nvflare-convert-pytorch |" in report
+    assert "| No skills baseline | ames | PyTorch target | agent=claude, model=default |" in report
+    assert "| With skills | not recorded | nvflare-convert-pytorch | none |" in report
 
 
 def test_common_dl_metric_aliases_are_recognized_and_unknown_names_kept_verbatim():

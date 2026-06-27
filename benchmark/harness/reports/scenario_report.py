@@ -19,9 +19,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..common import write_json
+from ..common import load_json, write_json
 from ._loader import MAX_AGENT_EVENTS_TEXT_BYTES, read_text
-from ._skill_usage import shared_skill_usage_display, skill_usage_display
+from ._skill_usage import shared_skill_usage_display, skill_availability_display, skill_usage_display
 
 
 def markdown_cell(value: Any) -> str:
@@ -60,6 +60,18 @@ def shared_skill_refs_used(result_root: Path, run: Mapping[str, Any]) -> str:
     return shared_skill_usage_display(_run_events_text(result_root, run))
 
 
+def skills_available(result_root: Path, run: Mapping[str, Any]) -> str:
+    artifact_paths = run.get("artifact_paths") if isinstance(run.get("artifact_paths"), Mapping) else {}
+    skills_path = artifact_paths.get("skills_list")
+    if skills_path:
+        skills_list = load_json(result_root / str(skills_path), {})
+    elif run.get("record_dir"):
+        skills_list = load_json(result_root / str(run.get("record_dir")) / "skills_list.json", {})
+    else:
+        skills_list = {}
+    return skill_availability_display(skills_list, skills_enabled=run.get("skills_enabled"))
+
+
 def run_identity_lines(result_root: Path, runs: Any) -> list[str]:
     if not isinstance(runs, list) or not runs:
         return []
@@ -67,8 +79,8 @@ def run_identity_lines(result_root: Path, runs: Any) -> list[str]:
         "",
         "## Run Identity",
         "",
-        "| Run ID | Label | Agent | Model | Model source | Mode | Skills used (tool calls) | Shared skill refs used |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Run ID | Label | Agent | Model | Model source | Mode | Skills available | Skills triggered/used | Shared refs read |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for run in runs:
         if not isinstance(run, Mapping):
@@ -77,7 +89,8 @@ def run_identity_lines(result_root: Path, runs: Any) -> list[str]:
         lines.append(
             f"| {markdown_cell(run.get('run_id'))} | {markdown_cell(label)} | {markdown_cell(run.get('agent'))} | "
             f"{markdown_cell(run.get('agent_model'))} | {markdown_cell(run.get('model_source'))} | "
-            f"{markdown_cell(run.get('mode'))} | {markdown_cell(skill_used(result_root, run))} | "
+            f"{markdown_cell(run.get('mode'))} | {markdown_cell(skills_available(result_root, run))} | "
+            f"{markdown_cell(skill_used(result_root, run))} | "
             f"{markdown_cell(shared_skill_refs_used(result_root, run))} |"
         )
     return lines

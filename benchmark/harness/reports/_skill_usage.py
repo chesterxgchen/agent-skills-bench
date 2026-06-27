@@ -17,8 +17,54 @@
 from __future__ import annotations
 
 import json
+import posixpath
+import re
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Mapping
+
+_SKILL_PATH_RE = re.compile(r"(/[^\s\"'`]*\.(?:codex|claude)/skills/[^\s\"'`]+)")
+
+
+def _append_unique(values: list[str], seen: set[str], value: str) -> None:
+    if value and value not in seen:
+        seen.add(value)
+        values.append(value)
+
+
+def _skill_relative_path(file_path: str) -> str:
+    normalized = posixpath.normpath(str(file_path or "").strip())
+    for marker in ("/.codex/skills/", "/.claude/skills/"):
+        if marker in normalized:
+            return normalized.split(marker, 1)[1].lstrip("/")
+    return ""
+
+
+def _skill_name_from_path(file_path: str) -> str:
+    rel_path = _skill_relative_path(file_path)
+    if not rel_path:
+        return ""
+    top_level = rel_path.split("/", 1)[0]
+    if top_level == "_shared" or top_level.startswith("."):
+        return ""
+    return top_level
+
+
+def _shared_ref_from_path(file_path: str) -> str:
+    rel_path = _skill_relative_path(file_path)
+    if not rel_path.startswith("_shared/"):
+        return ""
+    return str(PurePosixPath(rel_path))
+
+
+def _skill_paths_from_text(text: str) -> list[str]:
+    return [match.group(1) for match in _SKILL_PATH_RE.finditer(str(text or ""))]
+
+
+def _event_command_text(event: dict[str, Any]) -> str:
+    item = event.get("item")
+    if isinstance(item, dict):
+        return str(item.get("command") or "")
+    return ""
 
 
 def explicit_skill_tool_calls(events_text: str) -> list[str]:
@@ -41,9 +87,33 @@ def explicit_skill_tool_calls(events_text: str) -> list[str]:
             if not isinstance(tool_input, dict):
                 continue
             skill_name = str(tool_input.get("skill") or "").strip()
-            if skill_name and skill_name not in seen:
-                seen.add(skill_name)
-                skills.append(skill_name)
+            _append_unique(skills, seen, skill_name)
+    return skills
+
+
+def skill_instruction_reads(events_text: str) -> list[str]:
+    skills: list[str] = []
+    seen: set[str] = set()
+    for line in events_text.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        command = _event_command_text(event)
+        for file_path in _skill_paths_from_text(command):
+            _append_unique(skills, seen, _skill_name_from_path(file_path))
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        for item in message.get("content") or []:
+            if not isinstance(item, dict) or item.get("name") != "Read":
+                continue
+            tool_input = item.get("input")
+            if not isinstance(tool_input, dict):
+                continue
+            _append_unique(skills, seen, _skill_name_from_path(str(tool_input.get("file_path") or "")))
     return skills
 
 
@@ -57,6 +127,9 @@ def shared_skill_reference_reads(events_text: str) -> list[str]:
             continue
         if not isinstance(event, dict):
             continue
+        command = _event_command_text(event)
+        for file_path in _skill_paths_from_text(command):
+            _append_unique(refs, seen, _shared_ref_from_path(file_path))
         message = event.get("message")
         if not isinstance(message, dict):
             continue
@@ -67,20 +140,57 @@ def shared_skill_reference_reads(events_text: str) -> list[str]:
             if not isinstance(tool_input, dict):
                 continue
             file_path = str(tool_input.get("file_path") or "").strip()
-            if "/_shared/" not in file_path:
-                continue
-            ref = "_shared/" + file_path.split("/_shared/", 1)[1].lstrip("/")
-            ref = str(PurePosixPath(ref))
-            if ref and ref not in seen:
-                seen.add(ref)
-                refs.append(ref)
+            _append_unique(refs, seen, _shared_ref_from_path(file_path))
     return refs
+
+
+def available_skill_names(skills_list: Any) -> list[str]:
+    """Return callable skill names exposed to the agent, excluding shared refs."""
+
+    if not isinstance(skills_list, Mapping):
+        return []
+    data = skills_list.get("data") if isinstance(skills_list.get("data"), Mapping) else skills_list
+    candidates = data.get("available") if isinstance(data, Mapping) else None
+    if not isinstance(candidates, list):
+        candidates = data.get("installed") if isinstance(data, Mapping) else None
+    if not isinstance(candidates, list):
+        return []
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        if isinstance(item, Mapping):
+            name = str(item.get("name") or "").strip()
+        else:
+            name = str(item or "").strip()
+        if not name or name == "_shared" or name.startswith("."):
+            continue
+        _append_unique(names, seen, name)
+    return names
+
+
+def skill_availability_display(skills_list: Any, *, skills_enabled: Any = None) -> str:
+    names = available_skill_names(skills_list)
+    if names:
+        return "; ".join(names)
+    status = ""
+    if isinstance(skills_list, Mapping):
+        status = str(skills_list.get("status") or "").strip().lower()
+    if skills_enabled is False or status == "skipped":
+        return "not enabled"
+    return "not recorded" if skills_enabled else "none"
 
 
 def skill_usage_display(*, events_text: str = "", observed_skill_name: Any = None, skills_enabled: Any = None) -> str:
     explicit = explicit_skill_tool_calls(events_text)
     if explicit:
         return "; ".join(explicit)
+    instruction_reads = skill_instruction_reads(events_text)
+    if instruction_reads:
+        return "; ".join(instruction_reads)
+    observed = str(observed_skill_name or "").strip()
+    if observed:
+        return observed
     return "none recorded" if skills_enabled else "none"
 
 
