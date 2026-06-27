@@ -75,10 +75,10 @@ Status: No skills baseline: passed; With skills: passed
 <line x1="602.0" y1="628" x2="863.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <line x1="602.0" y1="483" x2="602.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <rect x="682.5" y="483.0" width="38.0" height="145.0" fill="#16a34a" rx="3"/>
-<text x="701.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">93%</text>
+<text x="701.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">54%</text>
 <text x="701.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">No skills</text>
 <rect x="744.5" y="483.0" width="38.0" height="145.0" fill="#2563eb" rx="3"/>
-<text x="763.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">93%</text>
+<text x="763.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">54%</text>
 <text x="763.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">With skills</text>
 <text x="887.0" y="406.0" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#111827">Metrics (AUROC)</text>
 <line x1="887.0" y1="628" x2="1148.0" y2="628" stroke="#d1d5db" stroke-width="1"/>

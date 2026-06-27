@@ -167,10 +167,21 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
 def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[str, RunEvidence]:
     console_text = read_text(root / "console_output.log")
     rows_by_mode = {row["mode"]: row for row in rows if isinstance(row, dict) and isinstance(row.get("mode"), str)}
+    run_plan = load_json(root / "run_plan.json", {}) or {}
+    scenario_name = run_plan.get("scenario_name") if isinstance(run_plan, dict) else None
+    entries = (
+        run_plan.get("entries") if isinstance(run_plan, dict) and isinstance(run_plan.get("entries"), list) else []
+    )
     runs: dict[str, dict[str, Any]] = {}
     for spec in BENCHMARK_RUNS:
         mode = spec.mode
         row = rows_by_mode.get(mode) or {}
+        run_plan_entry = row.get("run_plan_entry") if isinstance(row.get("run_plan_entry"), dict) else {}
+        if not run_plan_entry:
+            run_plan_entry = next(
+                (entry for entry in entries if isinstance(entry, dict) and str(entry.get("mode")) == mode),
+                {},
+            )
         mode_dir = mode_dir_for_benchmark(root, mode)
         available = bool(row.get("available")) if "available" in row else mode_dir.exists()
         summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
@@ -227,6 +238,14 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             "label": row.get("label") or spec.label,
             "mode_dir": mode_dir,
             "skills": "with skills" if spec.skills_enabled else "without skills",
+            "run_plan_entry": dict(run_plan_entry) if isinstance(run_plan_entry, dict) else {},
+            "scenario_name": first_non_empty(
+                row.get("scenario_name"), run_plan_entry.get("scenario_name"), scenario_name
+            ),
+            "job_name": first_non_empty(row.get("job_name"), run_plan_entry.get("job_name")),
+            "job_slug": first_non_empty(row.get("job_slug"), run_plan_entry.get("job_slug")),
+            "job_path": first_non_empty(row.get("job_path"), run_plan_entry.get("job_path")),
+            "workflow": first_non_empty(row.get("workflow"), run_plan_entry.get("workflow")),
             "agent": first_non_empty(row.get("agent"), summary.get("agent"), record.get("agent")),
             "agent_model": agent_model,
             "model_source": model_source,

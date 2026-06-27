@@ -489,6 +489,33 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     assert abs(metrics_json["comparison"]["validation_metric_AUROC_with_skills_minus_without_skills"] - 0.01) < 1e-12
 
 
+def test_metrics_report_preserves_run_plan_identity_for_code_quality_scoring(tmp_path):
+    from _report_fixtures import build_result_root
+
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports import benchmark_insights, metrics_report
+
+    root = build_result_root(tmp_path / "result_root")
+    run_plan_path = root / "run_plan.json"
+    run_plan = json.loads(run_plan_path.read_text(encoding="utf-8"))
+    run_plan["scenario_name"] = "pair codex ames-lightning"
+    for entry in run_plan["entries"]:
+        entry["scenario_name"] = "pair codex ames-lightning"
+        entry["job_name"] = "ames-lightning"
+        entry["job_slug"] = "ames_lightning"
+        entry["job_path"] = "/tmp/jobs/ames-lightning"
+    run_plan_path.write_text(json.dumps(run_plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    insight_runs = _evruns(benchmark_insights.collect_benchmark_runs(root))
+    insight_ctx = _nv_ctx(insight_runs, [NO_SKILLS_MODE, WITH_SKILLS_MODE])
+    metric_rows = metrics_report.collect_runs(root)
+    metric_runs = metrics_report.runs_by_mode_for_insights(root, metric_rows)
+    metric_ctx = metrics_report._insights_context(root, metric_runs)
+
+    assert metric_runs[NO_SKILLS_MODE].raw["job_name"] == "ames-lightning"
+    assert metric_ctx.code_quality(NO_SKILLS_MODE).score == insight_ctx.code_quality(NO_SKILLS_MODE).score
+
+
 def test_benchmark_target_infers_plain_pytorch_framework_from_captured_evidence(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
@@ -720,8 +747,9 @@ def test_fl_algorithm_section_reads_captured_server_workflow_config(tmp_path):
     assert "nvflare.app_common.workflows.scaffold.Scaffold" in section
 
 
-def test_nvflare_conversion_quality_section_compares_sdk_specific_sources(tmp_path):
+def test_nvflare_conversion_quality_rows_merge_into_generated_code_quality(tmp_path):
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import generated_code_quality_section
     from benchmark.harness.reports.evidence import SCHEMA_VERSION, ComparisonEvidence
     from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
 
@@ -872,24 +900,92 @@ recipe = FedAvgRecipe(
 
     plugin = NvflareReportPlugin()
     sections = plugin.sections(cmp, {mode: plugin.collect(run) for mode, run in runs.items()})
-    section = next(section for section in sections if section.id == "nvflare_conversion_quality")
-    body = f"{section.title}\n\n{section.body}"
+    section = generated_code_quality_section(
+        runs,
+        modes,
+        _nv_ctx(runs, modes),
+    )
 
-    assert section.anchor == "generated_code_quality" and section.placement == "after"
-    assert "## NVFLARE Conversion Quality Comparison" in body
-    assert "caution: manual Client API loop" in body
-    assert "good: Lightning Client API patch" in body
-    assert "good: seeded shuffled site partition" in body
-    assert "bad: deterministic stride partition without shuffle" in body
-    assert "good: per-site loss weight from local training partition" in body
-    assert "bad: fixed/global `pos_weight=0.8750402576489533` passed to clients" in body
-    assert "good: packages dataset into client app" in body
-    assert "bad: passes absolute workspace data path to clients" in body
-    assert "good: external client process runner" in body
-    assert "good: in-process Client API executor" in body
-    assert "good: AUROC 0.7305 -> 0.7449 -> 0.7573" in body
-    assert "bad: AUROC 0.4860 -> 0.4860 -> 0.4860 (flat)" in body
-    assert "flat validation metric progression" in body
+    assert all(section.id != "nvflare_conversion_quality" for section in sections)
+    assert "## Generated Code Quality Signals" in section
+    assert "## NVFLARE Conversion Quality Comparison" not in section
+    assert "Conversion: client training/control path" in section
+    assert "caution: manual Client API loop" in section
+    assert "good: Lightning Client API patch" in section
+    assert "Conversion: site data partitioning" in section
+    assert "good: seeded shuffled site partition" in section
+    assert "bad: deterministic stride partition without shuffle" in section
+    assert "Conversion: loss weighting (`pos_weight`)" in section
+    assert "good: per-site loss weight from local training partition" in section
+    assert "bad: fixed/global `pos_weight=0.8750402576489533` passed to clients" in section
+    assert "Conversion: data packaging/path" in section
+    assert "good: packages dataset into client app" in section
+    assert "bad: passes absolute workspace data path to clients" in section
+    assert "Conversion: client execution/model exchange" in section
+    assert "good: external client process runner" in section
+    assert "good: in-process Client API executor" in section
+    assert "Conversion: round metric progression" in section
+    assert "good: AUROC 0.7305 -> 0.7449 -> 0.7573" in section
+    assert "bad: AUROC 0.4860 -> 0.4860 -> 0.4860 (flat)" in section
+
+
+def test_nvflare_conversion_quality_prefers_local_client_pos_weight_over_server_default(tmp_path):
+    from benchmark.harness.modes import WITH_SKILLS_MODE
+    from benchmark.harness.sdks.nvflare._logic import conversion_quality_profile, conversion_quality_score
+
+    def write_source(rel_path: str, source: str) -> dict:
+        source_path = tmp_path / WITH_SKILLS_MODE / "workspace_delta" / "changed_files" / rel_path
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text(source, encoding="utf-8")
+        return {"artifact_path": f"changed_files/{rel_path}", "path": rel_path}
+
+    changed_files = [
+        write_source(
+            "train.py",
+            """
+def stratified_partition_frame(frame, site_index, num_sites, seed):
+    selected_parts = []
+    for _, group in frame.groupby("label", sort=True):
+        indices = group.index.to_numpy().copy()
+        rng.shuffle(indices)
+        selected_parts.append(frame.loc[np.array_split(indices, num_sites)[site_index]])
+    return pd.concat(selected_parts).sample(frac=1.0, random_state=seed + site_index)
+
+class AmesDataModule:
+    def setup(self, stage=None):
+        train_frame = stratified_partition_frame(train_frame, self.site_index, self.num_sites, self.partition_seed)
+        pos_count = float(train_frame["label"].sum())
+        neg_count = float(len(train_frame) - pos_count)
+        self.pos_weight = neg_count / max(pos_count, 1.0)
+""",
+        ),
+        write_source(
+            "client.py",
+            """
+datamodule.setup("fit")
+model = LitSmilesCNN(pos_weight=datamodule.pos_weight)
+""",
+        ),
+        write_source(
+            "job.py",
+            """
+MODEL_ARGS = {"pos_weight": 1.0}
+""",
+        ),
+    ]
+    run = {
+        "available": True,
+        "mode": WITH_SKILLS_MODE,
+        "mode_dir": tmp_path / WITH_SKILLS_MODE,
+        "workspace_delta": {"changed_files": changed_files},
+    }
+
+    profile = conversion_quality_profile(run)
+
+    assert profile["partitioning"] == "stratified seeded site partition"
+    assert conversion_quality_score("partitioning", profile["partitioning"], run) == "good"
+    assert profile["class_weighting"] == "per-site loss weight from local training partition"
+    assert conversion_quality_score("class_weighting", profile["class_weighting"], run) == "good"
 
 
 def test_fl_algorithm_prefers_training_workflow_over_initialization(tmp_path):
@@ -2290,7 +2386,7 @@ while flare.is_running():
     assert "These are evidence signals" in section
     assert "They do not change pass/fail quality gates" in section
     assert "Overall code quality signal" in section
-    assert "/7 evidence points" in section
+    assert "/14 evidence points" in section
     assert "explicit sharding" in section
     assert "API pattern" in section
     assert "context: Client API loop pattern" in section

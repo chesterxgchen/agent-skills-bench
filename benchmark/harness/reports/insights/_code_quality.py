@@ -80,7 +80,10 @@ def generated_code_quality_section(
         [
             "## Generated Code Quality Signals",
             "",
-            "These are evidence signals for interpreting runtime and maintenance quality. They do not change pass/fail quality gates or the winner policy.",
+            (
+                "These are evidence signals for interpreting generated-code, runtime, maintenance, and SDK "
+                "conversion quality. They do not change pass/fail quality gates or the winner policy."
+            ),
             "",
             generated_code_quality_table(runs, modes, ctx),
             "",

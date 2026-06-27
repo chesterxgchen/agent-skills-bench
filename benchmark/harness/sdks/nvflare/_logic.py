@@ -1044,6 +1044,10 @@ def _detect_training_control_path(text: str) -> str:
 
 
 def _detect_partitioning(text: str) -> str:
+    if "stratified_partition_frame" in text or (
+        "np.array_split(indices, num_sites)" in text and "random_state=seed + site_index" in text
+    ):
+        return "stratified seeded site partition"
     if re.search(r"\.sample\([^)]*random_state\s*=\s*seed", text) and "iloc[index::num_clients]" in text:
         return "seeded shuffled site partition"
     if "self.site_index :: self.num_clients" in text or "iloc[self.site_index :: self.num_clients]" in text:
@@ -1056,6 +1060,12 @@ def _detect_partitioning(text: str) -> str:
 def _detect_class_weighting(text: str) -> str:
     if "positive_class_weight(train_frame" in text:
         return "per-site loss weight from local training partition"
+    if "datamodule.pos_weight" in text or re.search(
+        r"self\.pos_weight\s*=\s*neg_count\s*/\s*max\(pos_count", text
+    ):
+        return "per-site loss weight from local training partition"
+    if "neg_count / max(pos_count" in text:
+        return "loss weight computed from loaded training data"
     pos_weight_match = re.search(r"['\"]?pos_weight['\"]?\s*:\s*([0-9]+(?:\.[0-9]+)?)", text)
     if not pos_weight_match:
         pos_weight_match = re.search(r"--pos-weight['\"]?\s*,\s*['\"]([0-9]+(?:\.[0-9]+)?)['\"]", text)
@@ -1063,8 +1073,6 @@ def _detect_class_weighting(text: str) -> str:
         return f"fixed/global `pos_weight={pos_weight_match.group(1)}` passed to clients"
     if "--pos-weight" in text:
         return "fixed/global `pos_weight` passed to clients"
-    if "neg_count / max(pos_count" in text:
-        return "loss weight computed from loaded training data"
     return "not captured"
 
 
@@ -1205,7 +1213,7 @@ def conversion_quality_score(signal: str, value: str, run: dict[str, Any] | None
         if "manual client api loop" in text:
             return "caution" if _target_framework(run) == "lightning" else "good"
     if signal == "partitioning":
-        if "seeded shuffled" in text:
+        if "seeded shuffled" in text or "stratified seeded" in text:
             return "good"
         if "deterministic stride" in text:
             return "bad"
@@ -1242,32 +1250,6 @@ def conversion_quality_score(signal: str, value: str, run: dict[str, Any] | None
         if values:
             return "caution"
     return "caution"
-
-
-def conversion_quality_interpretation(signal: str, values: list[str]) -> str:
-    unique_values = [value for value in dict.fromkeys(values) if value and value != "not captured"]
-    if len(unique_values) <= 1:
-        if not unique_values:
-            return "not enough evidence"
-        if any(value == "not captured" for value in values):
-            return "captured for only part of the comparison; inspect generated source/artifacts before treating as equivalent"
-        return "same captured pattern"
-    joined = " | ".join(unique_values).lower()
-    if signal == "metric_progression" and "flat" in joined:
-        return "flat validation metric progression can indicate training, metric, or model-exchange behavior worth investigating"
-    if signal == "partitioning":
-        return "different site split semantics can change class balance and metric comparability"
-    if signal == "class_weighting":
-        return "different BCE loss-weighting policy can materially affect AMES binary classification quality"
-    if signal == "training_control":
-        return "different NVFLARE client integration path; compare model exchange and optimizer lifecycle"
-    if signal == "metric_reporting":
-        return "different metric implementation/reporting path; confirm the same validation population and scalar"
-    if signal == "data_packaging":
-        return "different data path/package strategy; check portability and whether every client sees the intended split"
-    if signal == "execution_model":
-        return "both execution modes are valid; in-process can reduce process-launch overhead while external processes isolate client lifecycles"
-    return "captured implementation differs"
 
 
 def _background_task_interruption_cause(run: dict[str, Any]) -> str:
@@ -1830,7 +1812,17 @@ CODE_QUALITY_ROWS = (
 
 CODE_QUALITY_CONTEXT_ROWS = (("API pattern", _api_pattern_signal),)
 
-CODE_QUALITY_POINTS = {"good": 1.0, "caution": 0.5, "poor": 0.0}
+CONVERSION_QUALITY_ROWS = (
+    ("training_control", "Conversion: client training/control path"),
+    ("partitioning", "Conversion: site data partitioning"),
+    ("class_weighting", "Conversion: loss weighting (`pos_weight`)"),
+    ("metric_reporting", "Conversion: metric implementation/reporting"),
+    ("data_packaging", "Conversion: data packaging/path"),
+    ("execution_model", "Conversion: client execution/model exchange"),
+    ("metric_progression", "Conversion: round metric progression"),
+)
+
+CODE_QUALITY_POINTS = {"good": 1.0, "caution": 0.5, "poor": 0.0, "bad": 0.0}
 
 
 def generated_code_quality_assessments(run: dict[str, Any]) -> list[tuple[str, str, str]]:
@@ -1838,6 +1830,10 @@ def generated_code_quality_assessments(run: dict[str, Any]) -> list[tuple[str, s
     for label, evidence_getter, assessment_getter in CODE_QUALITY_ROWS:
         evidence = evidence_getter(run)
         rows.append((label, assessment_getter(evidence), evidence))
+    profile = conversion_quality_profile(run)
+    for key, label in CONVERSION_QUALITY_ROWS:
+        evidence = profile.get(key, "not captured")
+        rows.append((label, conversion_quality_score(key, evidence, run), evidence))
     return rows
 
 

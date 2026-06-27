@@ -111,10 +111,10 @@ This section reports the FL workflow captured in generated/runtime NVFLARE serve
 <line x1="602.0" y1="628" x2="863.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <line x1="602.0" y1="483" x2="602.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <rect x="682.5" y="483.0" width="38.0" height="145.0" fill="#16a34a" rx="3"/>
-<text x="701.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">93%</text>
+<text x="701.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">54%</text>
 <text x="701.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">No skills</text>
 <rect x="744.5" y="483.0" width="38.0" height="145.0" fill="#2563eb" rx="3"/>
-<text x="763.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">93%</text>
+<text x="763.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">54%</text>
 <text x="763.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">With skills</text>
 <text x="887.0" y="406.0" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#111827">Metrics (AUROC)</text>
 <line x1="887.0" y1="628" x2="1148.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
@@ -237,11 +237,11 @@ Final workspace:
 
 ## Generated Code Quality Signals
 
-These are evidence signals for interpreting runtime and maintenance quality. They do not change pass/fail quality gates or the winner policy.
+These are evidence signals for interpreting generated-code, runtime, maintenance, and SDK conversion quality. They do not change pass/fail quality gates or the winner policy.
 
 | Evidence signal | No skills baseline | With skills |
 |---|---|---|
-| Overall code quality signal | good: 6.5/7 evidence points | good: 6.5/7 evidence points |
+| Overall code quality signal | caution: 7.5/14 evidence points; 8/14 scored, 6 unknown | caution: 7.5/14 evidence points; 8/14 scored, 6 unknown |
 | Client data split/use | good: site-aware, explicit sharding, validation data referenced | good: site-aware, explicit sharding, validation data referenced |
 | Loss/optimizer lifecycle | good: loss/optimizer built outside FL loop | good: loss/optimizer built outside FL loop |
 | Data/DataLoader lifecycle | good: data loaded before FL loop, DataLoader built before FL loop | good: data loaded before FL loop, DataLoader built before FL loop |
@@ -249,6 +249,13 @@ These are evidence signals for interpreting runtime and maintenance quality. The
 | Runtime observability | good: generated code prints per-epoch progress | good: generated code prints per-epoch progress |
 | Runtime/output locality | good: runtime artifacts captured separately from temp/runtime paths | good: runtime artifacts captured separately from temp/runtime paths |
 | Dependency install strategy | good: requirements-file install, succeeded | good: requirements-file install, accelerator-capable dependency stack, succeeded |
+| Conversion: client training/control path | good: manual Client API loop | good: manual Client API loop |
+| Conversion: site data partitioning | unknown: not captured | unknown: not captured |
+| Conversion: loss weighting (`pos_weight`) | unknown: not captured | unknown: not captured |
+| Conversion: metric implementation/reporting | unknown: not captured | unknown: not captured |
+| Conversion: data packaging/path | unknown: not captured | unknown: not captured |
+| Conversion: client execution/model exchange | unknown: not captured | unknown: not captured |
+| Conversion: round metric progression | unknown: not captured | unknown: not captured |
 | API pattern | context: Client API loop pattern | context: Client API loop pattern |
 
 Dependency policy note: accelerator-capable framework installs are valid for accelerator-backed training jobs but can dominate benchmark wall time when uncached. CPU-only framework installs are faster, but they should only be treated as comparable when the benchmark is intentionally CPU-only.
