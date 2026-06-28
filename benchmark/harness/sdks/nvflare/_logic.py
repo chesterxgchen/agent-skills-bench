@@ -132,7 +132,14 @@ def _python_script_name_from_segment(command: str) -> str:
                 index += 1
             continue
         if name in {"python", "python3"}:
-            for arg in tokens[index + 1 :]:
+            args = tokens[index + 1 :]
+            for arg_index, arg in enumerate(args):
+                if arg == "-m" and arg_index + 1 < len(args):
+                    module = args[arg_index + 1]
+                    if module in {"py_compile", "compileall"}:
+                        return ""
+                    break
+            for arg in args:
                 if arg.endswith(".py"):
                     return Path(arg).name.lower()
             return ""

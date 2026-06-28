@@ -4981,6 +4981,52 @@ def test_job_run_status_requires_success_evidence_for_simulation_script():
     assert job_run_status(run) == "started_failed"
 
 
+def test_job_run_status_does_not_count_py_compile_as_job_completion():
+    from benchmark.harness.sdks.nvflare._logic import job_command_succeeded, job_run_status, job_run_status_reason
+
+    compile_event = {
+        "item": {
+            "aggregated_output": "",
+            "command": "python3 -m py_compile nvflare/job.py nvflare/train_fl.py",
+            "exit_code": 0,
+            "id": "item_1",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    failed_sim_event = {
+        "item": {
+            "aggregated_output": "Missing required dependency 'torch'. Install FLARE training dependencies.",
+            "command": "python3 nvflare/job.py --simulate --sites 3 --rounds 3",
+            "exit_code": 1,
+            "id": "item_2",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    run = {
+        "available": True,
+        "activity": {
+            "commands": [
+                "python3 -m py_compile nvflare/job.py nvflare/train_fl.py",
+                "python3 nvflare/job.py --simulate --sites 3 --rounds 3",
+            ]
+        },
+        "agent_events_text": "\n".join(json.dumps(event) for event in (compile_event, failed_sim_event)),
+    }
+
+    assert job_command_succeeded(
+        {
+            "command": "python3 -m py_compile nvflare/job.py nvflare/train_fl.py",
+            "exit_code": 0,
+            "output": "",
+            "status": "completed",
+        }
+    ) is False
+    assert job_run_status(run) == "started_failed"
+    assert "Missing required dependency 'torch'" in job_run_status_reason(run)
+
+
 def test_job_run_status_detects_leading_job_entrypoint():
     from benchmark.harness.sdks.nvflare._logic import job_run_status
 
