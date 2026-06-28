@@ -158,18 +158,26 @@ def metric_source_path_is_runtime_artifact(source_path: str) -> bool:
         return False
     runtime_index = segments.index("runtime_artifacts")
     # The canonical capture layout nests runtime output directly under the delta
-    # root as ``<delta_root>/runtime_artifacts/...``. Recognise that boundary so a
-    # copied workspace-change category name that merely appears as an *ancestor* of
-    # the delta root (e.g. ``/tmp/changed_files/.../workspace_delta/runtime_artifacts``)
-    # or *inside* the runtime tree (e.g. ``runtime_artifacts/.../changed_files/...``)
-    # does not trigger a spurious rejection.
-    if runtime_index > 0 and segments[runtime_index - 1] == "workspace_delta":
-        return True
-    # Otherwise (e.g. a renamed delta root) only the delta-category position matters.
-    # Reject when a copied workspace-change category appears before the
-    # ``runtime_artifacts`` segment, which is where a copied file would masquerade
-    # as runtime output regardless of the delta directory name.
-    if any(segment in COPIED_WORKSPACE_ARTIFACT_KEYS for segment in segments[:runtime_index]):
+    # root as ``<delta_root>/runtime_artifacts/...``. Anchor on the *actual* delta
+    # root -- the first ``workspace_delta`` segment that precedes the runtime
+    # boundary -- so a copied workspace-change category name that merely appears as
+    # an *ancestor* of the delta root
+    # (e.g. ``/tmp/changed_files/.../workspace_delta/runtime_artifacts``) or *inside*
+    # the runtime tree (e.g. ``runtime_artifacts/.../changed_files/...``) does not
+    # trigger a spurious rejection. Crucially, only segments *between* that delta
+    # root and the runtime boundary are inspected, so a copied file that embeds a
+    # second ``workspace_delta/runtime_artifacts`` pair under a copied category
+    # (e.g. ``workspace_delta/changed_files/workspace_delta/runtime_artifacts/...``)
+    # is still rejected.
+    delta_root_index = next(
+        (index for index, segment in enumerate(segments[:runtime_index]) if segment == "workspace_delta"),
+        None,
+    )
+    interior = segments[delta_root_index + 1 : runtime_index] if delta_root_index is not None else segments[:runtime_index]
+    # Reject when a copied workspace-change category appears between the delta root
+    # and the ``runtime_artifacts`` segment, which is where a copied file would
+    # masquerade as runtime output regardless of the delta directory name.
+    if any(segment in COPIED_WORKSPACE_ARTIFACT_KEYS for segment in interior):
         return False
     return True
 

@@ -566,6 +566,21 @@ def test_runtime_artifact_gate_accepts_copied_key_outside_delta_category():
     )
 
 
+def test_runtime_artifact_gate_rejects_embedded_canonical_boundary():
+    from benchmark.harness.metric_artifacts import metric_source_path_is_runtime_artifact
+
+    # A copied workspace-change file can embed a second
+    # ``workspace_delta/runtime_artifacts`` pair under a copied category. The
+    # canonical boundary must be anchored on the *actual* (first) delta root, so
+    # such a path is rejected even though it ends in ``workspace_delta/runtime_artifacts``.
+    assert not metric_source_path_is_runtime_artifact(
+        "workspace_delta/changed_files/workspace_delta/runtime_artifacts/metrics_summary.json"
+    )
+    assert not metric_source_path_is_runtime_artifact(
+        "workspace_delta/workspace_added_files/job/workspace_delta/runtime_artifacts/metrics_summary.json"
+    )
+
+
 def test_metric_artifact_parser_ignores_config_thresholds(tmp_path):
     from benchmark.harness.metric_artifacts import validation_metric_from_workspace_delta_manifest
 
