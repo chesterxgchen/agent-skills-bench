@@ -505,11 +505,21 @@ def reported_validation_metric(last_message: str, expected_metric: str | None) -
 
 
 def required_validation_metric_status(signal: Mapping[str, Any] | None) -> str:
-    if not isinstance(signal, dict) or not signal.get("expected_primary_metric"):
+    if not isinstance(signal, dict):
         return "not_required"
+    metric = signal.get("reported_validation_metric")
+    if not signal.get("expected_primary_metric"):
+        if not (isinstance(metric, dict) and metric.get("name")):
+            return "not_required"
+        value = metric.get("value")
+        values = metric.get("reported_values")
+        if is_numeric_metric_value(value):
+            return "present"
+        if isinstance(values, list) and any(is_numeric_metric_value(item) for item in values):
+            return "present"
+        return "missing"
     if signal.get("metric_value_available"):
         return "present"
-    metric = signal.get("reported_validation_metric")
     if isinstance(metric, dict):
         value = metric.get("value")
         values = metric.get("reported_values")

@@ -170,7 +170,8 @@ class NvflareReportPlugin(ReportPlugin):
 
     @staticmethod
     def _is_runtime_result_metric(metric: dict[str, Any]) -> bool:
-        if metric.get("source") != "metrics_artifact":
+        source = metric.get("source")
+        if source not in {"metrics_artifact", "runtime_log_artifact"}:
             return False
         source_path = str(metric.get("source_path") or "").replace("\\", "/")
         if not source_path:
@@ -185,7 +186,9 @@ class NvflareReportPlugin(ReportPlugin):
         # round_metrics.jsonl is useful progress evidence, but it can be partial when a
         # simulation is interrupted; require a final/summary runtime metric artifact for
         # the result scalar gate.
-        if source_path.endswith("/round_metrics.jsonl") or source_path == "round_metrics.jsonl":
+        if source == "metrics_artifact" and (
+            source_path.endswith("/round_metrics.jsonl") or source_path == "round_metrics.jsonl"
+        ):
             return False
         return "workspace_delta/runtime_artifacts/" in source_path or "/runtime_artifacts/" in source_path_with_root
 

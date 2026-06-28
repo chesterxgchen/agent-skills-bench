@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -31,6 +32,7 @@ from .quality_signals import (
 METRIC_NAME_KEYS = frozenset({"name", "metric", "metric_name", "key", "tag"})
 METRIC_VALUE_KEYS = frozenset({"value", "score", "scalar", "mean"})
 ARTIFACT_SUFFIXES = frozenset({".json", ".jsonl"})
+LOG_ARTIFACT_NAMES = frozenset({"log.txt", "log_fl.txt"})
 METRIC_FILE_MARKERS = frozenset(
     {
         "eval",
@@ -100,6 +102,35 @@ def captured_metric_artifact_paths(manifest: Mapping[str, Any], manifest_path: P
             paths, key=lambda item: (item[0], metric_artifact_rank(item[2]), item[1], item[2].as_posix())
         )
     ]
+
+
+def captured_metric_log_paths(manifest: Mapping[str, Any], manifest_path: Path) -> list[Path]:
+    """Return copied runtime log paths that can contain framework metric output."""
+
+    delta_dirs = _candidate_delta_dirs(manifest, manifest_path)
+    paths: list[tuple[int, Path]] = []
+    seen: set[Path] = set()
+    items = manifest.get("runtime_artifacts")
+    if not isinstance(items, list):
+        return []
+    for item_index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        artifact_text = str(item.get("artifact_path") or "")
+        if not artifact_text:
+            continue
+        name = Path(artifact_text).name.lower()
+        if name not in LOG_ARTIFACT_NAMES:
+            continue
+        candidate = next(
+            (delta_dir / artifact_text for delta_dir in delta_dirs if (delta_dir / artifact_text).is_file()),
+            None,
+        )
+        if candidate is None or candidate in seen:
+            continue
+        paths.append((item_index, candidate))
+        seen.add(candidate)
+    return [path for _item_index, path in sorted(paths, key=lambda item: (item[0], item[1].as_posix()))]
 
 
 def is_metric_artifact_path(path: Path) -> bool:
@@ -268,6 +299,93 @@ def validation_metric_from_artifact(path: Path, expected_metric: str | None) -> 
     return result
 
 
+def _runtime_workspace_key(path: Path) -> str:
+    parts = path.parts
+    for index, part in enumerate(parts):
+        if re.fullmatch(r"site[-_]\d+", part, flags=re.IGNORECASE):
+            return "/".join(parts[:index])
+    return "/".join(parts[:-1])
+
+
+def _runtime_site_label(path: Path) -> str:
+    for part in path.parts:
+        if re.fullmatch(r"site[-_]\d+", part, flags=re.IGNORECASE):
+            return part
+    return ""
+
+
+def _runtime_workspace_is_probe(workspace_key: str) -> bool:
+    return bool(re.search(r"\b(?:probe|smoke)\b", workspace_key, flags=re.IGNORECASE))
+
+
+def _metric_log_values(path: Path, expected_metric: str) -> list[float]:
+    values: list[float] = []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return values
+    for line in lines:
+        for entry in metric_value_entries(expected_metric, line):
+            value = entry.get("value")
+            if is_numeric_metric_value(value):
+                values.append(float(value))
+    return values
+
+
+def validation_metric_from_runtime_logs(paths: Sequence[Path], expected_metric: str | None) -> dict[str, Any]:
+    metric_name = canonical_metric_name(expected_metric)
+    if not metric_name:
+        return {}
+    groups: dict[str, dict[str, Any]] = {}
+    for path in paths:
+        site = _runtime_site_label(path)
+        if not site:
+            continue
+        values = _metric_log_values(path, metric_name)
+        if not values:
+            continue
+        group = groups.setdefault(
+            _runtime_workspace_key(path),
+            {"site_values": {}, "source_paths": [], "value_count": 0},
+        )
+        group["site_values"][site] = values[-1]
+        group["source_paths"].append(str(path))
+        group["value_count"] += len(values)
+    if not groups:
+        return {}
+    _key, selected = max(
+        groups.items(),
+        key=lambda item: (
+            len(item[1]["site_values"]),
+            not _runtime_workspace_is_probe(item[0]),
+            item[1]["value_count"],
+        ),
+    )
+    site_values = selected["site_values"]
+    if not site_values:
+        return {}
+    aggregate = sum(site_values.values()) / len(site_values)
+    entries = [
+        {
+            "label": f"artifact site validation metric {site} final log {metric_name}",
+            "value": value,
+        }
+        for site, value in sorted(site_values.items())
+    ]
+    entries.append(
+        {
+            "label": f"artifact aggregated validation metric final log mean {metric_name}",
+            "value": aggregate,
+        }
+    )
+    result = reported_metric_payload(metric_name, entries)
+    if not result.get("reported_values"):
+        return {}
+    result["source"] = "runtime_log_artifact"
+    result["source_path"] = "; ".join(selected["source_paths"])
+    return result
+
+
 def validation_metric_from_workspace_delta_manifest(
     manifest: Mapping[str, Any], manifest_path: Path, expected_metric: str | None = None
 ) -> dict[str, Any]:
@@ -275,6 +393,9 @@ def validation_metric_from_workspace_delta_manifest(
         metric = validation_metric_from_artifact(path, expected_metric)
         if metric:
             return metric
+    metric = validation_metric_from_runtime_logs(captured_metric_log_paths(manifest, manifest_path), expected_metric)
+    if metric:
+        return metric
     return {}
 
 

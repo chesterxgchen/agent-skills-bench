@@ -583,6 +583,43 @@ def test_plugin_selected_scalar_clears_scalar_availability_checks():
     assert benchmark_insights.run_quality_issues(run, toy_ev)  # non-empty
 
 
+def test_nvflare_runtime_log_artifact_scalar_is_plugin_accepted():
+    """Captured runtime logs are runtime evidence, but the NVFLARE plugin owns that call.
+
+    The generic artifact parser can recover a scalar from final site logs. This guard
+    keeps the SDK decision at the plugin boundary: NVFLARE accepts captured runtime-log
+    artifacts as result evidence, while still relying on the generic engine only for
+    rendering the selected sidecar scalar.
+    """
+
+    from benchmark.harness.reports import benchmark_insights
+    from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
+
+    run = _run(
+        {
+            "available": True,
+            "label": "Run",
+            "validation_metric": {
+                "name": "AUROC",
+                "source": "runtime_log_artifact",
+                "source_path": "workspace_delta/runtime_artifacts/runtime_workspaces/job/site-1/log.txt",
+                "value": 0.7698,
+                "summary_value_label": "artifact aggregated validation metric final log mean AUROC",
+                "reported_value_entries": [
+                    {"label": "artifact site validation metric site-1 final log AUROC", "value": 0.7904},
+                    {"label": "artifact aggregated validation metric final log mean AUROC", "value": 0.7698},
+                ],
+                "reported_values": [0.7904, 0.7698],
+            },
+        }
+    )
+
+    nv_ev = NvflareReportPlugin().collect(run)
+
+    assert nv_ev.metric.value == 0.7698
+    assert benchmark_insights.metric_display(run, "AUROC", nv_ev) == "AUROC 0.7698"
+
+
 def test_plugin_selected_scalar_renders_value_in_sections_not_na():
     """F1 render-path threading: metric_display() inside the section renderers must
     receive the sidecar `ev`, so a plugin-selected summary scalar renders its VALUE,

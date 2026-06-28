@@ -413,6 +413,87 @@ def test_metric_artifact_parser_prefers_final_runtime_metrics_over_probe_metrics
     assert "inproc-probe" not in metric["source_path"]
 
 
+def test_metric_artifact_parser_recovers_final_site_metric_from_runtime_logs(tmp_path):
+    from benchmark.harness.metric_artifacts import validation_metric_from_workspace_delta_manifest
+
+    delta = tmp_path / "delta"
+
+    def write_log(rel_path: str, text: str) -> dict[str, str]:
+        artifact = delta / "runtime_artifacts" / rel_path
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text(text, encoding="utf-8")
+        return {
+            "path": rel_path,
+            "artifact_path": f"runtime_artifacts/{rel_path}",
+        }
+
+    manifest = {
+        "delta_dir": str(delta),
+        "runtime_artifacts": [
+            write_log(
+                "runtime_workspaces/ames-fedavg-smoke/site-1/log.txt",
+                "round=0 val_auroc=0.9100\nround=1 val_auroc=0.9200\n",
+            ),
+            write_log(
+                "runtime_workspaces/ames-fedavg-smoke/site-2/log.txt",
+                "round=0 val_auroc=0.9300\nround=1 val_auroc=0.9400\n",
+            ),
+            write_log(
+                "runtime_workspaces/ames-fedavg/site-1/log.txt",
+                "round=0 val_auroc=0.7100\nround=2 val_auroc=0.7300\n",
+            ),
+            write_log(
+                "runtime_workspaces/ames-fedavg/site-2/log.txt",
+                "round=0 val_auroc=0.7900\nround=2 val_auroc=0.8100\n",
+            ),
+        ],
+    }
+
+    metric = validation_metric_from_workspace_delta_manifest(manifest, tmp_path / "delta_manifest.json", "AUROC")
+
+    assert metric["name"] == "AUROC"
+    assert metric["source"] == "runtime_log_artifact"
+    assert metric["value"] == 0.77
+    assert metric["value_scope"] == "fl_summary_metric"
+    assert metric["site_values"] == [0.73, 0.81]
+    assert "runtime_workspaces/ames-fedavg/site-1/log.txt" in metric["source_path"]
+    assert "smoke" not in metric["source_path"]
+
+
+def test_metric_artifact_parser_prefers_structured_metrics_over_runtime_logs(tmp_path):
+    from benchmark.harness.metric_artifacts import validation_metric_from_workspace_delta_manifest
+
+    delta = tmp_path / "delta"
+    metrics = delta / "runtime_artifacts" / "runtime_workspaces" / "ames-fedavg" / "server" / "metrics_summary.json"
+    log = delta / "runtime_artifacts" / "runtime_workspaces" / "ames-fedavg" / "site-1" / "log.txt"
+    metrics.parent.mkdir(parents=True)
+    log.parent.mkdir(parents=True)
+    metrics.write_text(
+        json.dumps({"final_aggregated_metrics": [{"name": "val_auroc", "value": 0.7545}]}),
+        encoding="utf-8",
+    )
+    log.write_text("round=0 val_auroc=0.9900\n", encoding="utf-8")
+    manifest = {
+        "delta_dir": str(delta),
+        "runtime_artifacts": [
+            {
+                "path": "runtime_workspaces/ames-fedavg/site-1/log.txt",
+                "artifact_path": "runtime_artifacts/runtime_workspaces/ames-fedavg/site-1/log.txt",
+            },
+            {
+                "path": "runtime_workspaces/ames-fedavg/server/metrics_summary.json",
+                "artifact_path": "runtime_artifacts/runtime_workspaces/ames-fedavg/server/metrics_summary.json",
+            },
+        ],
+    }
+
+    metric = validation_metric_from_workspace_delta_manifest(manifest, tmp_path / "delta_manifest.json", "AUROC")
+
+    assert metric["source"] == "metrics_artifact"
+    assert metric["value"] == 0.7545
+    assert metric["source_path"].endswith("metrics_summary.json")
+
+
 def test_metric_artifact_parser_ignores_config_thresholds(tmp_path):
     from benchmark.harness.metric_artifacts import validation_metric_from_workspace_delta_manifest
 

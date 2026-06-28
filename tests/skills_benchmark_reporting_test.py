@@ -1646,6 +1646,88 @@ def test_metrics_report_recovers_validation_metric_from_runtime_artifacts(tmp_pa
     assert "| Metrics (AUROC) | AUROC 0.7200 | AUROC 0.7700 |" in metrics_markdown
 
 
+def test_metrics_report_renders_validation_metric_recovered_from_runtime_logs(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports import metrics_report
+
+    entries = []
+    for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
+        record_dir = (
+            tmp_path
+            / "records"
+            / "agent=codex"
+            / "model=default"
+            / "workflow=default"
+            / "job=ames"
+            / f"mode={mode}"
+        )
+        record_dir.mkdir(parents=True)
+        entries.append(
+            {
+                "run_id": f"run_{index:05d}",
+                "mode": mode,
+                "agent": "codex",
+                "agent_model": "default",
+                "model_source": "scenario",
+                "record_dir": str(record_dir.relative_to(tmp_path)),
+            }
+        )
+        write_json(
+            record_dir / "run_summary.json",
+            {
+                "mode": mode,
+                "elapsed_seconds": 10 + index,
+                "token_count": 100 + index,
+                "agent_exit_code": 0,
+                "final_container_exit_code": 0,
+            },
+        )
+        write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+        write_json(record_dir / "agent_activity.json", {"command_count": index})
+        write_json(
+            record_dir / "benchmark_record.json",
+            {
+                "mode": mode,
+                "validation_metric_policy": {"expected_primary_metric": "AUROC"},
+            },
+        )
+        delta_dir = record_dir / "workspace_delta"
+        if mode == NO_SKILLS_MODE:
+            artifact_path = delta_dir / "runtime_artifacts" / "metrics_summary.json"
+            artifact_path.parent.mkdir(parents=True)
+            write_json(artifact_path, {"AUROC": 0.72})
+            runtime_artifacts = [{"artifact_path": "runtime_artifacts/metrics_summary.json"}]
+        else:
+            runtime_artifacts = []
+            for site, values in (("site-1", (0.71, 0.77)), ("site-2", (0.73, 0.79))):
+                rel_path = f"runtime_workspaces/ames-fedavg/{site}/log.txt"
+                artifact_path = delta_dir / "runtime_artifacts" / rel_path
+                artifact_path.parent.mkdir(parents=True)
+                artifact_path.write_text(
+                    "\n".join(f"round={round_index} val_auroc={value}" for round_index, value in enumerate(values))
+                    + "\n",
+                    encoding="utf-8",
+                )
+                runtime_artifacts.append({"artifact_path": f"runtime_artifacts/{rel_path}"})
+        write_json(
+            record_dir / "workspace_delta_manifest.json",
+            {
+                "delta_dir": str(delta_dir),
+                "runtime_artifacts": runtime_artifacts,
+            },
+        )
+    write_json(tmp_path / "run_plan.json", {"entries": entries})
+
+    summary = metrics_report.write_reports(tmp_path, "Synthetic Metrics")
+
+    assert summary["runs"][0]["validation_metric"]["value"] == 0.72
+    assert summary["runs"][1]["validation_metric"]["source"] == "runtime_log_artifact"
+    assert summary["runs"][1]["validation_metric"]["value"] == 0.78
+    metrics_markdown = (tmp_path / "metrics_report.md").read_text(encoding="utf-8")
+    assert "| Metrics (AUROC) | AUROC 0.7200 | AUROC 0.7800 |" in metrics_markdown
+
+
 def test_replay_recovers_metric_artifact_when_policy_is_missing(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import WITH_SKILLS_MODE

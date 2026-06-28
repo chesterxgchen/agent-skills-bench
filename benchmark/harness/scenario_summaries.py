@@ -24,6 +24,7 @@ from .agent_identity import resolve_agent_model_from_events_path
 from .common import load_json
 from .common import write_json_atomic as common_write_json_atomic
 from .host_environment import host_os_display
+from .metric_artifacts import validation_metric_from_workspace_delta_manifest
 from .quality_signals import critical_quality_checks_failed, required_validation_metric_status
 from .reports.scenario_report import write_scenario_report
 from .scenario_common import (
@@ -96,11 +97,15 @@ def read_entry_artifacts(result_root: Path, entry: Mapping[str, Any]) -> dict[st
         summary = load_json(record_dir / "run_summary.json", {}) or {}
     record = load_json(benchmark_record_path(record_dir, mode), {}) or {}
     container_exit = load_json(record_dir / "container_exit_code.json", {}) or {}
+    workspace_delta_path = record_dir / "workspace_delta_manifest.json"
+    workspace_delta = load_json(workspace_delta_path, {}) or {}
     return {
         "record_dir": record_dir,
         "summary": summary if isinstance(summary, dict) else {},
         "record": record if isinstance(record, dict) else {},
         "container_exit": container_exit if isinstance(container_exit, dict) else {},
+        "workspace_delta": workspace_delta if isinstance(workspace_delta, dict) else {},
+        "workspace_delta_path": workspace_delta_path,
     }
 
 
@@ -145,11 +150,12 @@ def quality_gate_failures(
             if expected_source_input_modified is False
             else f"source_input_modified={source_input_modified}"
         )
-    metric_status = (
-        record.get("required_validation_metric_status")
-        or summary.get("required_validation_metric_status")
-        or required_validation_metric_status_from_artifacts(summary, record)
-    )
+    metric_status = record.get("required_validation_metric_status") or summary.get("required_validation_metric_status")
+    derived_metric_status = required_validation_metric_status_from_artifacts(summary, record)
+    if derived_metric_status == "present" and metric_status != "present":
+        metric_status = derived_metric_status
+    elif not metric_status or (metric_status == "not_required" and derived_metric_status != "not_required"):
+        metric_status = derived_metric_status
     allowed_metric_statuses = set(gate.get("required_validation_metric_status") or ())
     if metric_status and metric_status not in allowed_metric_statuses:
         failures.append(f"required_validation_metric_status={metric_status}")
@@ -171,6 +177,7 @@ def quality_gate_failures(
 
 
 def required_validation_metric_status_from_artifacts(summary: Mapping[str, Any], record: Mapping[str, Any]) -> str:
+    statuses = []
     for artifact in (record, summary):
         quality = artifact.get("quality_signals") if isinstance(artifact, Mapping) else None
         if isinstance(quality, Mapping):
@@ -179,8 +186,44 @@ def required_validation_metric_status_from_artifacts(summary: Mapping[str, Any],
             )
             status = required_validation_metric_status(signal if isinstance(signal, Mapping) else None)
             if status != "not_required":
-                return status
-    return "not_required"
+                statuses.append(status)
+        for key in ("validation_metric", "artifact_validation_metric", "reported_validation_metric"):
+            metric = artifact.get(key) if isinstance(artifact, Mapping) else None
+            if not (isinstance(metric, Mapping) and metric.get("name")):
+                continue
+            status = required_validation_metric_status({"reported_validation_metric": metric})
+            if status != "not_required":
+                statuses.append(status)
+    if "present" in statuses:
+        return "present"
+    return statuses[0] if statuses else "not_required"
+
+
+def expected_validation_metric_name_from_artifacts(summary: Mapping[str, Any], record: Mapping[str, Any]) -> str | None:
+    for artifact in (record, summary):
+        policy = artifact.get("validation_metric_policy") if isinstance(artifact, Mapping) else None
+        if isinstance(policy, Mapping) and policy.get("expected_primary_metric"):
+            return str(policy.get("expected_primary_metric"))
+        quality = artifact.get("quality_signals") if isinstance(artifact, Mapping) else None
+        if isinstance(quality, Mapping):
+            for key in (
+                "artifact_validation_metric",
+                "job_guidance_primary_validation_metric",
+                "readme_primary_validation_metric",
+            ):
+                signal = quality.get(key)
+                if not isinstance(signal, Mapping):
+                    continue
+                if signal.get("expected_primary_metric"):
+                    return str(signal.get("expected_primary_metric"))
+                metric = signal.get("reported_validation_metric")
+                if isinstance(metric, Mapping) and metric.get("name"):
+                    return str(metric.get("name"))
+        for key in ("validation_metric", "artifact_validation_metric", "reported_validation_metric"):
+            metric = artifact.get(key) if isinstance(artifact, Mapping) else None
+            if isinstance(metric, Mapping) and metric.get("name"):
+                return str(metric.get("name"))
+    return None
 
 
 def run_summary_for_entry(
@@ -194,6 +237,14 @@ def run_summary_for_entry(
     summary = artifacts["summary"]
     record = artifacts["record"]
     container_exit = artifacts["container_exit"]
+    expected_metric = expected_validation_metric_name_from_artifacts(summary, record)
+    artifact_metric = validation_metric_from_workspace_delta_manifest(
+        artifacts["workspace_delta"],
+        artifacts["workspace_delta_path"],
+        expected_metric,
+    )
+    summary_for_gate = {**summary, "validation_metric": artifact_metric} if artifact_metric else summary
+    record_for_gate = {**record, "validation_metric": artifact_metric} if artifact_metric else record
     status = statuses.get(str(entry["run_id"]))
     if status is None:
         status = statuses.get(str(entry["mode"]))
@@ -202,17 +253,22 @@ def run_summary_for_entry(
         final_exit = container_exit.get("exit_code")
     effective_quality_gate = quality_gate or DEFAULT_QUALITY_GATE
     failures = quality_gate_failures(
-        summary,
-        record,
+        summary_for_gate,
+        record_for_gate,
         status,
         effective_quality_gate,
         final_container_exit_code=final_exit,
     )
-    required_metric_status = (
-        record.get("required_validation_metric_status")
-        or summary.get("required_validation_metric_status")
-        or required_validation_metric_status_from_artifacts(summary, record)
+    required_metric_status = record.get("required_validation_metric_status") or summary.get(
+        "required_validation_metric_status"
     )
+    derived_required_metric_status = required_validation_metric_status_from_artifacts(summary_for_gate, record_for_gate)
+    if derived_required_metric_status == "present" and required_metric_status != "present":
+        required_metric_status = derived_required_metric_status
+    elif not required_metric_status or (
+        required_metric_status == "not_required" and derived_required_metric_status != "not_required"
+    ):
+        required_metric_status = derived_required_metric_status
     critical_checks_failed = bool(
         record.get("critical_quality_checks_failed")
         or summary.get("critical_quality_checks_failed")
@@ -271,7 +327,8 @@ def run_summary_for_entry(
             or record.get("skill")
             or record.get("skill_name"),
             "skill_name_source": summary.get("skill_name_source") or record.get("agent_record_source"),
-            "validation_metric": summary.get("validation_metric")
+            "validation_metric": artifact_metric
+            or summary.get("validation_metric")
             or record.get("validation_metric")
             or record.get("reported_validation_metric"),
             "structure_quality_signal": summary.get("structure_quality_signal")

@@ -543,7 +543,8 @@ def bash_permission_denial_count(run: dict[str, Any]) -> int:
 
 def artifact_validation_metric_evidence(run: dict[str, Any]) -> str:
     metric = run.get("validation_metric") if isinstance(run.get("validation_metric"), dict) else {}
-    if metric.get("source") != "metrics_artifact" or not metric.get("reported_values"):
+    source = metric.get("source")
+    if source not in {"metrics_artifact", "runtime_log_artifact"} or not metric.get("reported_values"):
         return ""
     source_path = str(metric.get("source_path") or "")
     if source_path:
@@ -553,8 +554,11 @@ def artifact_validation_metric_evidence(run: dict[str, Any]) -> str:
 
 def artifact_validation_metric_is_runtime_evidence(run: dict[str, Any]) -> bool:
     metric = run.get("validation_metric") if isinstance(run.get("validation_metric"), dict) else {}
-    if metric.get("source") != "metrics_artifact" or not metric.get("reported_values"):
+    source = metric.get("source")
+    if source not in {"metrics_artifact", "runtime_log_artifact"} or not metric.get("reported_values"):
         return False
+    if source == "runtime_log_artifact":
+        return True
     source_path = str(metric.get("source_path") or "").replace("\\", "/")
     if source_path.endswith("/round_metrics.jsonl") or source_path == "round_metrics.jsonl":
         return False

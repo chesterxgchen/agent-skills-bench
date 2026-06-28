@@ -708,6 +708,47 @@ def test_quality_gate_failures_derives_missing_required_validation_metric():
     assert "required_validation_metric_status=missing" in failures
 
 
+def test_quality_gate_failures_overrides_stale_not_required_for_named_missing_metric():
+    from benchmark.harness.scenarios import quality_gate_failures
+
+    record = {
+        "agent_process_passed": True,
+        "final_container_exit_code": 0,
+        "required_validation_metric_status": "not_required",
+        "source_input_immutable_policy": {"status": "pass"},
+        "validation_metric": {
+            "name": "AUROC",
+            "value": None,
+            "reported_values": [],
+            "source": "agent_last_message",
+        },
+    }
+
+    failures = quality_gate_failures({}, record, 0)
+
+    assert "required_validation_metric_status=missing" in failures
+
+
+def test_required_validation_metric_status_treats_named_metric_without_value_as_missing():
+    from benchmark.harness.quality_signals import required_validation_metric_status
+
+    assert (
+        required_validation_metric_status(
+            {"reported_validation_metric": {"name": "AUROC", "value": None, "reported_values": []}}
+        )
+        == "missing"
+    )
+    assert (
+        required_validation_metric_status(
+            {"reported_validation_metric": {"name": "AUROC", "value": None, "reported_values": [0.77]}}
+        )
+        == "present"
+    )
+    assert required_validation_metric_status({"reported_validation_metric": {"name": None, "value": None}}) == (
+        "not_required"
+    )
+
+
 def test_quality_gate_failures_derives_critical_quality_check_failure():
     from benchmark.harness.scenarios import quality_gate_failures
 
@@ -1095,6 +1136,66 @@ def test_scenario_summary_quality_gate_uses_container_exit_fallback(tmp_path):
     assert run["final_container_exit_code"] == 0
     assert "final_container_exit_code=not_recorded" not in run["quality_gate_failures"]
     assert run["status"] == "passed"
+
+
+def test_scenario_summary_recovers_required_metric_from_runtime_logs(tmp_path):
+    from benchmark.harness import scenario_summaries, scenarios
+    from benchmark.harness.common import write_json
+
+    raw = base_scenario(tmp_path)
+    raw["comparison"] = {"type": "one", "mode": "with_skills"}
+    raw["quality_gate"] = {"required_validation_metric_status": ["present"]}
+    compilation = scenarios.compile_scenario(raw, base_dir=tmp_path).write(tmp_path / "results")
+    result_root = tmp_path / "results"
+    entry = compilation.run_plan["entries"][0]
+    record_dir = result_root / entry["record_dir"]
+    record_dir.mkdir(parents=True)
+    write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+    write_json(
+        record_dir / "run_summary.json",
+        {
+            "agent_process_passed": True,
+            "final_container_exit_code": 0,
+            "source_input_immutable_policy": {"status": "pass"},
+            "required_validation_metric_status": "not_required",
+        },
+    )
+    write_json(
+        record_dir / "benchmark_record.json",
+        {
+            "validation_metric_policy": {"expected_primary_metric": "AUROC"},
+        },
+    )
+    delta_dir = record_dir / "workspace_delta"
+    runtime_artifacts = []
+    for site, values in (("site-1", (0.71, 0.77)), ("site-2", (0.73, 0.79))):
+        rel_path = f"runtime_workspaces/ames-fedavg/{site}/log.txt"
+        artifact_path = delta_dir / "runtime_artifacts" / rel_path
+        artifact_path.parent.mkdir(parents=True)
+        artifact_path.write_text(
+            "\n".join(f"round={round_index} val_auroc={value}" for round_index, value in enumerate(values)) + "\n",
+            encoding="utf-8",
+        )
+        runtime_artifacts.append({"artifact_path": f"runtime_artifacts/{rel_path}"})
+    write_json(
+        record_dir / "workspace_delta_manifest.json",
+        {
+            "delta_dir": str(delta_dir),
+            "runtime_artifacts": runtime_artifacts,
+        },
+    )
+
+    summary = scenario_summaries.write_scenario_summaries(
+        result_root,
+        {entry["run_id"]: 0},
+        report_writer=lambda *_args, **_kwargs: None,
+    )
+
+    run = summary["runs"][0]
+    assert run["status"] == "passed"
+    assert run["required_validation_metric_status"] == "present"
+    assert run["validation_metric"]["source"] == "runtime_log_artifact"
+    assert run["validation_metric"]["value"] == 0.78
 
 
 def test_scenario_summary_records_per_entry_summary_exception(tmp_path, monkeypatch):
