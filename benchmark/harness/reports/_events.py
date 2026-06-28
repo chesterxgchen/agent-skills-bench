@@ -556,6 +556,8 @@ def artifact_validation_metric_is_runtime_evidence(run: dict[str, Any]) -> bool:
     if metric.get("source") != "metrics_artifact" or not metric.get("reported_values"):
         return False
     source_path = str(metric.get("source_path") or "").replace("\\", "/")
+    if source_path.endswith("/round_metrics.jsonl") or source_path == "round_metrics.jsonl":
+        return False
     source_path_with_root = "/" + source_path.lstrip("/")
     copied_workspace_artifact_keys = ("changed_files", "workspace_added_files", "workspace_modified_files")
     if any(

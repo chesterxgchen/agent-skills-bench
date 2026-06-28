@@ -335,6 +335,12 @@ def metric_value(run: RunEvidence, metric_name: str | None = None, ev: Any = Non
         return None
     if metric_name is not None and canonical_metric_name(metric.get("name")) != canonical_metric_name(metric_name):
         return None
+    assessment = getattr(ev, "metric", None) if ev is not None else None
+    if getattr(assessment, "value_authoritative", False):
+        selected = getattr(assessment, "value", None)
+        if is_plausible_metric_value(canonical_metric_name(metric.get("name")), selected):
+            return selected
+        return None
     value = metric.get("value")
     if is_plausible_metric_value(canonical_metric_name(metric.get("name")), value):
         return value
@@ -343,7 +349,6 @@ def metric_value(run: RunEvidence, metric_name: str | None = None, ev: Any = Non
     # ``MetricAssessment.value``. The generic engine no longer FL-selects here. ``ev``
     # is the per-run PluginEvidence; the metric-name filter above still gates the result.
     if ev is not None:
-        assessment = getattr(ev, "metric", None)
         selected = getattr(assessment, "value", None) if assessment is not None else None
         if is_plausible_metric_value(canonical_metric_name(metric.get("name")), selected):
             return selected

@@ -510,11 +510,14 @@ def test_summary_scalar_selection_is_sdk_owned_not_engine_fl_selected():
 
     metric = {
         "name": "AUROC",
+        "source": "metrics_artifact",
+        "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
         "value": None,  # no plain scalar -> selection must come from the plugin sidecar
         "reported_value_entries": [
             {"label": "coordinator summary", "value": 0.9},  # NON-FL-pattern label
             {"label": "Best aggregated validation AUROC", "value": 0.7623},  # FL-pattern label
         ],
+        "reported_values": [0.9, 0.7623],
     }
     runs = {"m": _run({"available": True, "label": "Run", "validation_metric": metric})}
     modes = ["m"]
@@ -562,8 +565,11 @@ def test_plugin_selected_scalar_clears_scalar_availability_checks():
             # no plain value; the summary scalar is only in a labeled entry:
             "validation_metric": {
                 "name": "AUROC",
+                "source": "metrics_artifact",
+                "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
                 "value": None,
                 "reported_value_entries": [{"label": "Best aggregated validation AUROC", "value": 0.7623}],
+                "reported_values": [0.7623],
             },
         }
     )
@@ -607,8 +613,11 @@ def test_plugin_selected_scalar_renders_value_in_sections_not_na():
                 },
                 "validation_metric": {
                     "name": "AUROC",
+                    "source": "metrics_artifact",
+                    "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
                     "value": None,
                     "reported_value_entries": [{"label": "Best aggregated validation AUROC", "value": 0.7623}],
+                    "reported_values": [0.7623],
                 },
             }
         )
@@ -647,8 +656,11 @@ def test_metrics_table_uses_resolved_plugin_ctx_not_a_fresh_null_one():
                 "label": "Run",
                 "validation_metric": {
                     "name": "AUROC",
+                    "source": "metrics_artifact",
+                    "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
                     "value": None,  # scalar lives only in a labeled FL entry -> needs the sidecar
                     "reported_value_entries": [{"label": "Best aggregated validation AUROC", "value": 0.7623}],
+                    "reported_values": [0.7623],
                 },
             }
         )

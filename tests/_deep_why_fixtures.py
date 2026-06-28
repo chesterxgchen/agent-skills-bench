@@ -294,11 +294,17 @@ def _populate_mode_dir(mode_dir: Path, mode: str) -> None:
         {"path": "download_data.py"},
     ]
     config_rel = "runtime_workspaces/job/server/simulate_job/app_server/config/config_fed_server.json"
+    metrics_rel = "runtime_workspaces/job/server/simulate_job/metrics/metrics_summary.json"
     runtime_artifacts = [
         {
             "artifact_path": f"runtime_artifacts/{config_rel}",
             "path": config_rel,
             "source_path": "/tmp/nvflare/workspaces/job/server/simulate_job/app_server/config/config_fed_server.json",
+        },
+        {
+            "artifact_path": f"runtime_artifacts/{metrics_rel}",
+            "path": metrics_rel,
+            "source_path": "/tmp/nvflare/workspaces/job/server/simulate_job/metrics/metrics_summary.json",
         }
     ]
     workspace_delta = {
@@ -322,6 +328,12 @@ def _populate_mode_dir(mode_dir: Path, mode: str) -> None:
     config_target = mode_dir / "workspace_delta" / runtime_artifacts[0]["artifact_path"]
     config_target.parent.mkdir(parents=True, exist_ok=True)
     config_target.write_text(json.dumps(_server_workflow_config(), indent=2, sort_keys=True), encoding="utf-8")
+    metrics_target = mode_dir / "workspace_delta" / runtime_artifacts[1]["artifact_path"]
+    metrics_target.parent.mkdir(parents=True, exist_ok=True)
+    metrics_target.write_text(
+        json.dumps({"final_aggregated_metrics": [{"name": "AUROC", "value": inputs["metric_value"]}]}),
+        encoding="utf-8",
+    )
 
     (mode_dir / "agent_events.jsonl").write_text(_agent_events_text(mode), encoding="utf-8")
     (mode_dir / "agent_last_message.txt").write_text(

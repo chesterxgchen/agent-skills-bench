@@ -143,6 +143,7 @@ class NvflareReportPlugin(ReportPlugin):
             # The SDK's label for the reported scalar, read verbatim from the captured
             # metric (Inversion 2); the engine gates it to the rendered metric name.
             value_label=metric_value_label(metric if isinstance(metric, dict) else None, None) or None,
+            value_authoritative=True,
             # The FL "what a good result looks like" wording for the quality gate
             # (Inversion 2): the engine renders ``pass: {gate_phrase}``.
             gate_phrase="scalar FL result metric available",
@@ -152,11 +153,13 @@ class NvflareReportPlugin(ReportPlugin):
 
     @staticmethod
     def _selected_scalar(metric: dict[str, Any] | None) -> Any:
-        # SDK-owned summary-scalar SELECTION (moved out of the generic engine): the
-        # plain reported ``value`` when plausible, else the last reported entry whose
-        # label is an FL-summary metric label. The generic ``metric_value`` no longer
-        # FL-selects; it reads this through ``MetricAssessment.value``.
+        # SDK-owned result-scalar SELECTION (moved out of the generic engine): NVFLARE
+        # grades only captured runtime metric artifacts as result evidence. The agent's
+        # final-message scalar remains a reporting signal, but it must not satisfy the
+        # benchmark result gate.
         if not isinstance(metric, dict):
+            return None
+        if not NvflareReportPlugin._is_runtime_result_metric(metric):
             return None
         name = canonical_metric_name(metric.get("name"))
         value = metric.get("value")
@@ -164,6 +167,27 @@ class NvflareReportPlugin(ReportPlugin):
             return value
         entry = plausible_fl_summary_entry(name, metric.get("reported_value_entries"))
         return entry.get("value") if entry else None
+
+    @staticmethod
+    def _is_runtime_result_metric(metric: dict[str, Any]) -> bool:
+        if metric.get("source") != "metrics_artifact":
+            return False
+        source_path = str(metric.get("source_path") or "").replace("\\", "/")
+        if not source_path:
+            return False
+        source_path_with_root = "/" + source_path.lstrip("/")
+        copied_workspace_artifact_keys = ("changed_files", "workspace_added_files", "workspace_modified_files")
+        if any(
+            f"/workspace_delta/{key}/" in source_path_with_root or source_path_with_root.startswith(f"/{key}/")
+            for key in copied_workspace_artifact_keys
+        ):
+            return False
+        # round_metrics.jsonl is useful progress evidence, but it can be partial when a
+        # simulation is interrupted; require a final/summary runtime metric artifact for
+        # the result scalar gate.
+        if source_path.endswith("/round_metrics.jsonl") or source_path == "round_metrics.jsonl":
+            return False
+        return "workspace_delta/runtime_artifacts/" in source_path or "/runtime_artifacts/" in source_path_with_root
 
     # Bounded-vocabulary bridge (Inversion 2): SDK copy embedded INSIDE generic sections
     # (the exec-summary algorithm-row label, the job-run intro). Whole sections are owned

@@ -3506,6 +3506,14 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
             "activity": {"commands": ["python3 job.py --num-sites 3 --num-rounds 3"]},
             "agent_events_text": "\n".join(json.dumps(event) for event in background_events),
             "mode_dir": with_mode_dir,
+            "validation_metric": {
+                "name": "AUROC",
+                "source": "agent_last_message",
+                "value": 0.72,
+                "value_scope": "reported_scalar",
+                "reported_values": [0.72],
+                "reported_value_entries": [{"value": 0.72}],
+            },
             "workspace_delta": {"runtime_artifacts": runtime_artifacts},
         },
     }
@@ -3542,6 +3550,124 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
     assert "Result quality issue" in why
     assert "Result metric" in why
     assert "Slowdown driver comparison" not in why
+
+
+def test_reported_scalar_alone_does_not_satisfy_nvflare_result_gate():
+    from benchmark.harness.reports.benchmark_insights import benchmark_outcome, run_quality_issues
+
+    tool_id = "toolu_job"
+    command_event = {
+        "event_type": "assistant",
+        "message": {
+            "content": [
+                {
+                    "id": tool_id,
+                    "input": {"command": "python job.py"},
+                    "name": "Bash",
+                    "type": "tool_use",
+                }
+            ]
+        },
+    }
+    result_event = {
+        "event_type": "user",
+        "message": {
+            "content": [
+                {
+                    "content": "Finished FedAvg.\nSimulation workspace: /tmp/nvflare/workspaces/ames_fedavg",
+                    "is_error": False,
+                    "tool_use_id": tool_id,
+                    "type": "tool_result",
+                }
+            ]
+        },
+        "tool_use_result": {
+            "interrupted": False,
+            "stderr": "",
+            "stdout": "Finished FedAvg.\nSimulation workspace: /tmp/nvflare/workspaces/ames_fedavg",
+        },
+    }
+    run = {
+        "available": True,
+        "activity": {"commands": ["python job.py"]},
+        "agent_events_text": "\n".join(json.dumps(event) for event in (command_event, result_event)),
+        "record": {
+            "quality_signals": {
+                "job_guidance_primary_validation_metric": {
+                    "status": "pass",
+                    "expected_primary_metric": "AUROC",
+                    "reported_validation_metric": {"name": "AUROC", "value": 0.8, "reported_values": [0.8]},
+                }
+            }
+        },
+        "validation_metric": {
+            "name": "AUROC",
+            "source": "agent_last_message",
+            "value": 0.8,
+            "value_scope": "reported_scalar",
+            "reported_values": [0.8],
+            "reported_value_entries": [{"value": 0.8}],
+        },
+    }
+    evidence = _ev(run)
+    ev = _nv_ev(run)
+
+    issues = run_quality_issues(evidence, ev)
+
+    assert ev.job_execution.status == "completed"
+    assert ev.metric.value is None
+    assert any("fl_metric_scalar" in issue or "result_metric_scalar" in issue for issue in issues)
+    assert benchmark_outcome(evidence, ev).startswith("fail:")
+
+
+def test_round_metrics_artifact_does_not_infer_completed_job(tmp_path):
+    from benchmark.harness.sdks.nvflare._logic import job_run_status, job_run_status_reason
+
+    mode_dir = tmp_path / "with_skills"
+
+    def runtime_artifact(rel_path: str, text: str) -> dict:
+        path = mode_dir / "workspace_delta" / "runtime_artifacts" / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return {
+            "artifact_path": f"runtime_artifacts/{rel_path}",
+            "path": rel_path,
+            "size_bytes": len(text.encode("utf-8")),
+        }
+
+    runtime_artifacts = [
+        runtime_artifact(
+            "server/log_fl.txt",
+            "\n".join(
+                [
+                    "2026-06-26 06:30:27,539 - FedAvg - INFO - Round 0 started.",
+                    "2026-06-26 06:30:51,982 - FedAvg - INFO - aggregating 3 update(s) at round 0",
+                    "2026-06-26 06:30:52,001 - FedAvg - INFO - Round 1 started.",
+                ]
+            ),
+        ),
+        runtime_artifact("server/simulate_job/metrics/round_metrics.jsonl", '{"round": 0, "AUROC": 0.72}\n'),
+    ]
+    run = {
+        "available": True,
+        "mode_dir": mode_dir,
+        "activity": {"commands": ["python job.py"]},
+        "validation_metric": {
+            "name": "AUROC",
+            "source": "metrics_artifact",
+            "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/round_metrics.jsonl",
+            "value": 0.72,
+            "reported_values": [0.72],
+            "reported_value_entries": [{"value": 0.72}],
+        },
+        "workspace_delta": {"runtime_artifacts": runtime_artifacts},
+    }
+
+    assert job_run_status(run) == "started_failed"
+    reason = job_run_status_reason(run)
+    assert "simulation started but did not complete" in reason
+    assert "`metrics_summary.json` was not captured" in reason
+    assert _nv_ev(run).metric.value is None
 
 
 def test_background_interruption_cause_ignores_non_simulation_background_tasks():
@@ -3764,7 +3890,13 @@ def test_incomplete_background_runtime_overrides_successful_launch_status(tmp_pa
             "container_exit": {"exit_code": 0},
             "run": {"final_container_exit_code": 0, "elapsed_seconds": 1321, "token_count": 4_989_109},
             "record": {},
-            "validation_metric": {"name": "AUROC", "value": 0.7469},
+            "validation_metric": {
+                "name": "AUROC",
+                "source": "metrics_artifact",
+                "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
+                "reported_values": [0.7469],
+                "value": 0.7469,
+            },
         },
         WITH_SKILLS_MODE: run,
     }
@@ -4278,7 +4410,9 @@ def test_job_run_status_does_not_infer_completion_from_changed_file_metric_artif
         "activity": {"commands": ["/bin/bash -lc 'rg --files'"]},
         "validation_metric": {
             "name": "AUROC",
+            "value": 0.7652,
             "reported_values": [0.7652],
+            "reported_value_entries": [{"value": 0.7652}],
             "source": "metrics_artifact",
             "source_path": (
                 "/workspace/results/workspace_delta/changed_files/fl_workspace/ames_fedavg/"
@@ -4288,6 +4422,7 @@ def test_job_run_status_does_not_infer_completion_from_changed_file_metric_artif
     }
 
     assert job_run_status(run) == "not_started"
+    assert _nv_ev(run).metric.value is None
 
 
 def test_job_run_status_ignores_successful_simulation_helper_scripts():
@@ -5819,7 +5954,13 @@ def test_failure_analysis_formats_multiline_recovered_command_as_single_line():
         "container_exit": {"exit_code": 0},
         "record": {},
         "run": {"final_container_exit_code": 0},
-        "validation_metric": {"name": "AUROC", "value": 0.725},
+        "validation_metric": {
+            "name": "AUROC",
+            "source": "metrics_artifact",
+            "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
+            "reported_values": [0.725],
+            "value": 0.725,
+        },
     }
 
     section = failure_analysis_section(
@@ -6354,12 +6495,15 @@ def test_metrics_chart_uses_labeled_aggregated_metric_from_legacy_record():
             "With skills",
             {
                 "name": "AUROC",
+                "source": "metrics_artifact",
+                "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
                 "value": None,
                 "reported_value_entries": [
                     {"value": 0.7531},
                     {"label": "Best aggregated validation AUROC", "value": 0.7623334631865992},
                     {"label": "Final site metrics", "value": 0.767293},
                 ],
+                "reported_values": [0.7531, 0.7623334631865992, 0.767293],
             },
         ),
     }

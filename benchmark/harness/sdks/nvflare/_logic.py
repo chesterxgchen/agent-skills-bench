@@ -790,7 +790,7 @@ def last_successful_job_event(run: dict[str, Any]) -> dict[str, Any] | None:
 def _runtime_started_but_incomplete(run: dict[str, Any]) -> bool:
     """Return true when captured NVFLARE artifacts show a started, unfinished run."""
 
-    if _has_scalar_result_metric(run):
+    if _has_runtime_scalar_result_metric(run):
         return False
     progress = _server_progress_summary(run)
     if not progress or "no terminal `Finished` marker was captured" not in progress:
@@ -1092,9 +1092,8 @@ def _runtime_artifact_present(run: dict[str, Any], pattern: str) -> bool:
     return any(re.search(pattern, _artifact_label(item).replace("\\", "/")) for item in _runtime_artifacts(run))
 
 
-def _has_scalar_result_metric(run: dict[str, Any]) -> bool:
-    metric = run.get("validation_metric") if isinstance(run.get("validation_metric"), dict) else {}
-    return as_number(metric.get("value")) is not None or artifact_validation_metric_is_runtime_evidence(run)
+def _has_runtime_scalar_result_metric(run: dict[str, Any]) -> bool:
+    return artifact_validation_metric_is_runtime_evidence(run)
 
 
 def _agent_event_payloads(run: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1545,7 +1544,7 @@ def _error_log_summary(run: dict[str, Any]) -> str:
 def result_failure_root_cause_block(run: dict[str, Any]) -> str:
     """Explain missing NVFLARE result metrics from captured runtime artifacts."""
 
-    if not run.get("available") or _has_scalar_result_metric(run):
+    if not run.get("available") or _has_runtime_scalar_result_metric(run):
         return ""
     status = job_run_status(run)
     if (

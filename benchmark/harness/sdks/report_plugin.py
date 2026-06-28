@@ -86,6 +86,10 @@ class MetricAssessment:
     value: float | None = None
     value_label: str | None = None
     gate_phrase: str | None = None
+    # When true, the generic report engine treats ``value`` as the authoritative
+    # result scalar and does not fall back to ``RunEvidence.validation_metric.value``.
+    # SDKs use this when raw metric payloads may include non-authoritative self-report.
+    value_authoritative: bool = False
     # The SDK's term for the single summary scalar (NVFLARE "FL-level scalar"); used
     # in partial/missing-metric prose. None -> engine's neutral "single result scalar".
     scalar_term: str | None = None
