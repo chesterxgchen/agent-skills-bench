@@ -936,9 +936,15 @@ def job_run_status(run: dict[str, Any]) -> str:
         if is_simulation_or_job_command(command) and "--help" not in command and "--export" not in command
     ]
     attempted = bool(executed_events or attempted_commands)
-    background_status = _background_simulation_interruption_status(run)
-    if background_status:
-        return background_status
+    # Successful evidence (a completed job command or a runtime metric artifact) must win over
+    # background interruption classification: a background run can finish and capture results
+    # without ever emitting a terminal task-status event, which would otherwise be misread as
+    # "agent_left_simulation_running".
+    has_success_evidence = last_successful_job_event(run) or artifact_validation_metric_is_runtime_evidence(run)
+    if not has_success_evidence:
+        background_status = _background_simulation_interruption_status(run)
+        if background_status:
+            return background_status
     if _runtime_started_but_incomplete(run):
         return "started_failed"
     if last_successful_job_event(run):
@@ -1562,14 +1568,21 @@ def result_failure_root_cause_block(run: dict[str, Any]) -> str:
     rows = [(label, value) for label, value in rows if value]
     if not rows:
         return ""
-    lines = [
-        "**Root cause of missing FL result**",
-        "",
-        (
+    if status in {"background_task_killed", "agent_left_simulation_running"}:
+        explanation = (
             "The captured evidence points to an incomplete NVFLARE simulation: the agent ended while the "
             "simulation was still active, so the server never reached a terminal completion state and the "
             "final metrics summary was not produced."
-        ),
+        )
+    else:
+        explanation = (
+            "The captured evidence points to an incomplete NVFLARE simulation: the simulation started but did "
+            "not reach a terminal completion state, so the final metrics summary was not produced."
+        )
+    lines = [
+        "**Root cause of missing FL result**",
+        "",
+        explanation,
         "",
         "| Evidence | What it shows |",
         "|---|---|",
