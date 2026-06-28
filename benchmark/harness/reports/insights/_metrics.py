@@ -211,6 +211,12 @@ def final_response_metric_reporting_gap(run: RunEvidence, ev: Any = None) -> str
 
 def run_quality_issues(run: RunEvidence, ev: Any = None) -> list[str]:
     issues = []
+    job_execution = getattr(ev, "job_execution", None) if ev is not None else None
+    job_status = str(getattr(job_execution, "status", "") or "")
+    if job_status and job_status != "completed":
+        reason = str(getattr(job_execution, "status_reason", "") or "").strip()
+        detail = f": {reason}" if reason else ""
+        issues.append(f"Failed check `job_execution`: job status is `{job_status}`{detail}.")
     record = run.record if isinstance(run.record, dict) else {}
     signal = quality_signal(record)
     expected = signal.get("expected_primary_metric")

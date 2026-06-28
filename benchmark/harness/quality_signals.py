@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Mapping
@@ -104,15 +105,18 @@ def parse_float(value: str) -> float | None:
 
 
 def is_numeric_metric_value(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
 def is_plausible_metric_value(metric_name: str, value: Any) -> bool:
-    # Metric-agnostic: a plausible value is simply a finite number. The harness does
-    # not assume any metric's range (e.g. 0..1) — ranges are domain knowledge that
-    # belongs to the job, not the generic engine. ``metric_name`` is retained for
-    # call-site/API compatibility (and a future job-declared range) but unused here.
-    return is_numeric_metric_value(value)
+    if not is_numeric_metric_value(value):
+        return False
+    canonical = canonical_metric_name(metric_name)
+    if canonical in {"AUROC", "accuracy", "f1"}:
+        return 0.0 <= float(value) <= 1.0
+    if canonical == "loss":
+        return float(value) >= 0.0
+    return True
 
 
 def format_metric_value(value: Any) -> str:
@@ -183,9 +187,7 @@ def following_line_value_entries(
         line = lines[index]
         stripped = line.strip()
         if not stripped:
-            if entries:
-                break
-            continue
+            break
         if entries and not stripped.startswith(("-", "*", "`")) and ":" not in stripped:
             break
         line_entries = line_metric_entries(line, metric_pattern)
@@ -195,6 +197,8 @@ def following_line_value_entries(
         if line_entries:
             entries.extend(line_entries)
             consumed.add(index)
+        elif not entries:
+            break
         if entries and not stripped.startswith(("-", "*", "`")):
             break
     return entries, consumed

@@ -22,7 +22,7 @@ import json  # noqa: F401
 import logging
 import re  # noqa: F401
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -167,24 +167,28 @@ def _first_run_value(runs: dict[str, RunEvidence], *keys: str) -> str:
     return ""
 
 
+def _framework_evidence_text(value: str) -> str:
+    text = str(value or "")
+    text = re.sub(r'"(?:skills|slash_commands)"\s*:\s*\[[^\]]*\]', " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"/[^\s\"'`]*(?:\.codex|\.claude)/skills/[^\s\"'`]+", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b[\w.-]*skill[\w.-]*\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bnvflare-convert-[a-z0-9_-]+\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bslash_commands?\b", " ", text, flags=re.IGNORECASE)
+    return text
+
+
 def _infer_framework_from_text(*values: str) -> str:
-    text = " ".join(value for value in values if value).lower()
+    text = " ".join(_framework_evidence_text(value) for value in values if value).lower()
     if not text:
         return ""
+    text = re.sub(r"\b(?:not|without|no)\s+(?:pytorch[\s_-]*)?lightning\b", " ", text)
+    if re.search(r"\bplain[\s_-]*pytorch\b", text):
+        return "PyTorch"
     if "lightning" in text or "pytorch_lightning" in text:
         return "Lightning"
     if "pytorch" in text or re.search(r"(^|[^a-z])torch([^a-z]|$)", text):
         return "PyTorch"
     return ""
-
-
-def _nested_text(mapping: Mapping[str, Any], *keys: str) -> str:
-    value: Any = mapping
-    for key in keys:
-        if not isinstance(value, Mapping):
-            return ""
-        value = value.get(key)
-    return str(value) if value else ""
 
 
 def _run_job_name(run: RunEvidence) -> str:
@@ -201,16 +205,23 @@ def _run_job_name(run: RunEvidence) -> str:
 
 def _run_framework_display(run: RunEvidence) -> str:
     raw = run.raw if isinstance(run.raw, dict) else {}
-    record = run.record if isinstance(run.record, Mapping) else {}
-    summary = run.summary if isinstance(run.summary, Mapping) else {}
     target_framework = _infer_framework_from_text(
         str(raw.get("framework") or ""),
         str(raw.get("job_name") or ""),
         str(raw.get("job_slug") or ""),
         str(raw.get("job_path") or ""),
         run.agent_last_message,
-        _nested_text(record, "agent_exit_summary", "classification_excerpt"),
-        _nested_text(summary, "agent_exit_summary", "classification_excerpt"),
+    )
+    return f"{target_framework} target" if target_framework else ""
+
+
+def _run_declared_framework_display(run: RunEvidence) -> str:
+    raw = run.raw if isinstance(run.raw, dict) else {}
+    target_framework = _infer_framework_from_text(
+        str(raw.get("framework") or ""),
+        str(raw.get("job_name") or ""),
+        str(raw.get("job_slug") or ""),
+        str(raw.get("job_path") or ""),
     )
     return f"{target_framework} target" if target_framework else ""
 
@@ -272,6 +283,10 @@ def _run_shared_skill_display(run: RunEvidence) -> str:
 
 def _first_run_framework(runs: dict[str, RunEvidence]) -> str:
     for run in runs.values():
+        framework = _run_declared_framework_display(run).removesuffix(" target")
+        if framework:
+            return framework
+    for run in runs.values():
         framework = _run_framework_display(run).removesuffix(" target")
         if framework:
             return framework
@@ -290,13 +305,7 @@ def _benchmark_target_section(runs: dict[str, RunEvidence]) -> list[str]:
     job_name = _first_run_value(runs, "job_name") or _first_run_value(runs, "job_slug") or _first_run_job_name(runs)
     job_path = _first_run_value(runs, "job_path")
     scenario_name = _first_run_value(runs, "scenario_name")
-    target_framework = _first_run_framework(runs) or _infer_framework_from_text(
-        _first_run_value(runs, "framework"),
-        job_name,
-        _first_run_value(runs, "job_slug"),
-        job_path,
-    )
-    framework = f"{target_framework} target" if target_framework else ""
+    framework = _benchmark_target_framework_display(runs)
     if not any((job_name, job_path, framework)):
         return []
     return [
@@ -307,6 +316,18 @@ def _benchmark_target_section(runs: dict[str, RunEvidence]) -> list[str]:
         f"| {markdown_cell(job_name or 'NA')} | {markdown_cell(framework or 'NA')} | "
         f"{markdown_cell(scenario_name or 'NA')} | {markdown_cell(job_path or 'NA')} |",
     ]
+
+
+def _benchmark_target_framework_display(runs: dict[str, RunEvidence]) -> str:
+    job_name = _first_run_value(runs, "job_name") or _first_run_value(runs, "job_slug") or _first_run_job_name(runs)
+    job_path = _first_run_value(runs, "job_path")
+    target_framework = _first_run_framework(runs) or _infer_framework_from_text(
+        _first_run_value(runs, "framework"),
+        job_name,
+        _first_run_value(runs, "job_slug"),
+        job_path,
+    )
+    return f"{target_framework} target" if target_framework else ""
 
 
 def _run_status_detail_lines(label: str, overall: str, job_status: str, outcome: str) -> list[str]:
@@ -389,6 +410,7 @@ def _executive_summary_section(
     ctx: ReportContext,
 ) -> str:
     algorithm_label = _section_copy(ctx, "exec_summary.algorithm_workflow_label", "Algorithm/workflow")
+    target_framework = _benchmark_target_framework_display(runs)
     status_lines = [
         "### Run Status",
         "",
@@ -435,7 +457,7 @@ def _executive_summary_section(
         context_lines.append(
             f"| {markdown_cell(run.label or mode)} | "
             f"{markdown_cell(_run_job_name(run) or 'NA')} | "
-            f"{markdown_cell(_run_framework_display(run) or 'NA')} | "
+            f"{markdown_cell(_run_declared_framework_display(run) or target_framework or 'NA')} | "
             f"{markdown_cell(agent_model)} | "
             f"{markdown_cell(run_host_os_display(run))} | "
             f"{markdown_cell(fl_algorithm_display(run, ctx.algorithm(mode)))} | "

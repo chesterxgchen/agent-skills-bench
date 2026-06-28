@@ -163,16 +163,85 @@ def tool_result_exit(payload: dict[str, Any], item: dict[str, Any], output: str)
     return exit_code, status
 
 
-def agent_command_events(run: dict[str, Any]) -> list[dict[str, Any]]:
-    events = []
-    pending_tool_commands: dict[str, dict[str, Any]] = {}
-    for line in str(run.get("agent_events_text") or "").splitlines():
+def _event_payloads(text: str) -> list[dict[str, Any]]:
+    payloads = []
+    for line in str(text or "").splitlines():
         try:
             payload = json.loads(line)
         except (TypeError, ValueError):
             continue
-        if not isinstance(payload, dict):
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def _background_task_status_by_tool_id(payloads: list[dict[str, Any]]) -> dict[str, str]:
+    task_by_tool_id: dict[str, str] = {}
+    status_by_task_id: dict[str, str] = {}
+    for payload in payloads:
+        event_type = str(payload.get("event_type") or payload.get("type") or "")
+        if event_type == "system.task_started":
+            task_id = str(payload.get("task_id") or "")
+            tool_id = str(payload.get("tool_use_id") or "")
+            if task_id and tool_id:
+                task_by_tool_id[tool_id] = task_id
+        elif event_type in {"system.task_updated", "system.task_notification"}:
+            task_id = str(payload.get("task_id") or "")
+            patch = payload.get("patch") if isinstance(payload.get("patch"), dict) else {}
+            status = str(payload.get("status") or patch.get("status") or "").lower()
+            if task_id and status in {"completed", "failed", "killed", "stopped"}:
+                status_by_task_id[task_id] = status
+
+        result = payload.get("tool_use_result")
+        background_task_id = str(result.get("backgroundTaskId") or "") if isinstance(result, dict) else ""
+        if not background_task_id:
             continue
+        for content_item in message_content_items(payload):
+            if content_item.get("type") == "tool_result":
+                tool_id = str(content_item.get("tool_use_id") or "")
+                if tool_id:
+                    task_by_tool_id[tool_id] = background_task_id
+
+    return {
+        tool_id: status_by_task_id[task_id]
+        for tool_id, task_id in task_by_tool_id.items()
+        if status_by_task_id.get(task_id)
+    }
+
+
+def _tool_result_backgrounded(payload: dict[str, Any], output: str, background_status: str) -> bool:
+    result = payload.get("tool_use_result")
+    return bool(
+        background_status
+        or "Command running in background with ID:" in output
+        or (isinstance(result, dict) and result.get("backgroundTaskId"))
+    )
+
+
+def _adjust_background_command_status(
+    payload: dict[str, Any],
+    output: str,
+    exit_code: int | None,
+    status: str,
+    background_status: str,
+) -> tuple[int | None, str, str]:
+    if not _tool_result_backgrounded(payload, output, background_status):
+        return exit_code, status, output
+    if background_status == "completed":
+        return 0, "completed", output
+    if background_status in {"failed", "killed", "stopped"}:
+        note = f"background task {background_status} before command completion"
+        output = f"{note}\n{output}".strip()
+        return 124, "failed", output
+    return None, "running", output
+
+
+def agent_command_events(run: dict[str, Any]) -> list[dict[str, Any]]:
+    events = []
+    pending_tool_commands: dict[str, dict[str, Any]] = {}
+    payloads = _event_payloads(str(run.get("agent_events_text") or ""))
+    background_status_by_tool_id = _background_task_status_by_tool_id(payloads)
+    for payload in payloads:
         for content_item in message_content_items(payload):
             if content_item.get("type") == "tool_use" and content_item.get("name") == "Bash":
                 tool_input = content_item.get("input") if isinstance(content_item.get("input"), dict) else {}
@@ -191,6 +260,13 @@ def agent_command_events(run: dict[str, Any]) -> list[dict[str, Any]]:
                     continue
                 output = tool_result_output(payload, content_item)
                 exit_code, status = tool_result_exit(payload, content_item, output)
+                exit_code, status, output = _adjust_background_command_status(
+                    payload,
+                    output,
+                    exit_code,
+                    status,
+                    background_status_by_tool_id.get(tool_id, ""),
+                )
                 events.append(
                     {
                         "command": pending["command"],
@@ -224,13 +300,9 @@ def agent_command_spans(run: dict[str, Any]) -> list[dict[str, Any]]:
     spans = []
     pending: dict[str, dict[str, Any]] = {}
     pending_tool_commands: dict[str, dict[str, Any]] = {}
-    for line in str(run.get("agent_events_text") or "").splitlines():
-        try:
-            payload = json.loads(line)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(payload, dict):
-            continue
+    payloads = _event_payloads(str(run.get("agent_events_text") or ""))
+    background_status_by_tool_id = _background_task_status_by_tool_id(payloads)
+    for payload in payloads:
         timestamp = parse_event_timestamp(payload.get("harness_timestamp") or payload.get("timestamp"))
         for content_item in message_content_items(payload):
             if content_item.get("type") == "tool_use" and content_item.get("name") == "Bash":
@@ -251,6 +323,13 @@ def agent_command_spans(run: dict[str, Any]) -> list[dict[str, Any]]:
                     continue
                 output = tool_result_output(payload, content_item)
                 exit_code, status = tool_result_exit(payload, content_item, output)
+                exit_code, status, output = _adjust_background_command_status(
+                    payload,
+                    output,
+                    exit_code,
+                    status,
+                    background_status_by_tool_id.get(tool_id, ""),
+                )
                 start = pending_tool.get("start")
                 duration = (timestamp - start).total_seconds() if timestamp and start else None
                 spans.append(

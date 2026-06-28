@@ -681,11 +681,25 @@ def test_benchmark_target_infers_plain_pytorch_framework_from_captured_evidence(
             },
         )
         write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
-        write_json(record_dir / "benchmark_record.json", {"mode": mode})
-        (record_dir / "agent_last_message.txt").write_text(
-            "Converted the plain-PyTorch AMES training code into an NVFLARE job.\n",
-            encoding="utf-8",
+        record = {"mode": mode}
+        if mode == WITH_SKILLS_MODE:
+            record["agent_exit_summary"] = {
+                "classification_excerpt": json.dumps(
+                    {
+                        "type": "system",
+                        "subtype": "init",
+                        "skills": ["nvflare-convert-lightning", "nvflare-convert-pytorch"],
+                        "slash_commands": ["nvflare-convert-lightning", "nvflare-convert-pytorch"],
+                    }
+                )
+            }
+        write_json(record_dir / "benchmark_record.json", record)
+        last_message = (
+            "Converted the plain-PyTorch AMES training code into an NVFLARE job.\n"
+            if mode == NO_SKILLS_MODE
+            else "Waiting for dependency install to complete before starting the job.\n"
         )
+        (record_dir / "agent_last_message.txt").write_text(last_message, encoding="utf-8")
         if mode == WITH_SKILLS_MODE:
             (record_dir / "agent_events.jsonl").write_text(
                 json.dumps({"message": {"content": [{"name": "Skill", "input": {"skill": "nvflare-convert-pytorch"}}]}})
@@ -698,6 +712,8 @@ def test_benchmark_target_infers_plain_pytorch_framework_from_captured_evidence(
 
     assert "| ames | PyTorch target | pair claude ames | /tmp/jobs/ames |" in report
     assert "| No skills baseline | ames | PyTorch target | agent=claude, model=default |" in report
+    assert "| With skills | ames | PyTorch target | agent=claude, model=default |" in report
+    assert "Lightning target" not in report
     assert "| With skills | not recorded | none | nvflare-convert-pytorch | none |" in report
 
 
@@ -735,7 +751,7 @@ def test_framework_inference_ignores_skill_usage_names(tmp_path):
         write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
         write_json(record_dir / "benchmark_record.json", {"mode": mode})
         (record_dir / "agent_last_message.txt").write_text(
-            "Ran nvflare agent inspect: detected plain PyTorch, not converted.\n",
+            "Ran nvflare agent inspect: detected plain PyTorch, not PyTorch Lightning.\n",
             encoding="utf-8",
         )
         if mode == WITH_SKILLS_MODE:
@@ -805,6 +821,26 @@ def test_common_dl_metric_aliases_are_recognized_and_unknown_names_kept_verbatim
     signal = metric_signal(None, "AUROC is the primary metric.", "Final AUC: 0.81")
     reported = signal["reported_validation_metric"]
     assert reported["name"] == "AUROC" and reported["value"] == 0.81
+
+
+def test_metric_parser_rejects_version_number_near_metric_mention():
+    from benchmark.harness.quality_signals import metric_signal
+
+    final_message = """The conversion is written but still waiting on dependency installation.
+
+**Done:**
+- `client.py` evaluates the global model by AUROC before local training.
+
+**Verified without running:** scripts compile against NVFLARE 2.8.
+"""
+
+    signal = metric_signal(None, "AUROC is the main metric to watch.", final_message)
+
+    assert signal["status"] == "missing"
+    metric = signal["reported_validation_metric"]
+    assert metric["name"] == "AUROC"
+    assert metric["value"] is None
+    assert metric["reported_values"] == []
 
 
 def test_fl_algorithm_section_reads_captured_server_workflow_config(tmp_path):
@@ -1430,7 +1466,13 @@ def test_fl_algorithm_recipe_mismatch_is_quality_issue(tmp_path):
         "container_exit": {"exit_code": 0},
         "record": {},
         "run": {"final_container_exit_code": 0},
-        "validation_metric": {"name": "AUROC", "value": 0.725},
+        "validation_metric": {
+            "name": "AUROC",
+            "source": "metrics_artifact",
+            "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
+            "reported_values": [0.725],
+            "value": 0.725,
+        },
         "workspace_delta": {
             "runtime_artifacts": [
                 {
@@ -2554,7 +2596,7 @@ while flare.is_running():
     assert "These are evidence signals" in section
     assert "They do not change pass/fail quality gates" in section
     assert "Overall code quality signal" in section
-    assert "/14 evidence points" in section
+    assert "/15 evidence points" in section
     assert "explicit sharding" in section
     assert "API pattern" in section
     assert "context: Client API loop pattern" in section
@@ -2571,6 +2613,48 @@ while flare.is_running():
     assert "accelerator-capable dependency stack" in section
     assert "skill requirements install not followed" not in section
     assert "CPU-only framework installs are faster, but they should only be treated as comparable" in section
+
+
+def test_nvflare_runtime_export_location_flags_skill_output_path_violation():
+    from benchmark.harness.reports.benchmark_insights import structure_required_display
+    from benchmark.harness.reports.evidence import _run_evidence_from_bundle
+    from benchmark.harness.sdks.nvflare._logic import generated_code_quality_assessments, structure_score
+    from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
+
+    run = {
+        "available": True,
+        "skills": "with skills",
+        "workspace_delta": {
+            "final_structure_files": [
+                {"path": "client.py"},
+                {"path": "job.py"},
+                {"path": "model.py"},
+                {"path": "fl_workspace/ames_fedavg/server/simulate_job/app_server/custom/client.py"},
+                {"path": "fl_workspace/ames_fedavg/server/simulate_job/app_server/custom/model.py"},
+            ],
+            "changed_files": [
+                {"path": "client.py"},
+                {"path": "job.py"},
+                {"path": "fl_workspace/ames_fedavg/server/log.txt"},
+                {"path": "fl_workspace/ames_fedavg/server/simulate_job/app_server/custom/client.py"},
+            ],
+        },
+    }
+
+    score = structure_score(run)
+    assert score == 1.0
+
+    view = NvflareReportPlugin().collect(_run_evidence_from_bundle(run)).structure_view
+    required = structure_required_display(_ev(run), view)
+    assert required.startswith("3/3 present")
+    assert "runtime/export" not in required
+
+    assessment_map = {label: (status, evidence) for label, status, evidence in generated_code_quality_assessments(run)}
+    status, evidence = assessment_map["Runtime/export output location"]
+    assert status == "poor"
+    assert "runtime/export outputs in source workspace: fl_workspace/ames_fedavg" in evidence
+    assert "export/runtime copies of generated source" in evidence
+    assert "skill runtime-output path not followed" in evidence
 
 
 def test_runtime_output_locality_scores_workspace_changes_as_caution():
@@ -2970,14 +3054,10 @@ No simulation was run.
     assert metric["reported_values"] == []
 
 
-def test_benchmark_report_trusts_captured_metric_value_without_range_assumption():
-    # The harness carries no metric vocabulary and makes NO assumption about a metric's
-    # range (which metric a job uses, and any valid range, is job/instruction data, not
-    # engine knowledge). A captured finite value is therefore trusted as-is, even if it
-    # falls outside a range one might expect for a given metric name. The real guard
-    # against a version number being mistaken for a metric is at PARSE time (a dotted
-    # version token is never extracted) -- see
-    # test_metric_alignment_rejects_out_of_range_auroc_from_dependency_version.
+def test_benchmark_report_rejects_implausible_bounded_metric_value():
+    # Common recognized bounded metrics use their standard ranges. Unknown job-specific
+    # metrics remain dynamic, but AUROC=2.8 is not a plausible AUROC result and should
+    # not satisfy the report gate.
     from benchmark.harness.reports._loader import validation_metric_from_record
     from benchmark.harness.reports.benchmark_insights import quality_signal
 
@@ -3011,10 +3091,10 @@ def test_benchmark_report_trusts_captured_metric_value_without_range_assumption(
     signal = quality_signal(record)
 
     assert metric["name"] == "AUROC"
-    assert metric["value"] == 2.8
-    assert metric["reported_values"] == [2.8]
-    assert signal["status"] == "pass"
-    assert signal["metric_value_available"] is True
+    assert metric["value"] is None
+    assert metric["reported_values"] == []
+    assert signal["status"] == "missing"
+    assert signal["metric_value_available"] is False
 
 
 def test_job_guidance_metric_alignment_uses_non_readme_docs(tmp_path):
@@ -3254,6 +3334,8 @@ def test_artifact_metric_satisfies_result_gate_when_final_response_metric_is_inc
         "validation_metric": {
             "name": "AUROC",
             "source": "metrics_artifact",
+            "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
+            "reported_values": [0.7816101804960395],
             "summary_value_label": "artifact aggregated validation metric final_aggregated_metrics.[2].value",
             "value": 0.7816101804960395,
             "value_scope": "fl_summary_metric",
@@ -3270,6 +3352,38 @@ def test_artifact_metric_satisfies_result_gate_when_final_response_metric_is_inc
     assert "Reporting note: Final response reporting gap" in failure_analysis
     quality_table = quality_signal_table(_evruns(runs), [WITH_SKILLS_MODE], _nv_ctx(runs, [WITH_SKILLS_MODE]))
     assert "artifact metric present; final response gap" in quality_table
+
+
+def test_not_started_job_cannot_pass_result_gate_with_reported_scalar():
+    from benchmark.harness.reports.benchmark_insights import benchmark_outcome, human_readable_status, run_quality_issues
+    from benchmark.harness.reports.evidence import _run_evidence_from_bundle
+    from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
+
+    run = {
+        "available": True,
+        "activity": {"commands": ["ls -la /workspace/run/without_skills/workspace"]},
+        "container_exit": {"exit_code": 0},
+        "record": {
+            "quality_signals": {
+                "job_guidance_primary_validation_metric": {
+                    "status": "pass",
+                    "expected_primary_metric": "AUROC",
+                    "reported_validation_metric": {"name": "AUROC", "value": 0.8, "reported_values": [0.8]},
+                }
+            }
+        },
+        "run": {"final_container_exit_code": 0},
+        "validation_metric": {"name": "AUROC", "value": 0.8, "value_scope": "reported_scalar"},
+    }
+    evidence = _ev(run)
+    ev = NvflareReportPlugin().collect(_run_evidence_from_bundle(run))
+
+    issues = run_quality_issues(evidence, ev)
+
+    assert ev.job_execution.status == "not_started"
+    assert "Failed check `job_execution`: job status is `not_started`" in issues[0]
+    assert human_readable_status(evidence, ev).startswith("needs review")
+    assert benchmark_outcome(evidence, ev).startswith("fail: Failed check `job_execution`")
 
 
 def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_path):
@@ -3374,7 +3488,13 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
             "container_exit": {"exit_code": 0},
             "run": {"final_container_exit_code": 0, "elapsed_seconds": 848, "token_count": 8_644_807},
             "record": {},
-            "validation_metric": {"name": "AUROC", "value": 0.725},
+            "validation_metric": {
+                "name": "AUROC",
+                    "source": "metrics_artifact",
+                    "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
+                    "reported_values": [0.725],
+                    "value": 0.725,
+                },
         },
         WITH_SKILLS_MODE: {
             "available": True,
@@ -3394,9 +3514,11 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
     ctx = _nv_ctx(runs, modes)
 
     assert run_quality_issues(typed[NO_SKILLS_MODE], ctx.evidence[NO_SKILLS_MODE]) == []
-    assert "result_metric_available" in "; ".join(
+    with_issues = "; ".join(
         run_quality_issues(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE])
     )
+    assert "job_execution" in with_issues
+    assert "metrics_summary.json" in with_issues
     assert human_readable_status(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("needs review")
     assert benchmark_outcome(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("fail:")
     why = why_section(typed, modes, ctx)
@@ -6036,6 +6158,85 @@ def test_job_run_status_reason_reports_successful_install_with_wrong_runtime():
     assert "simulator uses the environment where requirements were installed" in job_run_action(
         _ev(run), _nv_ev(run).job_execution, _nv_ctx({"m": run})
     )
+
+
+def test_dependency_install_evidence_reports_killed_background_install():
+    from benchmark.harness.reports._events import dependency_install_evidence
+
+    install_command = "uv pip install --python /workspace/venv/bin/python3 -r requirements-train.txt 2>&1"
+    events = [
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_install",
+                        "input": {"command": install_command},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {"event_type": "system.task_started", "task_id": "install_task", "tool_use_id": "toolu_install"},
+        {
+            "event_type": "user",
+            "message": {
+                "content": [
+                    {
+                        "content": "Command running in background with ID: install_task",
+                        "tool_use_id": "toolu_install",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"backgroundTaskId": "install_task"},
+        },
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_probe",
+                        "input": {
+                            "command": (
+                                "/workspace/venv/bin/python3 -c \"import numpy, pandas, torch; "
+                                "print('ready')\""
+                            )
+                        },
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "user",
+            "message": {
+                "content": [
+                    {
+                        "content": "Exit code 1\nModuleNotFoundError: No module named 'pandas'",
+                        "is_error": True,
+                        "tool_use_id": "toolu_probe",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+        },
+        {"event_type": "system.task_updated", "patch": {"status": "killed"}, "task_id": "install_task"},
+        {"event_type": "system.task_notification", "status": "stopped", "task_id": "install_task"},
+    ]
+    run = {
+        "available": True,
+        "activity": {"commands": [install_command]},
+        "agent_events_text": "\n".join(json.dumps(event) for event in events),
+    }
+
+    evidence = dependency_install_evidence(run)
+
+    assert "dependency install attempted and failed" in evidence
+    assert "background task stopped before command completion" in evidence
+    assert "dependency install command succeeded" not in evidence
 
 
 def test_readme_metric_alignment_uses_server_best_validation_metric_scalar():

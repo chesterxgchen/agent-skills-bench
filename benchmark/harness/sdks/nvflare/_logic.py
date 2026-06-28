@@ -103,6 +103,59 @@ def current_workspace_structure_file_matches(run: dict[str, Any], filename: str)
     return [path for path in paths if Path(path).name == filename and len(Path(path).parts) == 1]
 
 
+def _workspace_runtime_or_export_tree_root(path: str) -> str:
+    parts = Path(str(path or "")).parts
+    if not parts:
+        return ""
+    if parts[0] == "fl_workspace":
+        return "/".join(parts[:2]) if len(parts) > 1 else parts[0]
+    if parts[0] == "fl_job":
+        return "/".join(parts[:2]) if len(parts) > 1 else parts[0]
+    if "simulate_job" in parts:
+        index = parts.index("simulate_job")
+        return "/".join(parts[: index + 1])
+    return ""
+
+
+def _workspace_runtime_or_export_tree_roots(run: dict[str, Any]) -> list[str]:
+    roots = []
+    seen: set[str] = set()
+    for key in ("changed_files", "final_structure_files", "final_files"):
+        for path in manifest_paths(run, key):
+            root = _workspace_runtime_or_export_tree_root(path)
+            if root and root not in seen:
+                roots.append(root)
+                seen.add(root)
+    return roots
+
+
+def _nested_runtime_or_export_source_folders(run: dict[str, Any]) -> list[str]:
+    folders = []
+    seen: set[str] = set()
+    source_names = set(REQUIRED_STRUCTURE_FILES) | {"fl_data.py", "train.py", "fl_train.py"}
+    for key in ("changed_files", "final_structure_files", "final_files"):
+        for path in manifest_paths(run, key):
+            rel_path = Path(path)
+            if rel_path.name not in source_names or len(rel_path.parts) <= 1:
+                continue
+            if not _workspace_runtime_or_export_tree_root(path):
+                continue
+            folder = str(rel_path.parent)
+            if folder not in seen:
+                folders.append(folder)
+                seen.add(folder)
+    return folders
+
+
+def _short_path_list(paths: list[str], *, limit: int = 3) -> str:
+    if not paths:
+        return ""
+    rendered = ", ".join(paths[:limit])
+    if len(paths) > limit:
+        rendered += f", +{len(paths) - limit} more"
+    return rendered
+
+
 def structure_score(run: dict[str, Any]) -> float | None:
     if not run.get("available"):
         return None
@@ -1844,6 +1897,32 @@ def _assessment_from_observability(evidence: str) -> str:
     return "unknown"
 
 
+def _runtime_export_location_signal(run: dict[str, Any]) -> str:
+    if not run.get("available"):
+        return "not captured"
+    roots = _workspace_runtime_or_export_tree_roots(run)
+    nested_source = _nested_runtime_or_export_source_folders(run)
+    signals = []
+    if roots:
+        signals.append(f"runtime/export outputs in source workspace: {_short_path_list(roots)}")
+    if nested_source:
+        signals.append(f"export/runtime copies of generated source: {_short_path_list(nested_source)}")
+    if run.get("skills") == "with skills" and roots:
+        signals.append("skill runtime-output path not followed")
+    return ", ".join(signals) if signals else "not captured"
+
+
+def _assessment_from_runtime_export_location(evidence: str) -> str:
+    lowered = evidence.lower()
+    if not lowered or lowered == "not captured":
+        return "unknown"
+    if "skill runtime-output path not followed" in lowered:
+        return "poor"
+    if "runtime/export outputs in source workspace" in lowered:
+        return "caution"
+    return "unknown"
+
+
 def _assessment_from_locality(evidence: str) -> str:
     if evidence == "not captured" or "no runtime-output" in evidence:
         return "unknown"
@@ -1875,6 +1954,7 @@ CODE_QUALITY_ROWS = (
     ("Data/DataLoader lifecycle", _data_loader_lifecycle_signal, _assessment_from_data_loader_lifecycle),
     ("Per-round metric workload", _metric_work_signal, _assessment_from_metric_work),
     ("Runtime observability", _observability_signal, _assessment_from_observability),
+    ("Runtime/export output location", _runtime_export_location_signal, _assessment_from_runtime_export_location),
     ("Runtime/output locality", _runtime_output_locality_signal, _assessment_from_locality),
     ("Dependency install strategy", _dependency_strategy_signal, _assessment_from_dependency),
 )
