@@ -35,20 +35,20 @@ JOB_SCALES = {"small", "medium", "large"}
 DEFAULT_PATH_BUDGET = 240
 SLUG_VISIBLE_LENGTH = 48
 
-DEFAULT_RESOURCE_POLICIES: dict[str, dict[str, int]] = {
+DEFAULT_RESOURCE_POLICIES: dict[str, dict[str, int | None]] = {
     "small": {
-        "agent_timeout_seconds": 30 * 60,
-        "container_timeout_seconds": 40 * 60,
+        "agent_timeout_seconds": None,
+        "container_timeout_seconds": None,
         "result_size_budget_bytes": 1 * 1024 * 1024 * 1024,
     },
     "medium": {
-        "agent_timeout_seconds": 90 * 60,
-        "container_timeout_seconds": 120 * 60,
+        "agent_timeout_seconds": None,
+        "container_timeout_seconds": None,
         "result_size_budget_bytes": 5 * 1024 * 1024 * 1024,
     },
     "large": {
-        "agent_timeout_seconds": 240 * 60,
-        "container_timeout_seconds": 300 * 60,
+        "agent_timeout_seconds": None,
+        "container_timeout_seconds": None,
         "result_size_budget_bytes": 20 * 1024 * 1024 * 1024,
     },
 }

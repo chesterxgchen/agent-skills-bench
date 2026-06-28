@@ -386,6 +386,33 @@ def test_case_config_for_entry_applies_resource_policy(tmp_path, monkeypatch):
     assert config.result_size_budget_bytes == 33
 
 
+def test_case_config_for_entry_keeps_absent_resource_timeouts_unset(tmp_path, monkeypatch):
+    from benchmark.harness.host import runner
+
+    entry = {
+        "agent": "codex",
+        "mode": "with_skills",
+        "skills_enabled": True,
+        "job_path": str(tmp_path / "job"),
+        "record_dir": "records/run",
+        "prompt_source": str(tmp_path / "prompt.txt"),
+        "agent_model": "unspecified_default",
+        "model_source": "adapter_default",
+        "resource_policy": {
+            "agent_timeout_seconds": None,
+            "container_timeout_seconds": None,
+            "result_size_budget_bytes": 33,
+        },
+    }
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / ".codex"))
+
+    config = runner.case_config_for_entry(entry, tmp_path / "results")
+
+    assert config.agent_timeout_seconds is None
+    assert config.container_timeout_seconds is None
+    assert config.result_size_budget_bytes == 33
+
+
 def test_positive_int_resource_value_accepts_float_values():
     from benchmark.harness.host.runner import positive_int_resource_value
 

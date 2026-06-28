@@ -104,6 +104,19 @@ def test_scenario_reproducibility_records_profile_image_targets(tmp_path):
     }
 
 
+def test_default_resource_policy_does_not_set_wall_clock_timeouts(tmp_path):
+    from benchmark.harness.scenarios import compile_scenario
+
+    compilation = compile_scenario(base_scenario(tmp_path), base_dir=tmp_path)
+    policies = [compilation.scenario["jobs"][0]["resource_policy"]]
+    policies.extend(entry["resource_policy"] for entry in compilation.run_plan["entries"])
+
+    for policy in policies:
+        assert policy["agent_timeout_seconds"] is None
+        assert policy["container_timeout_seconds"] is None
+        assert policy["result_size_budget_bytes"] > 0
+
+
 def test_prompt_path_must_stay_inside_scenario_directory(tmp_path):
     from benchmark.harness.scenarios import ScenarioValidationError, compile_scenario
 

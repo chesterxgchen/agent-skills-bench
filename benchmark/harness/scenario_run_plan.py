@@ -96,7 +96,7 @@ class JobSpec:
     path: Path
     name: str
     scale: str
-    resource_policy: dict[str, int]
+    resource_policy: dict[str, int | None]
 
 
 def resolve_agents(raw: Mapping[str, Any]) -> tuple[dict[str, AgentSpec], list[dict[str, Any]]]:
@@ -184,7 +184,7 @@ def _scenario_resource_policy_overrides(raw: Mapping[str, Any], field_path: str)
 
 def resource_policy_for(
     scale: str, scenario_raw: Mapping[str, Any], job_raw: Mapping[str, Any], job_policy_path: str
-) -> dict[str, int]:
+) -> dict[str, int | None]:
     policy = dict(DEFAULT_RESOURCE_POLICIES[scale])
     scenario_policy = scenario_raw.get("resource_policy") or {}
     if isinstance(scenario_policy, dict):
