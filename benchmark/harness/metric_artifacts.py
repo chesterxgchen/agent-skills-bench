@@ -46,6 +46,7 @@ METRIC_FILE_MARKERS = frozenset(
         "validation",
     }
 )
+COPIED_WORKSPACE_ARTIFACT_KEYS = ("changed_files", "workspace_added_files", "workspace_modified_files")
 
 
 def _candidate_delta_dirs(manifest: Mapping[str, Any], manifest_path: Path) -> list[Path]:
@@ -141,6 +142,38 @@ def is_metric_artifact_path(path: Path) -> bool:
     if "/metrics/" in text or "/metric/" in text:
         return True
     return any(marker in name for marker in METRIC_FILE_MARKERS)
+
+
+def _metric_source_paths(metric: Mapping[str, Any]) -> list[str]:
+    source_path = str(metric.get("source_path") or "")
+    return [part.strip().replace("\\", "/") for part in source_path.split(";") if part.strip()]
+
+
+def metric_source_path_is_runtime_artifact(source_path: str) -> bool:
+    path = str(source_path or "").replace("\\", "/").strip()
+    if not path:
+        return False
+    path_with_root = "/" + path.lstrip("/")
+    if any(
+        f"/workspace_delta/{key}/" in path_with_root or path_with_root.startswith(f"/{key}/")
+        for key in COPIED_WORKSPACE_ARTIFACT_KEYS
+    ):
+        return False
+    return "workspace_delta/runtime_artifacts/" in path or "/runtime_artifacts/" in path_with_root
+
+
+def metric_is_runtime_result_artifact(metric: Mapping[str, Any]) -> bool:
+    source = metric.get("source")
+    if source not in {"metrics_artifact", "runtime_log_artifact"} or not metric.get("reported_values"):
+        return False
+    source_paths = _metric_source_paths(metric)
+    if not source_paths:
+        return False
+    if source == "metrics_artifact" and any(
+        path.endswith("/round_metrics.jsonl") or path == "round_metrics.jsonl" for path in source_paths
+    ):
+        return False
+    return all(metric_source_path_is_runtime_artifact(path) for path in source_paths)
 
 
 def metric_artifact_rank(path: Path) -> int:
@@ -356,8 +389,8 @@ def validation_metric_from_runtime_logs(paths: Sequence[Path], expected_metric: 
     _key, selected = max(
         groups.items(),
         key=lambda item: (
-            len(item[1]["site_values"]),
             not _runtime_workspace_is_probe(item[0]),
+            len(item[1]["site_values"]),
             item[1]["value_count"],
         ),
     )

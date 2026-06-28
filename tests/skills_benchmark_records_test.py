@@ -439,6 +439,10 @@ def test_metric_artifact_parser_recovers_final_site_metric_from_runtime_logs(tmp
                 "round=0 val_auroc=0.9300\nround=1 val_auroc=0.9400\n",
             ),
             write_log(
+                "runtime_workspaces/ames-fedavg-smoke/site-3/log.txt",
+                "round=0 val_auroc=0.9500\nround=1 val_auroc=0.9600\n",
+            ),
+            write_log(
                 "runtime_workspaces/ames-fedavg/site-1/log.txt",
                 "round=0 val_auroc=0.7100\nround=2 val_auroc=0.7300\n",
             ),
@@ -492,6 +496,38 @@ def test_metric_artifact_parser_prefers_structured_metrics_over_runtime_logs(tmp
     assert metric["source"] == "metrics_artifact"
     assert metric["value"] == 0.7545
     assert metric["source_path"].endswith("metrics_summary.json")
+
+
+def test_runtime_log_metric_requires_captured_runtime_artifact_path():
+    from benchmark.harness.reports._events import artifact_validation_metric_is_runtime_evidence
+
+    base_metric = {
+        "name": "AUROC",
+        "value": 0.8123,
+        "reported_values": [0.8123],
+        "reported_value_entries": [
+            {"label": "artifact aggregated validation metric final log mean AUROC", "value": 0.8123}
+        ],
+        "source": "runtime_log_artifact",
+    }
+
+    assert not artifact_validation_metric_is_runtime_evidence({"validation_metric": base_metric})
+    assert not artifact_validation_metric_is_runtime_evidence(
+        {
+            "validation_metric": {
+                **base_metric,
+                "source_path": "workspace_delta/changed_files/runtime_workspaces/ames/site-1/log.txt",
+            }
+        }
+    )
+    assert artifact_validation_metric_is_runtime_evidence(
+        {
+            "validation_metric": {
+                **base_metric,
+                "source_path": "workspace_delta/runtime_artifacts/runtime_workspaces/ames/site-1/log.txt",
+            }
+        }
+    )
 
 
 def test_metric_artifact_parser_ignores_config_thresholds(tmp_path):

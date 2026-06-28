@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from ...metric_artifacts import metric_is_runtime_result_artifact
 from ...modes import WITH_SKILLS_MODE
 from ...quality_signals import (
     canonical_metric_name,
@@ -170,27 +171,7 @@ class NvflareReportPlugin(ReportPlugin):
 
     @staticmethod
     def _is_runtime_result_metric(metric: dict[str, Any]) -> bool:
-        source = metric.get("source")
-        if source not in {"metrics_artifact", "runtime_log_artifact"}:
-            return False
-        source_path = str(metric.get("source_path") or "").replace("\\", "/")
-        if not source_path:
-            return False
-        source_path_with_root = "/" + source_path.lstrip("/")
-        copied_workspace_artifact_keys = ("changed_files", "workspace_added_files", "workspace_modified_files")
-        if any(
-            f"/workspace_delta/{key}/" in source_path_with_root or source_path_with_root.startswith(f"/{key}/")
-            for key in copied_workspace_artifact_keys
-        ):
-            return False
-        # round_metrics.jsonl is useful progress evidence, but it can be partial when a
-        # simulation is interrupted; require a final/summary runtime metric artifact for
-        # the result scalar gate.
-        if source == "metrics_artifact" and (
-            source_path.endswith("/round_metrics.jsonl") or source_path == "round_metrics.jsonl"
-        ):
-            return False
-        return "workspace_delta/runtime_artifacts/" in source_path or "/runtime_artifacts/" in source_path_with_root
+        return metric_is_runtime_result_artifact(metric)
 
     # Bounded-vocabulary bridge (Inversion 2): SDK copy embedded INSIDE generic sections
     # (the exec-summary algorithm-row label, the job-run intro). Whole sections are owned

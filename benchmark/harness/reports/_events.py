@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..metric_artifacts import metric_is_runtime_result_artifact
 from ._runs import combined_text
 from ._text import fmt_number, strip_ansi
 
@@ -546,6 +547,8 @@ def artifact_validation_metric_evidence(run: dict[str, Any]) -> str:
     source = metric.get("source")
     if source not in {"metrics_artifact", "runtime_log_artifact"} or not metric.get("reported_values"):
         return ""
+    if not metric_is_runtime_result_artifact(metric):
+        return ""
     source_path = str(metric.get("source_path") or "")
     if source_path:
         return f"captured validation metric artifact `{truncate(source_path, 180)}`"
@@ -554,27 +557,7 @@ def artifact_validation_metric_evidence(run: dict[str, Any]) -> str:
 
 def artifact_validation_metric_is_runtime_evidence(run: dict[str, Any]) -> bool:
     metric = run.get("validation_metric") if isinstance(run.get("validation_metric"), dict) else {}
-    source = metric.get("source")
-    if source not in {"metrics_artifact", "runtime_log_artifact"} or not metric.get("reported_values"):
-        return False
-    if source == "runtime_log_artifact":
-        return True
-    source_path = str(metric.get("source_path") or "").replace("\\", "/")
-    if source_path.endswith("/round_metrics.jsonl") or source_path == "round_metrics.jsonl":
-        return False
-    source_path_with_root = "/" + source_path.lstrip("/")
-    copied_workspace_artifact_keys = ("changed_files", "workspace_added_files", "workspace_modified_files")
-    if any(
-        f"/workspace_delta/{key}/" in source_path_with_root or source_path_with_root.startswith(f"/{key}/")
-        for key in copied_workspace_artifact_keys
-    ):
-        return False
-    return bool(
-        "workspace_delta/runtime_artifacts/" in source_path
-        or "/runtime_artifacts/" in source_path
-        or re.search(r"(^|/)server/simulate_job/metrics/[^/]+$", source_path)
-        or re.search(r"(^|/)simulate_job/metrics/(?:metrics_summary\.json|round_metrics\.jsonl)$", source_path)
-    )
+    return metric_is_runtime_result_artifact(metric)
 
 
 def failure_evidence(run: dict[str, Any]) -> str:
