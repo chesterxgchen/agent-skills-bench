@@ -328,6 +328,21 @@ def _install_strategy_summary(spans: list[dict[str, Any]]) -> str:
     return ", ".join(parts)
 
 
+def _install_strategy_phrase(spans: list[dict[str, Any]]) -> str:
+    if not spans:
+        return "no captured dependency install command"
+    counts: dict[str, int] = {}
+    failed = 0
+    for span in spans:
+        counts[_install_strategy_label(span)] = counts.get(_install_strategy_label(span), 0) + 1
+        if command_failed(span):
+            failed += 1
+    parts = [f"{count} {label} command{'s' if count != 1 else ''}" for label, count in sorted(counts.items())]
+    if failed:
+        parts.append(f"{failed} failed")
+    return ", ".join(parts)
+
+
 def _install_tool_label(span: dict[str, Any] | None) -> str:
     if not span:
         return "no install command"
@@ -396,8 +411,21 @@ def _install_total_seconds(spans: list[dict[str, Any]]) -> float:
     return sum(as_number(span.get("duration_seconds")) or 0 for span in spans)
 
 
+def _install_evidence_text(spans: list[dict[str, Any]]) -> str:
+    return "\n".join(f"{span.get('command') or ''}\n{span.get('output') or ''}" for span in spans).lower()
+
+
+def _install_cpu_only_evidence_display(spans: list[dict[str, Any]]) -> str | None:
+    text = _install_evidence_text(spans)
+    if "download.pytorch.org/whl/cpu" in text:
+        return "the explicit CPU-only PyTorch wheel index"
+    if "+cpu" in text:
+        return "a CPU-only framework wheel"
+    return None
+
+
 def _install_stack_evidence(spans: list[dict[str, Any]]) -> str:
-    text = "\n".join(f"{span.get('command') or ''}\n{span.get('output') or ''}" for span in spans).lower()
+    text = _install_evidence_text(spans)
     accelerator_packages = _accelerator_dependency_packages(text)
     if "download.pytorch.org/whl/cpu" in text or "+cpu" in text:
         return "CPU-only framework wheel"
@@ -408,6 +436,22 @@ def _install_stack_evidence(spans: list[dict[str, Any]]) -> str:
     if any(_install_strategy_label(span) == "requirements-file install" for span in spans):
         return "requirements-defined training stack, not CPU-only pinned"
     return "not captured"
+
+
+def _install_path_evidence_phrase(label: str, spans: list[dict[str, Any]], stack_evidence: str) -> str:
+    if not spans:
+        return f"{label} had no captured dependency install command"
+    strategy = _install_strategy_phrase(spans)
+    if stack_evidence == "not captured":
+        return f"{label} used {strategy}, with stack evidence not captured"
+    return f"{label} used {strategy} with {stack_evidence}"
+
+
+def _run_label(run: dict[str, Any], default: str) -> str:
+    label = getattr(run, "label", None)
+    if not label and isinstance(run, dict):
+        label = run.get("label")
+    return str(label or default)
 
 
 def _install_command_display(span: dict[str, Any] | None) -> str:
@@ -452,15 +496,20 @@ def _dependency_install_slowdown_note(with_run: dict[str, Any], base_run: dict[s
     base_install = _longest_span(base_installs)
     with_stack_evidence = _install_stack_evidence(with_installs)
     base_stack_evidence = _install_stack_evidence(base_installs)
+    with_label = _run_label(with_run, "With skills")
+    base_label = _run_label(base_run, "No skills baseline")
     install_reason = (
-        "- **Why the install is longer**: With skills installed the training requirements path, "
-        "while the baseline installed a narrower targeted dependency path."
+        "- **Why the install is longer**: "
+        f"{_install_path_evidence_phrase(with_label, with_installs, with_stack_evidence)}; "
+        f"{_install_path_evidence_phrase(base_label, base_installs, base_stack_evidence)}."
     )
-    if "CPU-only framework wheel" in base_stack_evidence:
+    base_cpu_only = _install_cpu_only_evidence_display(base_installs)
+    with_cpu_only = _install_cpu_only_evidence_display(with_installs)
+    if base_cpu_only and not with_cpu_only:
         install_reason += (
-            " In this run the baseline also used the explicit CPU-only PyTorch wheel index, "
-            "which avoids larger accelerator-capable framework packages; the with-skills requirements command "
-            "was not pinned to that CPU-only index."
+            f" In this run the baseline used {base_cpu_only}, "
+            "which avoids larger accelerator-capable framework packages; the with-skills install logs "
+            "did not show CPU-only wheel/index evidence."
         )
     elif "accelerator-capable dependency stack" in with_stack_evidence:
         install_reason += " The with-skills install logs show accelerator-capable framework packages."

@@ -9,6 +9,7 @@
 | Total elapsed | 900s | 600s | +300s | overall wall-clock comparison |
 | Dependency install | 150s | 30s | +120s | dependency setup/download time |
 | Runtime after install | 750s | 570s | +180s | agent/job runtime after dependency setup |
+| Agent/model interaction residual | 19s | 10s | +9s | time not attributed to captured dependency or non-install command spans |
 | Captured command time | 881s | 590s | +291s | captured command time contributing to wall-clock slowdown |
 | Assistant turns | 21 | 9 | +12 | extra model round-trips |
 | Extended-reasoning events | 6 | 1 | +5 | extra reasoning activity |
@@ -27,12 +28,12 @@ Baseline comparison: No skills baseline had 1 command classified successful job/
 
 **Elapsed time accounting**
 
-| Run | Total | Dependency install | Runtime after install | Captured non-install commands |
-|---|---:|---:|---:|---:|
-| With skills | 900s | 150s | 750s | 731s |
-| No skills baseline | 600s | 30s | 570s | 560s |
+| Run | Total | Dependency install | Runtime after install | Captured non-install commands | Agent/model interaction residual |
+|---|---:|---:|---:|---:|---:|
+| With skills | 900s | 150s | 750s | 731s | 19s |
+| No skills baseline | 600s | 30s | 570s | 560s | 10s |
 
-`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.
+`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time. The residual column is the best available indicator that wall time came from agent/model round trips, tool orchestration, background command gaps, or other non-command activity.
 
 **Longest command comparison**
 
@@ -49,7 +50,7 @@ Baseline comparison: No skills baseline had 1 command classified successful job/
 | With skills | 150s | 1 requirements-file install(s) | accelerator-capable dependency stack (nvidia-cublas-cu13, nvidia-cudnn-cu13) | uv pip | `uv pip install -r requirements-train.txt` |
 | No skills baseline | 30s | 1 requirements-file install(s) | framework dependency stack | python -m pip | `python3 -m pip install -r requirements.txt` |
 
-- **Why the install is longer**: With skills installed the training requirements path, while the baseline installed a narrower targeted dependency path. The with-skills install logs show accelerator-capable framework packages.
+- **Why the install is longer**: With skills used 1 requirements-file install command with accelerator-capable dependency stack (nvidia-cublas-cu13, nvidia-cudnn-cu13); No skills baseline used 1 requirements-file install command with framework dependency stack. The with-skills install logs show accelerator-capable framework packages.
 - **Captured package examples**: nvidia-cublas-cu13, nvidia-cudnn-cu13, torch.
 - **Accelerator dependency evidence**: with-skills install logs included nvidia-cublas-cu13, nvidia-cudnn-cu13; large accelerator/framework wheels can dominate install time.
 - **Installer difference**: with-skills used uv pip, while the baseline used python -m pip.

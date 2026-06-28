@@ -4586,9 +4586,81 @@ def test_why_section_reports_dependency_install_regression_when_runtime_is_not_s
     assert "pytorch_lightning" in section
     assert "Accelerator dependency evidence" in section
     assert "explicit CPU-only PyTorch wheel index" in section
+    assert "did not show CPU-only wheel/index evidence" in section
+    assert "baseline installed a narrower targeted dependency path" not in section
+    assert "was not pinned to that CPU-only index" not in section
     assert "Why With skills is still faster overall" in section
     assert "Why With skills is slower" not in section
     assert "Why With skills has longer runtime after install" not in section
+
+
+def test_dependency_install_reason_does_not_claim_cpu_pin_difference_when_both_are_cpu_only():
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import why_section
+
+    def command_events(command, start, end, item_id, output="ok"):
+        return [
+            {
+                "timestamp": start,
+                "type": "item.started",
+                "item": {
+                    "command": command,
+                    "id": item_id,
+                    "status": "in_progress",
+                    "type": "command_execution",
+                },
+            },
+            {
+                "timestamp": end,
+                "type": "item.completed",
+                "item": {
+                    "aggregated_output": output,
+                    "command": command,
+                    "exit_code": 0,
+                    "id": item_id,
+                    "status": "completed",
+                    "type": "command_execution",
+                },
+            },
+        ]
+
+    with_events = command_events(
+        "uv pip install -r requirements-train.txt --index-url https://download.pytorch.org/whl/cpu",
+        "2026-06-13T00:00:00Z",
+        "2026-06-13T00:02:30Z",
+        "with_install",
+        output="Successfully installed torch-2.12.0+cpu\n",
+    )
+    base_events = command_events(
+        "python -m pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cpu",
+        "2026-06-13T00:00:00Z",
+        "2026-06-13T00:00:30Z",
+        "base_install",
+        output="Successfully installed torch-2.12.0+cpu\n",
+    )
+    runs = {
+        NO_SKILLS_MODE: {
+            "label": "No skills baseline",
+            "run": {"elapsed_seconds": 250, "token_count": 1000},
+            "activity": {"event_types": {"assistant": 2}},
+            "agent_events_text": "\n".join(json.dumps(event) for event in base_events),
+        },
+        WITH_SKILLS_MODE: {
+            "label": "With skills",
+            "run": {"elapsed_seconds": 200, "token_count": 1000},
+            "activity": {"event_types": {"assistant": 2}},
+            "agent_events_text": "\n".join(json.dumps(event) for event in with_events),
+        },
+    }
+
+    section = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
+
+    assert "Why With skills has longer dependency install" in section
+    assert "With skills used 1 requirements-file install command with CPU-only framework wheel" in section
+    assert "No skills baseline used 1 requirements-file install command with CPU-only framework wheel" in section
+    assert "baseline installed a narrower targeted dependency path" not in section
+    assert "did not show CPU-only wheel/index evidence" not in section
+    assert "which avoids larger accelerator-capable framework packages" not in section
 
 
 def test_runtime_path_note_includes_baseline_fallback_command_time():
