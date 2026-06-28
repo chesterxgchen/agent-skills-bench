@@ -31,6 +31,7 @@ from typing import Iterable
 from ..agents.parsers import parse_cached_usage_and_activity
 from ..agents.registry import DEFAULT_BENCHMARK_AGENT, load_agent_adapter
 from ..common import load_json, write_json
+from ..host_environment import host_os_display, read_host_environment, write_host_environment
 from ..modes import PAIR_RUNS
 from ..profile_metadata import write_root_descriptor
 from ..reports import benchmark_insights, metrics_report
@@ -679,6 +680,8 @@ def canonicalize_entry_artifacts(result_root: Path, entry: dict[str, object], st
     activity = load_json(record_dir / "agent_activity.json", {}) or {}
     if not isinstance(activity, dict):
         activity = {}
+    host_environment = read_host_environment(result_root)
+    host_os = host_os_display(host_environment)
     summary.update(
         {
             key: entry.get(key)
@@ -706,7 +709,18 @@ def canonicalize_entry_artifacts(result_root: Path, entry: dict[str, object], st
     summary.setdefault("runtime_image", runtime_image.get("runtime_image"))
     summary.setdefault("wheel_variant", runtime_image.get("sdk_image_kind"))
     summary.setdefault("command_count", activity.get("command_count"))
+    if host_os:
+        summary["host_os"] = host_os
+    if host_environment:
+        summary["host_environment"] = host_environment
     write_json(record_dir / "record_summary.json", summary)
+    run_summary = load_json(record_dir / "run_summary.json", {}) or {}
+    if isinstance(run_summary, dict):
+        if host_os:
+            run_summary["host_os"] = host_os
+        if host_environment:
+            run_summary["host_environment"] = host_environment
+        write_json(record_dir / "run_summary.json", run_summary)
 
     # Surface the §4.2/§4.3 identity block at the result-root level so the report
     # path can resolve identity from RESULT_ROOT without descending into a mode
@@ -897,6 +911,7 @@ def run_pair(argv: list[str]) -> int:
     result_root = comparison_result_root(options)
     result_root.mkdir(parents=True, exist_ok=True)
     clean_pair_result_root(result_root)
+    write_host_environment(result_root)
     console_log = result_root / "console_output.log"
     console_log.write_text("", encoding="utf-8")
     logs = (console_log,)
@@ -950,6 +965,7 @@ def run_scenario(argv: list[str]) -> int:
         return emit_scenario_validation_error(exc)
     result_root = scenario_result_root(options, compilation)
     result_root.mkdir(parents=True, exist_ok=True)
+    write_host_environment(result_root)
     console_log = result_root / "console_output.log"
     console_log.write_text("", encoding="utf-8")
     logs = (console_log,)

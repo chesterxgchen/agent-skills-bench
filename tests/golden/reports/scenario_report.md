@@ -3,6 +3,7 @@
 Result root: `<RESULT_ROOT>`
 Status: `failed`
 Agent invocation: `replayed`
+Host OS: `Ubuntu 24.04 LTS`
 Runs: 2/2 completed
 
 Replay: `true`
@@ -11,10 +12,10 @@ This report was regenerated from captured artifacts; no agent or Docker run was 
 
 ## Run Identity
 
-| Run ID | Label | Agent | Model | Model source | Mode | Skills available | Skills inspected | Skills applied/used | Shared refs read |
-|---|---|---|---|---|---|---|---|---|---|
-| run_00001 | without_skills | codex | default | NA | without_skills | not enabled | none | none | none |
-| run_00002 | with_skills | codex | default | NA | with_skills | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | none | nvflare-convert-pytorch | none |
+| Run ID | Label | Agent | Model | Model source | Mode | Host OS | Skills available | Skills inspected | Skills applied/used | Shared refs read |
+|---|---|---|---|---|---|---|---|---|---|---|
+| run_00001 | without_skills | codex | default | NA | without_skills | Ubuntu 24.04 LTS | not enabled | none | none | none |
+| run_00002 | with_skills | codex | default | NA | with_skills | Ubuntu 24.04 LTS | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | none | nvflare-convert-pytorch | none |
 
 ## Aggregate Results
 

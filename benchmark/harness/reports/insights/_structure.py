@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ...host_environment import host_os_display
 from .._context import ReportContext
 from .._runs import manifest_paths, run_record, run_workspace_delta, unique_paths
 from .._text import fmt_number, markdown_cell
@@ -35,6 +36,7 @@ from ._plugin_view import (
 __all__ = [
     "run_identity_table",
     "run_identity_summary",
+    "run_host_os_display",
     "output_changes_table",
     "artifact_summary",
     "workspace_change_display",
@@ -53,17 +55,25 @@ __all__ = [
 
 def run_identity_table(runs: dict[str, RunEvidence], modes: list[str]) -> str:
     lines = [
-        "| Run | Agent | Model | Model source | Mode |",
-        "|---|---|---|---|---|",
+        "| Run | Agent | Model | Model source | Mode | Host OS |",
+        "|---|---|---|---|---|---|",
     ]
     for mode in modes:
         run = runs[mode]
         lines.append(
             f"| {markdown_cell(run.label or mode)} | {markdown_cell(run.agent)} | "
             f"{markdown_cell(run.agent_model)} | {markdown_cell(run.model_source)} | "
-            f"{markdown_cell(mode)} |"
+            f"{markdown_cell(mode)} | {markdown_cell(run_host_os_display(run))} |"
         )
     return "\n".join(lines)
+
+
+def run_host_os_display(run: RunEvidence) -> str:
+    summary = run.summary if isinstance(run.summary, dict) else {}
+    if summary.get("host_os"):
+        return str(summary.get("host_os"))
+    host_environment = summary.get("host_environment") if isinstance(summary.get("host_environment"), dict) else {}
+    return host_os_display(host_environment) or "not captured"
 
 
 def run_identity_summary(runs: dict[str, RunEvidence], modes: list[str]) -> str:

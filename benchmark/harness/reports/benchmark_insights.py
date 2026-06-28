@@ -122,6 +122,7 @@ from .insights._structure import *  # noqa: F401,F403
 from .insights._structure import (
     artifact_summary,
     output_changes_table,
+    run_host_os_display,
     run_identity_summary,
     run_identity_table,
     source_input_protection_display,
@@ -401,8 +402,8 @@ def _executive_summary_section(
     context_lines = [
         "### Run Context",
         "",
-        f"| Run | Job | Framework | Agent/model | {markdown_cell(algorithm_label)} | Captured generated artifacts |",
-        "|---|---|---|---|---|---|",
+        f"| Run | Job | Framework | Agent/model | Host OS | {markdown_cell(algorithm_label)} | Captured generated artifacts |",
+        "|---|---|---|---|---|---|---|",
     ]
     skill_lines = [
         "### Skill Evidence",
@@ -436,6 +437,7 @@ def _executive_summary_section(
             f"{markdown_cell(_run_job_name(run) or 'NA')} | "
             f"{markdown_cell(_run_framework_display(run) or 'NA')} | "
             f"{markdown_cell(agent_model)} | "
+            f"{markdown_cell(run_host_os_display(run))} | "
             f"{markdown_cell(fl_algorithm_display(run, ctx.algorithm(mode)))} | "
             f"{markdown_cell(artifact_summary(run))} |"
         )

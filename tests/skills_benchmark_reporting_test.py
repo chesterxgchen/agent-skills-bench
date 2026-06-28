@@ -375,6 +375,73 @@ def test_reports_resolve_unspecified_agent_model_from_agent_events(tmp_path):
     assert insight_runs[WITH_SKILLS_MODE]["agent_model"] == "explicit-model"
 
 
+def test_reports_surface_captured_host_os(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports import metrics_report
+    from benchmark.harness.reports.benchmark_insights import benchmark_report, collect_benchmark_runs
+    from benchmark.harness.scenario_summaries import write_scenario_summaries
+
+    host_environment = {
+        "schema_version": "1",
+        "host_os": {
+            "display": "Ubuntu 24.04 LTS",
+            "family": "ubuntu",
+            "system": "Linux",
+            "release": "6.8.0-test",
+            "machine": "x86_64",
+            "platform": "linux",
+            "distribution": {"ID": "ubuntu", "PRETTY_NAME": "Ubuntu 24.04 LTS"},
+        },
+    }
+    write_json(tmp_path / "host_environment.json", host_environment)
+
+    entries = []
+    for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
+        record_dir = tmp_path / "records" / "agent=codex" / "model=default" / f"mode={mode}"
+        record_dir.mkdir(parents=True)
+        entries.append(
+            {
+                "run_id": f"run_{index:05d}",
+                "mode": mode,
+                "agent": "codex",
+                "agent_model": "default",
+                "model_source": "scenario",
+                "record_dir": str(record_dir.relative_to(tmp_path)),
+                "skills_enabled": mode == WITH_SKILLS_MODE,
+            }
+        )
+        write_json(
+            record_dir / "run_summary.json",
+            {
+                "mode": mode,
+                "agent": "codex",
+                "agent_model": "default",
+                "model_source": "scenario",
+                "agent_exit_code": 0,
+                "final_container_exit_code": 0,
+            },
+        )
+        write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+        write_json(record_dir / "benchmark_record.json", {"mode": mode})
+    write_json(tmp_path / "run_plan.json", {"entries": entries})
+
+    runs = collect_benchmark_runs(tmp_path)
+    insights = benchmark_report(tmp_path, runs)
+    scenario_summary = write_scenario_summaries(tmp_path, {"run_00001": 0, "run_00002": 0})
+    metrics_report.write_reports(tmp_path, "Synthetic Metrics")
+    metrics_markdown = (tmp_path / "metrics_report.md").read_text(encoding="utf-8")
+    scenario_markdown = (tmp_path / "reports" / "scenario_report.md").read_text(encoding="utf-8")
+
+    assert runs[NO_SKILLS_MODE]["run"]["host_os"] == "Ubuntu 24.04 LTS"
+    assert scenario_summary["host_environment"]["host_os"]["display"] == "Ubuntu 24.04 LTS"
+    assert scenario_summary["runs"][0]["host_os"] == "Ubuntu 24.04 LTS"
+    assert "| No skills baseline | codex | default | scenario | without_skills | Ubuntu 24.04 LTS |" in insights
+    assert "| No skills baseline | codex | default | Ubuntu 24.04 LTS |" in metrics_markdown
+    assert "Host OS: `Ubuntu 24.04 LTS`" in scenario_markdown
+    assert "| run_00001 | without_skills | codex | default | NA | without_skills | Ubuntu 24.04 LTS |" in scenario_markdown
+
+
 def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
@@ -460,10 +527,10 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     insights = benchmark_report(tmp_path, runs)
     assert "### Benchmark Target" in insights
     assert "| ames-lightning | Lightning target | pair codex ames-lightning | /tmp/jobs/ames-lightning |" in insights
-    assert "| Run | Job | Framework | Agent/model | Algorithm/workflow |" in insights
-    assert "| No skills baseline | ames-lightning | Lightning target | agent=codex, model=default |" in insights
+    assert "| Run | Job | Framework | Agent/model | Host OS | Algorithm/workflow |" in insights
+    assert "| No skills baseline | ames-lightning | Lightning target | agent=codex, model=default | not captured |" in insights
     assert (
-        "| With skills | ames-lightning | Lightning target | agent=codex, model=default |"
+        "| With skills | ames-lightning | Lightning target | agent=codex, model=default | not captured |"
         in insights
     )
     assert "### Skill Evidence" in insights
@@ -471,7 +538,7 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     assert "| No skills baseline | not enabled | none | none | none |" in insights
     assert "| With skills | not recorded | none | nvflare-convert-pytorch | none |" in insights
     assert "## Run Identity" in insights
-    assert "| No skills baseline | codex | default | scenario | without_skills |" in insights
+    assert "| No skills baseline | codex | default | scenario | without_skills | not captured |" in insights
     assert "## Cost And Work Comparison" in insights
     assert "| Dependency install seconds |" in insights
     assert "| Run | Elapsed seconds | Tokens | Commands |" not in insights

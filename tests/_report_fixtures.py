@@ -35,6 +35,20 @@ WITH_SKILLS_MODE = "with_skills"
 # Fixed identity used across the fixture.
 AGENT = "codex"
 AGENT_MODEL = "default"
+HOST_ENVIRONMENT = {
+    "schema_version": "1",
+    "host_os": {
+        "display": "Ubuntu 24.04 LTS",
+        "family": "ubuntu",
+        "system": "Linux",
+        "release": "6.8.0-fixture",
+        "version": "fixture",
+        "machine": "x86_64",
+        "platform": "linux",
+        "distribution": {"ID": "ubuntu", "PRETTY_NAME": "Ubuntu 24.04 LTS"},
+    },
+    "python": {"implementation": "CPython", "version": "3.12.0"},
+}
 
 # Per-mode fixed inputs. Durations come straight from these values (and from the
 # fixed event timestamps below), never from wall-clock time.
@@ -233,6 +247,8 @@ def _populate_mode_dir(mode_dir: Path, mode: str) -> None:
         "agent": AGENT,
         "agent_model": AGENT_MODEL,
         "model_source": "scenario",
+        "host_os": HOST_ENVIRONMENT["host_os"]["display"],
+        "host_environment": HOST_ENVIRONMENT,
         "elapsed_seconds": inputs["elapsed_seconds"],
         "token_count": inputs["token_count"],
         "agent_exit_code": 0,
@@ -349,6 +365,7 @@ def build_result_root(root: Path) -> Path:
     """
 
     root.mkdir(parents=True, exist_ok=True)
+    _write_json(root / "host_environment.json", HOST_ENVIRONMENT)
     entries = []
     for index, mode in enumerate((WITHOUT_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
         record_dir = (

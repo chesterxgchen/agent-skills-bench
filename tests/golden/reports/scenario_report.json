@@ -127,6 +127,26 @@
   "completed_run_count": 2,
   "expanded_case_count": 2,
   "failed_run_count": 2,
+  "host_environment": {
+    "host_os": {
+      "display": "Ubuntu 24.04 LTS",
+      "distribution": {
+        "ID": "ubuntu",
+        "PRETTY_NAME": "Ubuntu 24.04 LTS"
+      },
+      "family": "ubuntu",
+      "machine": "x86_64",
+      "platform": "linux",
+      "release": "6.8.0-fixture",
+      "system": "Linux",
+      "version": "fixture"
+    },
+    "python": {
+      "implementation": "CPython",
+      "version": "3.12.0"
+    },
+    "schema_version": "1"
+  },
   "is_replay": true,
   "quality_gate": {
     "agent_process_passed": true,
@@ -168,6 +188,27 @@
       "elapsed_seconds": 180,
       "failure_root_cause": null,
       "final_container_exit_code": 0,
+      "host_environment": {
+        "host_os": {
+          "display": "Ubuntu 24.04 LTS",
+          "distribution": {
+            "ID": "ubuntu",
+            "PRETTY_NAME": "Ubuntu 24.04 LTS"
+          },
+          "family": "ubuntu",
+          "machine": "x86_64",
+          "platform": "linux",
+          "release": "6.8.0-fixture",
+          "system": "Linux",
+          "version": "fixture"
+        },
+        "python": {
+          "implementation": "CPython",
+          "version": "3.12.0"
+        },
+        "schema_version": "1"
+      },
+      "host_os": "Ubuntu 24.04 LTS",
       "host_status": 0,
       "job_name": null,
       "job_path": null,
@@ -228,6 +269,27 @@
       "elapsed_seconds": 240,
       "failure_root_cause": null,
       "final_container_exit_code": 0,
+      "host_environment": {
+        "host_os": {
+          "display": "Ubuntu 24.04 LTS",
+          "distribution": {
+            "ID": "ubuntu",
+            "PRETTY_NAME": "Ubuntu 24.04 LTS"
+          },
+          "family": "ubuntu",
+          "machine": "x86_64",
+          "platform": "linux",
+          "release": "6.8.0-fixture",
+          "system": "Linux",
+          "version": "fixture"
+        },
+        "python": {
+          "implementation": "CPython",
+          "version": "3.12.0"
+        },
+        "schema_version": "1"
+      },
+      "host_os": "Ubuntu 24.04 LTS",
       "host_status": 0,
       "job_name": null,
       "job_path": null,

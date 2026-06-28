@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..common import load_json, write_json
+from ..host_environment import host_os_display
 from ._loader import MAX_AGENT_EVENTS_TEXT_BYTES, read_text
 from ._skill_usage import (
     shared_skill_usage_display,
@@ -81,6 +82,11 @@ def skills_available(result_root: Path, run: Mapping[str, Any]) -> str:
     return skill_availability_display(skills_list, skills_enabled=run.get("skills_enabled"))
 
 
+def scenario_host_os_display(summary: Mapping[str, Any]) -> str:
+    host_environment = summary.get("host_environment") if isinstance(summary.get("host_environment"), Mapping) else {}
+    return host_os_display(host_environment) or "not captured"
+
+
 def run_identity_lines(result_root: Path, runs: Any) -> list[str]:
     if not isinstance(runs, list) or not runs:
         return []
@@ -88,8 +94,8 @@ def run_identity_lines(result_root: Path, runs: Any) -> list[str]:
         "",
         "## Run Identity",
         "",
-        "| Run ID | Label | Agent | Model | Model source | Mode | Skills available | Skills inspected | Skills applied/used | Shared refs read |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| Run ID | Label | Agent | Model | Model source | Mode | Host OS | Skills available | Skills inspected | Skills applied/used | Shared refs read |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for run in runs:
         if not isinstance(run, Mapping):
@@ -98,7 +104,8 @@ def run_identity_lines(result_root: Path, runs: Any) -> list[str]:
         lines.append(
             f"| {markdown_cell(run.get('run_id'))} | {markdown_cell(label)} | {markdown_cell(run.get('agent'))} | "
             f"{markdown_cell(run.get('agent_model'))} | {markdown_cell(run.get('model_source'))} | "
-            f"{markdown_cell(run.get('mode'))} | {markdown_cell(skills_available(result_root, run))} | "
+            f"{markdown_cell(run.get('mode'))} | {markdown_cell(run.get('host_os') or 'not captured')} | "
+            f"{markdown_cell(skills_available(result_root, run))} | "
             f"{markdown_cell(skills_inspected(result_root, run))} | "
             f"{markdown_cell(skill_used(result_root, run))} | "
             f"{markdown_cell(shared_skill_refs_used(result_root, run))} |"
@@ -116,6 +123,7 @@ def write_scenario_report(result_root: Path, summary: Mapping[str, Any]) -> None
         f"Result root: `{result_root}`",
         f"Status: `{summary.get('status')}`",
         f"Agent invocation: `{summary.get('agent_invocation') or 'live'}`",
+        f"Host OS: `{scenario_host_os_display(summary)}`",
         f"Runs: {summary.get('completed_run_count')}/{summary.get('expanded_case_count')} completed",
     ]
     replay = summary.get("replay") if isinstance(summary.get("replay"), Mapping) else {}

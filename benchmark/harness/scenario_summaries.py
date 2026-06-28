@@ -23,6 +23,7 @@ from typing import Any, Mapping
 from .agent_identity import OBSERVED_AGENT_MODEL_SOURCE, resolve_agent_model_from_events_path
 from .common import load_json
 from .common import write_json_atomic as common_write_json_atomic
+from .host_environment import host_os_display
 from .quality_signals import critical_quality_checks_failed, required_validation_metric_status
 from .reports.scenario_report import write_scenario_report
 from .scenario_common import (
@@ -187,6 +188,7 @@ def run_summary_for_entry(
     entry: Mapping[str, Any],
     statuses: Mapping[str, int],
     quality_gate: Mapping[str, Any] | None = None,
+    host_environment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     artifacts = read_entry_artifacts(result_root, entry)
     summary = artifacts["summary"]
@@ -223,6 +225,16 @@ def run_summary_for_entry(
     token_count = summary.get("token_count")
     if token_count is None:
         token_count = process_metrics.get("token_count")
+    captured_host_environment = (
+        summary.get("host_environment")
+        if isinstance(summary.get("host_environment"), Mapping)
+        else host_environment if isinstance(host_environment, Mapping) else {}
+    )
+    captured_host_os = first_non_empty(
+        summary.get("host_os"),
+        record.get("host_os"),
+        host_os_display(captured_host_environment),
+    )
     agent_model, model_source = resolve_agent_model_from_events_path(
         first_non_empty(summary.get("agent_model"), record.get("agent_model"), entry.get("agent_model")),
         first_non_empty(summary.get("model_source"), record.get("model_source"), entry.get("model_source")),
@@ -265,8 +277,11 @@ def run_summary_for_entry(
             or record.get("structure_quality_signal")
             or UNAVAILABLE_STRUCTURE_QUALITY_SIGNAL,
             "artifact_paths": entry.get("artifact_paths") or {},
+            "host_os": captured_host_os,
         }
     )
+    if captured_host_environment:
+        payload["host_environment"] = dict(captured_host_environment)
     if model_source == OBSERVED_AGENT_MODEL_SOURCE:
         payload["model_source"] = model_source
     return payload
@@ -278,6 +293,7 @@ def failed_run_summary_for_entry(
     exc: Exception,
     *,
     quality_gate: Mapping[str, Any] | None = None,
+    host_environment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     effective_quality_gate = quality_gate or DEFAULT_QUALITY_GATE
     status = statuses.get(str(entry.get("run_id")))
@@ -309,12 +325,15 @@ def failed_run_summary_for_entry(
             "validation_metric": None,
             "structure_quality_signal": UNAVAILABLE_STRUCTURE_QUALITY_SIGNAL,
             "artifact_paths": entry.get("artifact_paths") or {},
+            "host_os": host_os_display(host_environment),
             "summary_generation_error": {
                 "error_type": type(exc).__name__,
                 "message": str(exc),
             },
         }
     )
+    if host_environment:
+        payload["host_environment"] = dict(host_environment)
     return payload
 
 
@@ -451,6 +470,9 @@ def write_scenario_summaries(
     replay_metadata = load_json(root / "replay_metadata.json", {}) or {}
     if not isinstance(replay_metadata, dict):
         replay_metadata = {}
+    host_environment = load_json(root / "host_environment.json", {}) or {}
+    if not isinstance(host_environment, dict):
+        host_environment = {}
     entries = run_plan.get("entries") if isinstance(run_plan.get("entries"), list) else []
     quality_gate = (
         run_plan.get("quality_gate") if isinstance(run_plan.get("quality_gate"), dict) else DEFAULT_QUALITY_GATE
@@ -461,9 +483,17 @@ def write_scenario_summaries(
         if not isinstance(entry, dict):
             continue
         try:
-            runs.append(run_summary_for_entry(root, entry, statuses, quality_gate))
+            runs.append(run_summary_for_entry(root, entry, statuses, quality_gate, host_environment))
         except Exception as exc:
-            runs.append(failed_run_summary_for_entry(entry, statuses, exc, quality_gate=quality_gate))
+            runs.append(
+                failed_run_summary_for_entry(
+                    entry,
+                    statuses,
+                    exc,
+                    quality_gate=quality_gate,
+                    host_environment=host_environment,
+                )
+            )
     runs_by_id = {str(run["run_id"]): run for run in runs if run.get("run_id") is not None}
     comparison_groups = [
         comparison_group_summary(group, runs_by_id, quality_gate, winner_policy)
@@ -488,6 +518,7 @@ def write_scenario_summaries(
         "winner_policy": winner_policy,
         "reproducibility": scenario.get("reproducibility") if isinstance(scenario, dict) else {},
         "replay": replay_metadata,
+        "host_environment": host_environment,
         "is_replay": bool(replay_metadata.get("replayed")),
         "agent_invocation": "replayed" if replay_metadata.get("replayed") else "live",
         "runs": runs,

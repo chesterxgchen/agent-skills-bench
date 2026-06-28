@@ -29,6 +29,7 @@ from typing import Any
 
 from ..agent_identity import MAX_AGENT_EVENTS_TEXT_BYTES, resolve_agent_model
 from ..common import load_json
+from ..host_environment import host_os_display
 from ..metric_artifacts import validation_metric_from_workspace_delta_manifest
 from ..modes import BENCHMARK_RUNS
 from ..quality_signals import canonical_metric_name, is_numeric_metric_value, reported_metric_payload
@@ -157,6 +158,10 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
     console_text = read_text(root / "console_output.log")
     runs: dict[str, dict[str, Any]] = {}
     run_plan = load_json(root / "run_plan.json", {}) or {}
+    host_environment = load_json(root / "host_environment.json", {}) or {}
+    if not isinstance(host_environment, dict):
+        host_environment = {}
+    root_host_os = host_os_display(host_environment)
     scenario_name = run_plan.get("scenario_name") if isinstance(run_plan, dict) else None
     entries = (
         run_plan.get("entries") if isinstance(run_plan, dict) and isinstance(run_plan.get("entries"), list) else []
@@ -182,6 +187,16 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             workspace_delta = {}
         if not isinstance(skills_list, dict):
             skills_list = {}
+        run_host_environment = (
+            summary.get("host_environment")
+            if isinstance(summary.get("host_environment"), dict)
+            else host_environment
+        )
+        run_host_os = first_non_empty(summary.get("host_os"), run_plan_entry.get("host_os"), root_host_os)
+        if run_host_os:
+            summary = {**summary, "host_os": run_host_os}
+        if run_host_environment:
+            summary = {**summary, "host_environment": run_host_environment}
         agent = first_non_empty(summary.get("agent"), record.get("agent"), run_plan_entry.get("agent"))
         configured_agent_model = first_non_empty(
             summary.get("agent_model"),

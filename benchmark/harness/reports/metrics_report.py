@@ -23,6 +23,7 @@ from typing import Any
 
 from ..agent_identity import MAX_AGENT_EVENTS_TEXT_BYTES, resolve_agent_model
 from ..common import flatten_numbers, load_json, write_json
+from ..host_environment import host_os_display
 from ..metric_artifacts import validation_metric_from_workspace_delta_manifest
 from ..modes import BENCHMARK_RUNS, NO_SKILLS_MODE, WITH_SKILLS_MODE
 from ..quality_signals import canonical_metric_name, is_plausible_metric_value
@@ -36,6 +37,7 @@ from ._loader import (
     validation_metric_from_record,
 )
 from ._runs import read_text
+from .insights._structure import run_host_os_display
 from .benchmark_insights import (
     _report_context,
     _run_skill_available_display,
@@ -75,6 +77,10 @@ def _insights_context(root: Path, insight_runs: dict[str, Any]) -> ReportContext
 def collect_runs(root: Path) -> list[dict[str, Any]]:
     runs = []
     run_plan = load_json(root / "run_plan.json", {}) or {}
+    host_environment = load_json(root / "host_environment.json", {}) or {}
+    if not isinstance(host_environment, dict):
+        host_environment = {}
+    root_host_os = host_os_display(host_environment)
     entries = (
         run_plan.get("entries") if isinstance(run_plan, dict) and isinstance(run_plan.get("entries"), list) else []
     )
@@ -106,6 +112,16 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
             workspace_delta = {}
         if not isinstance(skills_list, dict):
             skills_list = {}
+        run_host_environment = (
+            summary.get("host_environment")
+            if isinstance(summary.get("host_environment"), dict)
+            else host_environment
+        )
+        run_host_os = first_non_empty(summary.get("host_os"), run_plan_entry.get("host_os"), root_host_os)
+        if run_host_os:
+            summary = {**summary, "host_os": run_host_os}
+        if run_host_environment:
+            summary = {**summary, "host_environment": run_host_environment}
         expected_metric = expected_validation_metric_name(record)
         record_metric = validation_metric_from_record(record)
         artifact_metric = validation_metric_from_workspace_delta_manifest(
@@ -148,6 +164,8 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
                 "activity": activity,
                 "usage": usage,
                 "runtime_image": runtime_image,
+                "host_os": run_host_os,
+                "host_environment": run_host_environment,
                 "skills_list": skills_list,
                 "validation_metric": validation_metric,
                 "metrics": flatten_numbers(
@@ -168,6 +186,10 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
     console_text = read_text(root / "console_output.log")
     rows_by_mode = {row["mode"]: row for row in rows if isinstance(row, dict) and isinstance(row.get("mode"), str)}
     run_plan = load_json(root / "run_plan.json", {}) or {}
+    host_environment = load_json(root / "host_environment.json", {}) or {}
+    if not isinstance(host_environment, dict):
+        host_environment = {}
+    root_host_os = host_os_display(host_environment)
     scenario_name = run_plan.get("scenario_name") if isinstance(run_plan, dict) else None
     entries = (
         run_plan.get("entries") if isinstance(run_plan, dict) and isinstance(run_plan.get("entries"), list) else []
@@ -204,6 +226,18 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             workspace_delta = {}
         if not isinstance(skills_list, dict):
             skills_list = {}
+        run_host_environment = (
+            summary.get("host_environment")
+            if isinstance(summary.get("host_environment"), dict)
+            else row.get("host_environment")
+            if isinstance(row.get("host_environment"), dict)
+            else host_environment
+        )
+        run_host_os = first_non_empty(summary.get("host_os"), row.get("host_os"), run_plan_entry.get("host_os"), root_host_os)
+        if run_host_os:
+            summary = {**summary, "host_os": run_host_os}
+        if run_host_environment:
+            summary = {**summary, "host_environment": run_host_environment}
         validation_metric = row.get("validation_metric") if isinstance(row.get("validation_metric"), dict) else {}
         if not validation_metric:
             expected_metric = expected_validation_metric_name(record)
@@ -389,8 +423,8 @@ def markdown_report(
         "",
         "## Runs",
         "",
-        "| Run | Agent | Model | Status | Skills available | Skills inspected | Skills applied/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |",
-        "|---|---|---|---|---|---|---|---|---:|---:|---:|---|",
+        "| Run | Agent | Model | Host OS | Status | Skills available | Skills inspected | Skills applied/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |",
+        "|---|---|---|---|---|---|---|---|---|---:|---:|---:|---|",
     ]
     for row in summary["runs"]:
         run = insight_runs[row["mode"]]
@@ -400,7 +434,8 @@ def markdown_report(
         root_cause = "NA" if human_readable_status(run, ev) == "passed" else run_analysis(run, ev)
         lines.append(
             f"| {markdown_cell(row['label'])} | {markdown_cell(run.agent)} | "
-            f"{markdown_cell(run.agent_model)} | {markdown_cell(human_readable_status(run, ev))} | "
+            f"{markdown_cell(run.agent_model)} | {markdown_cell(run_host_os_display(run))} | "
+            f"{markdown_cell(human_readable_status(run, ev))} | "
             f"{markdown_cell(_run_skill_available_display(run))} | "
             f"{markdown_cell(_run_skill_inspection_display(run))} | "
             f"{markdown_cell(_run_skill_display(run))} | {markdown_cell(_run_shared_skill_display(run))} | "
@@ -449,6 +484,7 @@ def html_report(
             f"<td>{html.escape(row['label'])}</td>"
             f"<td>{html.escape(fmt(run.agent))}</td>"
             f"<td>{html.escape(fmt(run.agent_model))}</td>"
+            f"<td>{html.escape(run_host_os_display(run))}</td>"
             f"<td>{html.escape(human_readable_status(run, ctx.evidence.get(row['mode'])))}</td>"
             f"<td>{html.escape(_run_skill_available_display(run))}</td>"
             f"<td>{html.escape(_run_skill_inspection_display(run))}</td>"
@@ -479,7 +515,7 @@ def html_report(
   <p>Result root: <code>{html.escape(summary['result_root'])}</code></p>
   <p>Status: {html.escape(summary['status'])}</p>
   <table>
-    <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Status</th><th>Skills available</th><th>Skills inspected</th><th>Skills applied/used</th><th>Shared refs read</th><th>Elapsed seconds</th><th>Tokens</th></tr></thead>
+    <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Host OS</th><th>Status</th><th>Skills available</th><th>Skills inspected</th><th>Skills applied/used</th><th>Shared refs read</th><th>Elapsed seconds</th><th>Tokens</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
   {chart}

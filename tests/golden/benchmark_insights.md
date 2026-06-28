@@ -19,10 +19,10 @@ Result root: `<RESULT_ROOT>`
 
 ### Run Context
 
-| Run | Job | Framework | Agent/model | FL algorithm/workflow | Captured generated artifacts |
-|---|---|---|---|---|---|
-| No skills baseline | ames | NA | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
-| With skills | ames | NA | agent=codex, model=default | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| Run | Job | Framework | Agent/model | Host OS | FL algorithm/workflow | Captured generated artifacts |
+|---|---|---|---|---|---|---|
+| No skills baseline | ames | NA | agent=codex, model=default | Ubuntu 24.04 LTS | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
+| With skills | ames | NA | agent=codex, model=default | Ubuntu 24.04 LTS | FedAvg (3 rounds) | 3 changed/generated files, 1 runtime artifacts |
 
 ### Skill Evidence
 
@@ -42,10 +42,10 @@ This section reports the FL workflow captured in generated/runtime NVFLARE serve
 
 ## Run Identity
 
-| Run | Agent | Model | Model source | Mode |
-|---|---|---|---|---|
-| No skills baseline | codex | default | scenario | without_skills |
-| With skills | codex | default | scenario | with_skills |
+| Run | Agent | Model | Model source | Mode | Host OS |
+|---|---|---|---|---|---|
+| No skills baseline | codex | default | scenario | without_skills | Ubuntu 24.04 LTS |
+| With skills | codex | default | scenario | with_skills | Ubuntu 24.04 LTS |
 
 ## Metrics
 

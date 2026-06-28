@@ -703,6 +703,8 @@ def test_run_pair_returns_failure_for_any_run_id_status(tmp_path, monkeypatch):
     status = runner.run_pair(["--prompt", str(prompt), "--output-dir", str(result_root), str(job_input)])
 
     assert status == 1
+    host_environment = json.loads((result_root / "host_environment.json").read_text(encoding="utf-8"))
+    assert host_environment["host_os"]["display"]
 
 
 def test_run_pair_reports_scenario_validation_without_traceback(tmp_path, monkeypatch, capsys):
