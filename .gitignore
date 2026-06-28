@@ -10,3 +10,9 @@ __pycache__/
 
 # scratch / working files (never committed)
 tmp/
+
+# generated packaging metadata
+*.egg-info/
+
+# background run logs
+nohup.out
