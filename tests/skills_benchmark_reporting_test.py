@@ -6630,6 +6630,64 @@ def test_metrics_chart_marks_mixed_metric_names_non_comparable():
     assert "| Metrics (mixed validation metrics) | accuracy 0.8123 | AUROC 0.7529 |" in table
 
 
+def test_metrics_chart_uses_common_runtime_metric_when_selected_keys_differ(tmp_path):
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import embedded_bar_chart, outcome_metrics_table
+
+    def run(mode: str, label: str, key_metric: str, key_value: float, auroc: float) -> dict:
+        mode_dir = tmp_path / f"mode={mode}"
+        artifact = mode_dir / "workspace_delta" / "runtime_artifacts" / "metrics_summary.json"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text(
+            json.dumps(
+                {
+                    "key_metric": {"name": key_metric, "mode": "max"},
+                    "best_metrics": [{"name": key_metric, "value": key_value}],
+                    "final_aggregated_metrics": [
+                        {"name": "val_loss", "value": 0.55},
+                        {"name": "val_acc", "value": key_value},
+                        {"name": "val_auroc", "value": auroc},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "label": label,
+            "mode": mode,
+            "mode_dir": mode_dir,
+            "available": True,
+            "run": {"final_container_exit_code": 0},
+            "activity": {},
+            "workspace_delta": {
+                "delta_dir": str(mode_dir / "workspace_delta"),
+                "runtime_artifacts": [{"artifact_path": "runtime_artifacts/metrics_summary.json"}],
+            },
+            "validation_metric": {
+                "name": key_metric,
+                "value": key_value,
+                "reported_values": [key_value],
+                "reported_value_entries": [{"label": f"selected {key_metric}", "value": key_value}],
+                "source": "metrics_artifact",
+                "source_path": str(artifact),
+            },
+        }
+
+    runs = {
+        NO_SKILLS_MODE: run(NO_SKILLS_MODE, "No skills baseline", "val_acc", 0.6850, 0.7445),
+        WITH_SKILLS_MODE: run(WITH_SKILLS_MODE, "With skills", "AUROC", 0.7368, 0.7368),
+    }
+
+    chart = embedded_bar_chart(_evruns(runs))
+    table = outcome_metrics_table(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
+
+    assert "Not comparable" not in chart
+    assert "Metrics (AUROC)" in chart
+    assert ">0.7445<" in chart
+    assert ">0.7368<" in chart
+    assert "| Metrics (AUROC) | AUROC 0.7445 | AUROC 0.7368 |" in table
+
+
 def test_structure_tree_renderer_uses_tree_format():
     from benchmark.harness.reports.benchmark_insights import tree_from_paths
 

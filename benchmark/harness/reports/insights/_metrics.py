@@ -21,11 +21,12 @@ from pathlib import Path
 from typing import Any
 
 from ...modes import BENCHMARK_RUNS, mode_names
-from ...metric_artifacts import observed_metric_payloads_from_workspace_delta_manifest
+from ...metric_artifacts import metric_is_runtime_result_artifact, observed_metric_payloads_from_workspace_delta_manifest
 from ...quality_signals import (
     canonical_metric_name,
     is_numeric_metric_value,
     is_plausible_metric_value,
+    metric_value_label as payload_metric_value_label,
     metric_value_entries,
     reported_metric_payload,
 )
@@ -324,17 +325,65 @@ def metric_names_for_runs(runs: dict[str, RunEvidence]) -> list[str]:
     return names
 
 
+def _observed_runtime_metric_payloads(run: RunEvidence) -> list[dict[str, Any]]:
+    return [payload for payload in observed_metric_payloads(run) if metric_is_runtime_result_artifact(payload)]
+
+
+def _observed_runtime_metric_payload(run: RunEvidence, metric_name: str | None) -> dict[str, Any] | None:
+    name = canonical_metric_name(metric_name)
+    if not name:
+        return None
+    for payload in _observed_runtime_metric_payloads(run):
+        if canonical_metric_name(payload.get("name")) == name:
+            return payload
+    return None
+
+
+def common_observed_runtime_metric_name(runs: dict[str, RunEvidence]) -> str | None:
+    if not runs:
+        return None
+    names_by_run = []
+    for run in runs.values():
+        names = {
+            canonical_metric_name(payload.get("name"))
+            for payload in _observed_runtime_metric_payloads(run)
+            if canonical_metric_name(payload.get("name"))
+        }
+        if not names:
+            return None
+        names_by_run.append(names)
+    common = set.intersection(*names_by_run)
+    if not common:
+        return None
+    for preferred in OBSERVED_METRIC_NAMES:
+        name = canonical_metric_name(preferred)
+        if name in common:
+            return name
+    return sorted(common)[0]
+
+
 def comparable_metric_name(runs: dict[str, RunEvidence]) -> str | None:
     names = metric_names_for_runs(runs)
-    return names[0] if len(names) == 1 else None
+    if len(names) == 1:
+        return names[0]
+    return common_observed_runtime_metric_name(runs)
+
+
+def _observed_metric_value(run: RunEvidence, metric_name: str | None) -> Any:
+    name = canonical_metric_name(metric_name)
+    payload = _observed_runtime_metric_payload(run, name)
+    if not payload:
+        return None
+    value = payload.get("value")
+    return value if is_plausible_metric_value(name, value) else None
 
 
 def metric_value(run: RunEvidence, metric_name: str | None = None, ev: Any = None) -> Any:
     metric = run.validation_metric
     if not isinstance(metric, dict):
-        return None
+        return _observed_metric_value(run, metric_name) if metric_name else None
     if metric_name is not None and canonical_metric_name(metric.get("name")) != canonical_metric_name(metric_name):
-        return None
+        return _observed_metric_value(run, metric_name)
     assessment = getattr(ev, "metric", None) if ev is not None else None
     if getattr(assessment, "value_authoritative", False):
         selected = getattr(assessment, "value", None)
@@ -366,10 +415,11 @@ def _metric_value_label(run: RunEvidence, metric_name: str | None, ev: Any) -> s
 
     assessment = getattr(ev, "metric", None)
     label = assessment.value_label if assessment else None
-    if not label:
-        return ""
     metric = run.validation_metric if isinstance(run.validation_metric, dict) else {}
     if metric_name is not None and canonical_metric_name(metric.get("name")) != canonical_metric_name(metric_name):
+        payload = _observed_runtime_metric_payload(run, metric_name)
+        return payload_metric_value_label(payload, None) if payload else ""
+    if not label:
         return ""
     return label
 
