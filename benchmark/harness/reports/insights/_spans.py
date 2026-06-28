@@ -82,7 +82,7 @@ def _assistant_turns(run: dict[str, Any]) -> int:
 def _command_span_total_seconds(run: dict[str, Any]) -> float:
     return sum(
         float(span["duration_seconds"])
-        for span in agent_command_spans(run.raw)
+        for span in _adjusted_command_spans(run)
         if as_number(span.get("duration_seconds")) is not None
     )
 
@@ -131,7 +131,7 @@ def _time_accounting_display(run: dict[str, Any]) -> str:
 def _top_command_spans(run: dict[str, Any], *, limit: int = 3, min_seconds: float = 30.0) -> list[dict[str, Any]]:
     spans = [
         span
-        for span in agent_command_spans(run.raw)
+        for span in _adjusted_command_spans(run)
         if (as_number(span.get("duration_seconds")) or 0) >= min_seconds
         and str(span.get("status") or "") in {"completed", "failed"}
     ]
@@ -192,21 +192,34 @@ def _span_uses_background_task(span: dict[str, Any]) -> bool:
     return "Command running in background with ID:" in output
 
 
-def _dependency_install_spans(run: dict[str, Any]) -> list[dict[str, Any]]:
-    background_durations = _background_task_durations_by_tool_id(run)
-    spans = []
-    for span in agent_command_spans(run.raw):
-        if not is_dependency_install_command(str(span.get("command") or "")):
-            continue
+def _adjust_dependency_install_span(
+    span: dict[str, Any], background_durations: dict[str, float]
+) -> dict[str, Any]:
+    if is_dependency_install_command(str(span.get("command") or "")):
         tool_id = str(span.get("id") or "")
         background_duration = background_durations.get(tool_id)
         if background_duration is not None and _span_uses_background_task(span):
             adjusted = dict(span)
             adjusted["duration_seconds"] = background_duration
             adjusted["duration_source"] = "background_task"
-            spans.append(adjusted)
-        else:
-            spans.append(span)
+            return adjusted
+    return span
+
+
+def _adjusted_command_spans(run: dict[str, Any]) -> list[dict[str, Any]]:
+    background_durations = _background_task_durations_by_tool_id(run)
+    return [
+        _adjust_dependency_install_span(span, background_durations)
+        for span in agent_command_spans(run.raw)
+    ]
+
+
+def _dependency_install_spans(run: dict[str, Any]) -> list[dict[str, Any]]:
+    spans = []
+    for span in _adjusted_command_spans(run):
+        if not is_dependency_install_command(str(span.get("command") or "")):
+            continue
+        spans.append(span)
     return spans
 
 

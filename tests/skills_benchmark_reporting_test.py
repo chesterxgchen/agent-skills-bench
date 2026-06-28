@@ -1780,7 +1780,12 @@ def test_cost_comparison_separates_dependency_install_time():
 
 def test_dependency_install_time_uses_background_task_duration():
     from benchmark.harness.modes import WITH_SKILLS_MODE
-    from benchmark.harness.reports.benchmark_insights import _dependency_install_spans, _dependency_install_total_seconds
+    from benchmark.harness.reports.benchmark_insights import (
+        _command_span_total_seconds,
+        _dependency_install_spans,
+        _dependency_install_total_seconds,
+        _top_command_spans,
+    )
 
     install_command = "uv pip install -r requirements-train.txt 2>&1 | tail -20"
     events = [
@@ -1847,6 +1852,8 @@ def test_dependency_install_time_uses_background_task_duration():
     assert spans[0]["duration_source"] == "background_task"
     assert spans[0]["duration_seconds"] == 83
     assert _dependency_install_total_seconds(run) == 83
+    assert _command_span_total_seconds(run) == 83
+    assert _top_command_spans(run) == spans
 
 
 def test_cost_comparison_treats_missing_dependency_install_spans_as_zero():
