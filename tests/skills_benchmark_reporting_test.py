@@ -3518,6 +3518,7 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
         run_quality_issues(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE])
     )
     assert "job_execution" in with_issues
+    assert "background_task_killed" in with_issues
     assert "metrics_summary.json" in with_issues
     assert human_readable_status(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("needs review")
     assert benchmark_outcome(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("fail:")
@@ -3749,7 +3750,8 @@ def test_incomplete_background_runtime_overrides_successful_launch_status(tmp_pa
         "workspace_delta": {"runtime_artifacts": runtime_artifacts},
     }
 
-    assert job_run_status(run) == "started_failed"
+    assert job_run_status(run) == "agent_left_simulation_running"
+    assert "agent run ended while the background simulation was still running" in job_run_status_reason(run)
     assert "no terminal `Finished` marker" in job_run_status_reason(run)
 
     from benchmark.harness.modes import NO_SKILLS_MODE

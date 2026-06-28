@@ -799,8 +799,125 @@ def _runtime_started_but_incomplete(run: dict[str, Any]) -> bool:
     return "`metrics_summary.json` was not captured" in metrics
 
 
+_BACKGROUND_INTERRUPTED_STATUSES = {"failed", "killed", "stopped", "cancelled", "canceled", "interrupted"}
+_BACKGROUND_COMPLETED_STATUSES = {"complete", "completed", "done", "finished", "success", "succeeded"}
+_BACKGROUND_TERMINAL_STATUSES = _BACKGROUND_INTERRUPTED_STATUSES | _BACKGROUND_COMPLETED_STATUSES
+
+
+def _background_simulation_task_state(run: dict[str, Any]) -> dict[str, Any]:
+    """Parse background simulation task events from the agent event stream."""
+
+    payloads = _agent_event_payloads(run)
+    background_tools: dict[str, dict[str, str]] = {}
+    task_by_tool_id: dict[str, str] = {}
+    task_statuses: dict[str, list[dict[str, Any]]] = {}
+    result_payload = None
+    result_timestamp = None
+    result_index = None
+    saw_schedule_wakeup = False
+    for index, payload in enumerate(payloads):
+        event_type = str(payload.get("event_type") or payload.get("type") or "")
+        timestamp = parse_event_timestamp(payload.get("harness_timestamp") or payload.get("timestamp"))
+        for item in _message_content(payload):
+            if item.get("type") == "tool_use" and item.get("name") == "Bash":
+                tool_input = item.get("input") if isinstance(item.get("input"), dict) else {}
+                command = str(tool_input.get("command") or payload.get("command_text") or "")
+                tool_id = str(item.get("id") or "")
+                if (
+                    tool_id
+                    and tool_input.get("run_in_background")
+                    and (
+                        is_simulation_or_job_command(command)
+                        or invokes_nvflare_simulator(command, "")
+                        or is_nvflare_simulator_wrapper_command(command)
+                    )
+                ):
+                    background_tools[tool_id] = {
+                        "command": command,
+                        "description": str(tool_input.get("description") or payload.get("description") or ""),
+                    }
+            elif item.get("type") == "tool_result":
+                tool_id = str(item.get("tool_use_id") or "")
+                result = payload.get("tool_use_result") if isinstance(payload.get("tool_use_result"), dict) else {}
+                background_task_id = str(result.get("backgroundTaskId") or "")
+                if not background_task_id:
+                    match = re.search(r"\bbackground with ID:\s*([A-Za-z0-9_-]+)", str(item.get("content") or ""))
+                    background_task_id = match.group(1) if match else ""
+                if tool_id and background_task_id:
+                    task_by_tool_id[tool_id] = background_task_id
+            elif item.get("type") == "tool_use" and item.get("name") == "ScheduleWakeup":
+                saw_schedule_wakeup = True
+        if event_type == "result.success" or (
+            str(payload.get("type") or "") == "result" and str(payload.get("subtype") or "") == "success"
+        ):
+            result_payload = payload
+            result_timestamp = timestamp
+            result_index = index
+            continue
+        if event_type == "system.task_started":
+            task_id = str(payload.get("task_id") or "")
+            tool_id = str(payload.get("tool_use_id") or "")
+            if task_id and tool_id:
+                task_by_tool_id[tool_id] = task_id
+            continue
+        if event_type in {"system.task_updated", "system.task_notification"}:
+            task_id = str(payload.get("task_id") or "")
+            if not task_id:
+                continue
+            status = ""
+            if isinstance(payload.get("patch"), dict):
+                status = str(payload["patch"].get("status") or "")
+            status = status or str(payload.get("status") or "")
+            if status:
+                task_statuses.setdefault(task_id, []).append(
+                    {"index": index, "status": status.lower(), "timestamp": timestamp}
+                )
+    return {
+        "background_tools": background_tools,
+        "task_by_tool_id": task_by_tool_id,
+        "task_statuses": task_statuses,
+        "result_payload": result_payload,
+        "result_timestamp": result_timestamp,
+        "result_index": result_index,
+        "saw_schedule_wakeup": saw_schedule_wakeup,
+    }
+
+
+def _background_simulation_interruption_status(run: dict[str, Any]) -> str:
+    """Classify an unfinished background simulation at agent finalization time."""
+
+    state = _background_simulation_task_state(run)
+    background_tools = state["background_tools"]
+    task_by_tool_id = state["task_by_tool_id"]
+    task_statuses = state["task_statuses"]
+    result_timestamp = state["result_timestamp"]
+    result_index = state["result_index"]
+    if not background_tools or result_index is None:
+        return ""
+
+    saw_unfinished_background_task = False
+    for tool_id in background_tools:
+        task_id = task_by_tool_id.get(tool_id)
+        statuses = task_statuses.get(task_id, []) if task_id else []
+        terminal_status_records = [
+            record for record in statuses if record.get("status") in _BACKGROUND_TERMINAL_STATUSES
+        ]
+        for record in terminal_status_records:
+            if record.get("status") not in _BACKGROUND_INTERRUPTED_STATUSES:
+                continue
+            status_timestamp = record.get("timestamp")
+            if result_timestamp and status_timestamp:
+                if status_timestamp >= result_timestamp:
+                    return "background_task_killed"
+            elif int(record.get("index") or -1) > result_index:
+                return "background_task_killed"
+        if not terminal_status_records:
+            saw_unfinished_background_task = True
+    return "agent_left_simulation_running" if saw_unfinished_background_task else ""
+
+
 def job_run_status(run: dict[str, Any]) -> str:
-    """Return one of 'completed', 'started_failed', 'not_started', or 'unknown'."""
+    """Return a concise job execution status."""
     if not run.get("available"):
         return "unknown"
     executed_events = [
@@ -819,6 +936,9 @@ def job_run_status(run: dict[str, Any]) -> str:
         if is_simulation_or_job_command(command) and "--help" not in command and "--export" not in command
     ]
     attempted = bool(executed_events or attempted_commands)
+    background_status = _background_simulation_interruption_status(run)
+    if background_status:
+        return background_status
     if _runtime_started_but_incomplete(run):
         return "started_failed"
     if last_successful_job_event(run):
@@ -869,6 +989,15 @@ def job_run_status_reason(run: dict[str, Any]) -> str:
                 f"(first command: `{inline_code_text(commands[0], 120)}`)"
             )
         return "simulation not attempted — no captured job.py or simulator command"
+
+    if status in {"background_task_killed", "agent_left_simulation_running"}:
+        parts = [
+            _background_task_interruption_cause(run),
+            _background_task_interruption_summary(run),
+            _server_progress_summary(run),
+            _metrics_artifact_summary(run),
+        ]
+        return "; ".join(part for part in parts if part)
 
     if status == "started_failed":
         if _runtime_started_but_incomplete(run):
@@ -1313,77 +1442,16 @@ def conversion_quality_score(signal: str, value: str, run: dict[str, Any] | None
 
 
 def _background_task_interruption_cause(run: dict[str, Any]) -> str:
-    payloads = _agent_event_payloads(run)
-    background_tools: dict[str, dict[str, str]] = {}
-    task_by_tool_id: dict[str, str] = {}
-    task_statuses: dict[str, list[dict[str, Any]]] = {}
-    result_payload = None
-    result_timestamp = None
-    result_index = None
-    saw_schedule_wakeup = False
-    for index, payload in enumerate(payloads):
-        event_type = str(payload.get("event_type") or payload.get("type") or "")
-        timestamp = parse_event_timestamp(payload.get("harness_timestamp") or payload.get("timestamp"))
-        for item in _message_content(payload):
-            if item.get("type") == "tool_use" and item.get("name") == "Bash":
-                tool_input = item.get("input") if isinstance(item.get("input"), dict) else {}
-                command = str(tool_input.get("command") or payload.get("command_text") or "")
-                tool_id = str(item.get("id") or "")
-                if (
-                    tool_id
-                    and tool_input.get("run_in_background")
-                    and (
-                        is_simulation_or_job_command(command)
-                        or invokes_nvflare_simulator(command, "")
-                        or is_nvflare_simulator_wrapper_command(command)
-                    )
-                ):
-                    background_tools[tool_id] = {
-                        "command": command,
-                        "description": str(tool_input.get("description") or payload.get("description") or ""),
-                    }
-            elif item.get("type") == "tool_result":
-                tool_id = str(item.get("tool_use_id") or "")
-                result = payload.get("tool_use_result") if isinstance(payload.get("tool_use_result"), dict) else {}
-                background_task_id = str(result.get("backgroundTaskId") or "")
-                if not background_task_id:
-                    match = re.search(r"\bbackground with ID:\s*([A-Za-z0-9_-]+)", str(item.get("content") or ""))
-                    background_task_id = match.group(1) if match else ""
-                if tool_id and background_task_id:
-                    task_by_tool_id[tool_id] = background_task_id
-            elif item.get("type") == "tool_use" and item.get("name") == "ScheduleWakeup":
-                saw_schedule_wakeup = True
-        if event_type == "result.success" or (
-            str(payload.get("type") or "") == "result" and str(payload.get("subtype") or "") == "success"
-        ):
-            result_payload = payload
-            result_timestamp = timestamp
-            result_index = index
-            continue
-        if event_type == "system.task_started":
-            task_id = str(payload.get("task_id") or "")
-            tool_id = str(payload.get("tool_use_id") or "")
-            if task_id and tool_id:
-                task_by_tool_id[tool_id] = task_id
-            continue
-        if event_type in {"system.task_updated", "system.task_notification"}:
-            task_id = str(payload.get("task_id") or "")
-            if not task_id:
-                continue
-            status = ""
-            if isinstance(payload.get("patch"), dict):
-                status = str(payload["patch"].get("status") or "")
-            status = status or str(payload.get("status") or "")
-            if status:
-                task_statuses.setdefault(task_id, []).append(
-                    {"index": index, "status": status.lower(), "timestamp": timestamp}
-                )
+    state = _background_simulation_task_state(run)
+    background_tools = state["background_tools"]
+    task_by_tool_id = state["task_by_tool_id"]
+    task_statuses = state["task_statuses"]
+    result_payload = state["result_payload"]
+    result_timestamp = state["result_timestamp"]
+    result_index = state["result_index"]
+    saw_schedule_wakeup = bool(state["saw_schedule_wakeup"])
     if not background_tools or result_payload is None or result_index is None:
         return ""
-
-    interrupted_statuses = {"failed", "killed", "stopped", "cancelled", "canceled", "interrupted"}
-    completed_statuses = {"complete", "completed", "done", "finished", "success", "succeeded"}
-    terminal_statuses = interrupted_statuses | completed_statuses
 
     interrupted_timestamp = None
     saw_interrupted_after_result = False
@@ -1391,9 +1459,11 @@ def _background_task_interruption_cause(run: dict[str, Any]) -> str:
     for tool_id in background_tools:
         task_id = task_by_tool_id.get(tool_id)
         statuses = task_statuses.get(task_id, []) if task_id else []
-        terminal_status_records = [record for record in statuses if record.get("status") in terminal_statuses]
+        terminal_status_records = [
+            record for record in statuses if record.get("status") in _BACKGROUND_TERMINAL_STATUSES
+        ]
         for record in terminal_status_records:
-            if record.get("status") not in interrupted_statuses:
+            if record.get("status") not in _BACKGROUND_INTERRUPTED_STATUSES:
                 continue
             status_timestamp = record.get("timestamp")
             status_after_result = False
@@ -1477,7 +1547,11 @@ def result_failure_root_cause_block(run: dict[str, Any]) -> str:
 
     if not run.get("available") or _has_scalar_result_metric(run):
         return ""
-    if job_run_status(run) != "started_failed" and not _runtime_started_but_incomplete(run):
+    status = job_run_status(run)
+    if (
+        status not in {"started_failed", "background_task_killed", "agent_left_simulation_running"}
+        and not _runtime_started_but_incomplete(run)
+    ):
         return ""
     rows = [
         ("Interruption cause", _background_task_interruption_cause(run)),
@@ -1493,8 +1567,9 @@ def result_failure_root_cause_block(run: dict[str, Any]) -> str:
         "**Root cause of missing FL result**",
         "",
         (
-            "The captured evidence points to an incomplete NVFLARE simulation: the run was interrupted before "
-            "the server reached a terminal completion state and before the final metrics summary was produced."
+            "The captured evidence points to an incomplete NVFLARE simulation: the agent ended while the "
+            "simulation was still active, so the server never reached a terminal completion state and the "
+            "final metrics summary was not produced."
         ),
         "",
         "| Evidence | What it shows |",

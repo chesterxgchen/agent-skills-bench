@@ -126,6 +126,10 @@ def job_run_action(run: RunEvidence, job_exec: Any = None, ctx: Any = None) -> s
                 return f"Install the job requirements in the same Python environment before running the {atom or 'job'}, then rerun the benchmark."
             return f"Inspect the dependency install command output and ensure the {atom or 'job'} uses the environment where requirements were installed."
         return "Inspect the failed job command output, fix the generated job, and rerun the benchmark."
+    if status == "background_task_killed":
+        return f"Require the agent to wait for the background {atom or 'job'} to exit and verify terminal metrics before finalizing."
+    if status == "agent_left_simulation_running":
+        return f"Rerun with foreground {atom or 'job'} validation, or make the agent wait for the background task before finalizing."
     if status == "completed":
         if job_exec.recovered_summary:
             return "Use the final successful job logs for metrics, but inspect recovered command failures before drawing conclusions."
