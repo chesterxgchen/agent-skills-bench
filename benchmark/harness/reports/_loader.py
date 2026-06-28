@@ -211,10 +211,12 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             if mode_dir.exists()
             else ""
         )
+        agent_stderr_text = read_text(mode_dir / "agent_stderr.txt", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES) if mode_dir.exists() else ""
         agent_model, model_source = resolve_agent_model(
             configured_agent_model,
             configured_model_source,
             agent_events_text,
+            agent_stderr_text,
         )
         record_metric = validation_metric_from_record(record)
         expected_metric = expected_validation_metric_name(record)
@@ -246,7 +248,7 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "skills_list": skills_list,
             "runtime_image": load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {},
             "agent_last_message": read_text(mode_dir / "agent_last_message.txt") if mode_dir.exists() else "",
-            "agent_stderr": read_text(mode_dir / "agent_stderr.txt") if mode_dir.exists() else "",
+            "agent_stderr": agent_stderr_text,
             "agent_events_text": agent_events_text,
             "console_text": mode_console_text,
             "validation_metric": artifact_metric or record_metric,

@@ -375,6 +375,71 @@ def test_reports_resolve_unspecified_agent_model_from_agent_events(tmp_path):
     assert insight_runs[WITH_SKILLS_MODE]["agent_model"] == "explicit-model"
 
 
+def test_agent_model_log_parser_uses_explicit_selection_not_catalog_upgrade():
+    from benchmark.harness.agent_identity import observed_agent_model_from_log_text
+
+    catalog_log = (
+        'failed to refresh available models: body: {"models":['
+        '{"slug":"gpt-5.4","upgrade":{"model":"gpt-5.5"}},'
+        '{"slug":"gpt-5.6-sol"}]}'
+    )
+    selected_log = '{"selected_model":"gpt-5.6-sol"}'
+
+    assert observed_agent_model_from_log_text(catalog_log) == ""
+    assert observed_agent_model_from_log_text(selected_log) == "gpt-5.6-sol"
+
+
+def test_reports_resolve_unspecified_agent_model_from_agent_log(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import collect_benchmark_runs
+    from benchmark.harness.reports.metrics_report import collect_runs
+    from benchmark.harness.scenario_summaries import write_scenario_summaries
+
+    record_dir = tmp_path / "records" / "agent=codex" / "model=unspecified_default" / "mode=without_skills"
+    record_dir.mkdir(parents=True)
+    (record_dir / "agent_events.jsonl").write_text('{"type":"thread.started"}\n', encoding="utf-8")
+    (record_dir / "agent_stderr.txt").write_text('{"selected_model":"gpt-5.6-sol"}\n', encoding="utf-8")
+    write_json(
+        record_dir / "run_summary.json",
+        {
+            "agent": "codex",
+            "agent_model": "unspecified_default",
+            "model_source": "adapter_default",
+            "agent_process_passed": True,
+            "final_container_exit_code": 0,
+        },
+    )
+    write_json(record_dir / "benchmark_record.json", {"agent_model": "unspecified_default"})
+    write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+    write_json(
+        tmp_path / "run_plan.json",
+        {
+            "entries": [
+                {
+                    "run_id": "run_00001",
+                    "mode": NO_SKILLS_MODE,
+                    "agent": "codex",
+                    "agent_model": "unspecified_default",
+                    "model_source": "adapter_default",
+                    "record_dir": str(record_dir.relative_to(tmp_path)),
+                }
+            ]
+        },
+    )
+
+    insight_runs = collect_benchmark_runs(tmp_path)
+    metrics_rows = {row["mode"]: row for row in collect_runs(tmp_path)}
+    scenario_summary = write_scenario_summaries(tmp_path, {"run_00001": 0})
+
+    assert insight_runs[NO_SKILLS_MODE]["agent_model"] == "gpt-5.6-sol"
+    assert insight_runs[NO_SKILLS_MODE]["model_source"] == "agent_log"
+    assert metrics_rows[NO_SKILLS_MODE]["agent_model"] == "gpt-5.6-sol"
+    assert metrics_rows[NO_SKILLS_MODE]["model_source"] == "agent_log"
+    assert scenario_summary["runs"][0]["agent_model"] == "gpt-5.6-sol"
+    assert scenario_summary["runs"][0]["model_source"] == "agent_log"
+
+
 def test_reports_surface_captured_host_os(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
@@ -439,7 +504,7 @@ def test_reports_surface_captured_host_os(tmp_path):
     assert "| No skills baseline | codex | default | scenario | without_skills | Ubuntu 24.04 LTS |" in insights
     assert "| No skills baseline | codex | default | Ubuntu 24.04 LTS |" in metrics_markdown
     assert "Host OS: `Ubuntu 24.04 LTS`" in scenario_markdown
-    assert "| run_00001 | without_skills | codex | default | NA | without_skills | Ubuntu 24.04 LTS |" in scenario_markdown
+    assert "| run_00001 | without_skills | codex | default | scenario | without_skills | Ubuntu 24.04 LTS |" in scenario_markdown
 
 
 def test_benchmark_reports_read_canonical_record_layout(tmp_path):

@@ -87,6 +87,7 @@ class AgentRunConfig:
     agent_model: str
     agent_home: Path
     agent_model_was_explicit: bool
+    agent_model_source: str = "adapter_default"
     agent_timeout_seconds: int | None = None
 
     @property
@@ -161,6 +162,7 @@ class AgentRunConfig:
             raise SystemExit("BENCHMARK_AGENT is required inside the benchmark container.")
         adapter = load_agent_adapter(agent_name)
         agent_model = adapter.model_from_env(env)
+        agent_model_source = getattr(adapter, "model_source_from_env", lambda _env: "adapter_default")(env)
         agent_home = Path(env.get("BENCHMARK_AGENT_HOME") or env.get(adapter.agent_home_env, adapter.container_home))
         agent_timeout_seconds = optional_positive_int_env("AGENT_TIMEOUT_SECONDS", env.get("AGENT_TIMEOUT_SECONDS"))
         progress_interval_seconds = (
@@ -178,6 +180,7 @@ class AgentRunConfig:
             sdk_image_kind=env.get("SDK_IMAGE_KIND", "unknown"),
             agent=adapter.name,
             agent_model=agent_model,
+            agent_model_source=agent_model_source,
             agent_home=agent_home,
             agent_model_was_explicit=adapter.model_was_explicit(env),
             agent_timeout_seconds=agent_timeout_seconds,
@@ -709,6 +712,7 @@ def write_launch_spec_metadata(
         {
             "agent": config.agent,
             "agent_model": config.agent_model,
+            "agent_model_source": config.agent_model_source,
             "agent_model_explicit": config.agent_model_was_explicit,
             "argv": launch_argv,
             "cwd": str(launch.cwd),
@@ -1008,9 +1012,10 @@ def post_process(
             agent_exit=agent_exit,
             skills_enabled=config.use_preinstalled_skills,
             skill_run_mode=config.skill_run_mode,
-            agent=config.agent,
-            agent_model=config.agent_model,
-            run_start_time_ns=run_start_time_ns,
+        agent=config.agent,
+        agent_model=config.agent_model,
+        agent_model_source=config.agent_model_source,
+        run_start_time_ns=run_start_time_ns,
             workspace_delta_manifest_path=workspace_delta_manifest,
             input_delta_manifest_path=input_delta_manifest,
             prompt_path=config.prompt_file_path,
@@ -1027,6 +1032,7 @@ def post_process(
         skill_run_mode=config.skill_run_mode,
         agent=config.agent,
         agent_model=config.agent_model,
+        agent_model_source=config.agent_model_source,
     )
     record = load_json(config.final_record_path, {}) or {}
     if isinstance(record, dict):

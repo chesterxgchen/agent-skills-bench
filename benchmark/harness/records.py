@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .agent_identity import UNSPECIFIED_AGENT_MODEL
 from .common import bool_from_text, flatten_numbers, load_json, write_json
 from .metric_artifacts import validation_metric_from_workspace_delta_manifest
 from .quality_signals import critical_quality_checks_failed, metric_signal, required_validation_metric_status
@@ -66,6 +67,7 @@ class AgentRecordSynthesisInputs:
     workspace_delta_manifest_path: Path
     input_delta_manifest_path: Path | None = None
     prompt_path: Path | None = None
+    agent_model_source: str = "adapter_default"
 
 
 def apply_record_runtime_fields(
@@ -79,6 +81,7 @@ def apply_record_runtime_fields(
     skill_run_mode: str,
     agent: str,
     agent_model: str,
+    agent_model_source: str = "adapter_default",
     agent_record_present: bool | None = None,
     agent_record_valid: bool | None = None,
 ) -> dict[str, Any]:
@@ -89,7 +92,14 @@ def apply_record_runtime_fields(
     record["agent"] = record.get("agent") or agent
     record["mode"] = mode
     record["source"] = "agent_benchmark_harness"
-    record["agent_model"] = record.get("agent_model") or agent_model
+    existing_model = str(record.get("agent_model") or "").strip()
+    if not existing_model or existing_model == UNSPECIFIED_AGENT_MODEL:
+        record["agent_model"] = agent_model
+    existing_model_source = str(record.get("model_source") or "").strip()
+    if not existing_model_source or (
+        existing_model_source == "adapter_default" and agent_model_source != "adapter_default"
+    ):
+        record["model_source"] = agent_model_source
     record["skills_enabled"] = skills_enabled
     record["agent_process_passed"] = agent_exit == 0
     record["agent_process_exit_code"] = agent_exit
@@ -513,6 +523,7 @@ def synthesize_agent_record(inputs: AgentRecordSynthesisInputs) -> None:
     skill_run_mode = inputs.skill_run_mode
     agent = inputs.agent
     agent_model = inputs.agent_model
+    agent_model_source = inputs.agent_model_source
     run_start_time_ns = inputs.run_start_time_ns
     workspace_delta_manifest_path = inputs.workspace_delta_manifest_path
     input_delta_manifest_path = inputs.input_delta_manifest_path
@@ -607,6 +618,7 @@ def synthesize_agent_record(inputs: AgentRecordSynthesisInputs) -> None:
         skill_run_mode=skill_run_mode,
         agent=agent,
         agent_model=agent_model,
+        agent_model_source=agent_model_source,
     )
     record["agent_record_generated_by_harness"] = True
     record["agent_record_source"] = record_source
@@ -834,6 +846,7 @@ def merge_record(
     skill_run_mode: str,
     agent: str,
     agent_model: str,
+    agent_model_source: str = "adapter_default",
 ) -> None:
     record: dict[str, Any] = {}
     agent_record_present = agent_record_path.exists()
@@ -861,6 +874,7 @@ def merge_record(
         skill_run_mode=skill_run_mode,
         agent=agent,
         agent_model=agent_model,
+        agent_model_source=agent_model_source,
         agent_record_present=agent_record_present,
         agent_record_valid=agent_record_valid,
     )
@@ -986,6 +1000,7 @@ def write_run_summary(final_record_path: Path, summary_path: Path, *, print_summ
         "skills_enabled": record.get("skills_enabled"),
         "agent": record.get("agent"),
         "agent_model": record.get("agent_model"),
+        "model_source": record.get("model_source"),
         "agent_record_present": record.get("agent_record_present"),
         "agent_record_valid": record.get("agent_record_valid"),
         "process_metrics": metrics,

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import string
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -116,6 +117,7 @@ class AgentConfig:
     display_name: str
     default_model: str
     model_env: str | None
+    model_config: dict[str, Any]
     requires_explicit_model: bool
     agent_home_env: str
     container_home: str
@@ -228,6 +230,7 @@ class AgentConfig:
             display_name=str(data["display_name"]),
             default_model=str(data.get("default_model") or UNSPECIFIED_MODEL),
             model_env=str(data["model_env"]) if data.get("model_env") else None,
+            model_config=dict(data.get("model_config") or {}),
             requires_explicit_model=bool(data.get("requires_explicit_model", False)),
             agent_home_env=str(data["agent_home_env"]),
             container_home=str(data["container_home"]),
@@ -348,6 +351,9 @@ class ConfigurableAgentAdapter(AgentAdapter):
         )
         if explicit_model:
             return explicit_model
+        configured_model = self._model_from_config_file(env)
+        if configured_model:
+            return configured_model
         if self._cfg.requires_explicit_model:
             accepted = ["BENCHMARK_AGENT_MODEL"]
             if self._cfg.model_env:
@@ -362,6 +368,37 @@ class ConfigurableAgentAdapter(AgentAdapter):
 
     def model_env_names(self) -> tuple[str, ...]:
         return (self._cfg.model_env,) if self._cfg.model_env else ()
+
+    def model_source_from_env(self, env: Mapping[str, str]) -> str:
+        if self.model_was_explicit(env):
+            return "explicit"
+        if self._model_from_config_file(env):
+            return "agent_config"
+        return "adapter_default"
+
+    def _model_from_config_file(self, env: Mapping[str, str]) -> str:
+        config = self._cfg.model_config
+        if not config:
+            return ""
+        path_template = str(config.get("path") or "")
+        key = str(config.get("key") or "model")
+        if not path_template:
+            return ""
+        rendered_path = render_string(
+            path_template,
+            {
+                "container_home": env.get(self.agent_home_env) or self.container_home,
+                "agent": self.name,
+            },
+        )
+        path = Path(rendered_path).expanduser()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+        pattern = re.compile(rf"^\s*{re.escape(key)}\s*=\s*['\"]([^'\"]+)['\"]\s*(?:#.*)?$", re.MULTILINE)
+        match = pattern.search(text)
+        return match.group(1).strip() if match else ""
 
     def build_args(self) -> dict[str, str]:
         build = self._cfg.raw.get("build") or {}

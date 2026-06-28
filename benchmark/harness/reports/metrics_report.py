@@ -135,6 +135,9 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
             if mode_dir.exists()
             else ""
         )
+        agent_stderr_text = (
+            read_text(mode_dir / "agent_stderr.txt", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES) if mode_dir.exists() else ""
+        )
         configured_agent_model = first_non_empty(
             summary.get("agent_model"),
             record.get("agent_model"),
@@ -149,6 +152,7 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
             configured_agent_model,
             configured_model_source,
             agent_events_text,
+            agent_stderr_text,
         )
         runs.append(
             {
@@ -251,6 +255,9 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
         agent_events_text = (
             read_text(mode_dir / "agent_events.jsonl", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES) if available else ""
         )
+        agent_stderr_text = (
+            read_text(mode_dir / "agent_stderr.txt", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES) if available else ""
+        )
         configured_agent_model = first_non_empty(
             row.get("agent_model"),
             summary.get("agent_model"),
@@ -265,6 +272,7 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             configured_agent_model,
             configured_model_source,
             agent_events_text,
+            agent_stderr_text,
         )
         runs[mode] = {
             "available": available,

@@ -27,6 +27,9 @@
 name: codex
 display_name: OpenAI Codex CLI
 default_model: unspecified_default
+model_config:
+  path: "{container_home}/config.toml"
+  key: model
 agent_home_env: CODEX_HOME
 container_home: /workspace/.codex
 legacy_artifact_prefixes:

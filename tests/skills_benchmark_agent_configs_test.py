@@ -145,6 +145,21 @@ def test_claude_adapter_uses_cli_default_model_when_unspecified():
     assert adapter.model_was_explicit({}) is False
 
 
+def test_codex_adapter_reads_model_from_config_when_unspecified(tmp_path):
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text('model = "gpt-5.5"\n', encoding="utf-8")
+    env = {"CODEX_HOME": str(codex_home)}
+
+    adapter = load_agent_adapter("codex")
+
+    assert adapter.model_from_env(env) == "gpt-5.5"
+    assert adapter.model_source_from_env(env) == "agent_config"
+    assert adapter.model_was_explicit(env) is False
+
+
 def test_runtime_env_uses_agent_run_config_model_explicit_field():
     from benchmark.harness.agents.registry import load_agent_adapter
 

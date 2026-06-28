@@ -20,7 +20,7 @@ import statistics
 from pathlib import Path
 from typing import Any, Mapping
 
-from .agent_identity import OBSERVED_AGENT_MODEL_SOURCE, resolve_agent_model_from_events_path
+from .agent_identity import resolve_agent_model_from_events_path
 from .common import load_json
 from .common import write_json_atomic as common_write_json_atomic
 from .host_environment import host_os_display
@@ -239,6 +239,7 @@ def run_summary_for_entry(
         first_non_empty(summary.get("agent_model"), record.get("agent_model"), entry.get("agent_model")),
         first_non_empty(summary.get("model_source"), record.get("model_source"), entry.get("model_source")),
         artifacts["record_dir"] / "agent_events.jsonl",
+        artifacts["record_dir"] / "agent_stderr.txt",
     )
     payload = {key: entry.get(key) for key in SUMMARY_RUN_FIELDS}
     payload.update(
@@ -282,7 +283,7 @@ def run_summary_for_entry(
     )
     if captured_host_environment:
         payload["host_environment"] = dict(captured_host_environment)
-    if model_source == OBSERVED_AGENT_MODEL_SOURCE:
+    if model_source:
         payload["model_source"] = model_source
     return payload
 
