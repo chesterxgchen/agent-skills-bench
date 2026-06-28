@@ -3349,6 +3349,107 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
     assert "Slowdown driver comparison" not in why
 
 
+def test_background_interruption_cause_ignores_non_simulation_background_tasks():
+    from benchmark.harness.sdks.nvflare._logic import _background_task_interruption_cause
+
+    events = [
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_install",
+                        "input": {"command": "pip install torch", "run_in_background": True},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    },
+                    {
+                        "id": "toolu_tail",
+                        "input": {"command": "tail -f server/log_fl.txt", "run_in_background": True},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    },
+                ]
+            },
+        },
+        {"event_type": "system.task_started", "task_id": "install_task", "tool_use_id": "toolu_install"},
+        {"event_type": "system.task_started", "task_id": "tail_task", "tool_use_id": "toolu_tail"},
+        {
+            "event_type": "result.success",
+            "harness_timestamp": "2026-06-26T06:30:46.246Z",
+            "stop_reason": "end_turn",
+            "subtype": "success",
+            "terminal_reason": "completed",
+            "type": "result",
+        },
+        {
+            "event_type": "system.task_updated",
+            "harness_timestamp": "2026-06-26T06:30:51.283Z",
+            "patch": {"status": "killed"},
+            "task_id": "install_task",
+        },
+        {
+            "event_type": "system.task_notification",
+            "harness_timestamp": "2026-06-26T06:30:52.283Z",
+            "status": "stopped",
+            "task_id": "tail_task",
+        },
+    ]
+    run = {"agent_events_text": "\n".join(json.dumps(event) for event in events)}
+
+    assert _background_task_interruption_cause(run) == ""
+
+
+def test_background_interruption_cause_ignores_later_completed_simulation_task():
+    from benchmark.harness.sdks.nvflare._logic import _background_task_interruption_cause
+
+    events = [
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_job",
+                        "input": {"command": "python3 job.py --num-sites 3", "run_in_background": True},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "user",
+            "message": {
+                "content": [
+                    {
+                        "content": "Command running in background with ID: sim_task.",
+                        "tool_use_id": "toolu_job",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"backgroundTaskId": "sim_task"},
+        },
+        {
+            "event_type": "result.success",
+            "harness_timestamp": "2026-06-26T06:30:46.246Z",
+            "stop_reason": "end_turn",
+            "subtype": "success",
+            "terminal_reason": "completed",
+            "type": "result",
+        },
+        {
+            "event_type": "system.task_updated",
+            "harness_timestamp": "2026-06-26T06:30:51.283Z",
+            "patch": {"status": "completed"},
+            "task_id": "sim_task",
+        },
+    ]
+    run = {"agent_events_text": "\n".join(json.dumps(event) for event in events)}
+
+    assert _background_task_interruption_cause(run) == ""
+
+
 def test_incomplete_background_runtime_overrides_successful_launch_status(tmp_path):
     from benchmark.harness.modes import WITH_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import why_section
