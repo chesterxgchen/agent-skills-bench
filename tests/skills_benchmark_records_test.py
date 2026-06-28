@@ -530,6 +530,26 @@ def test_runtime_log_metric_requires_captured_runtime_artifact_path():
     )
 
 
+def test_runtime_artifact_gate_rejects_copied_workspace_for_renamed_delta_dir():
+    from benchmark.harness.metric_artifacts import metric_source_path_is_runtime_artifact
+
+    # A copied workspace-change file under a non-``workspace_delta`` delta root must
+    # be rejected even though the path nests a ``runtime_artifacts`` segment.
+    assert not metric_source_path_is_runtime_artifact(
+        "delta/changed_files/job/runtime_artifacts/metrics_summary.json"
+    )
+    assert not metric_source_path_is_runtime_artifact(
+        "delta/workspace_added_files/job/runtime_artifacts/metrics_summary.json"
+    )
+    assert not metric_source_path_is_runtime_artifact(
+        "delta/workspace_modified_files/job/runtime_artifacts/metrics_summary.json"
+    )
+    # Genuine runtime output under a renamed delta root is still accepted.
+    assert metric_source_path_is_runtime_artifact(
+        "delta/runtime_artifacts/job/server/metrics_summary.json"
+    )
+
+
 def test_metric_artifact_parser_ignores_config_thresholds(tmp_path):
     from benchmark.harness.metric_artifacts import validation_metric_from_workspace_delta_manifest
 

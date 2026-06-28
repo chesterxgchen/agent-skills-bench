@@ -153,13 +153,14 @@ def metric_source_path_is_runtime_artifact(source_path: str) -> bool:
     path = str(source_path or "").replace("\\", "/").strip()
     if not path:
         return False
-    path_with_root = "/" + path.lstrip("/")
-    if any(
-        f"/workspace_delta/{key}/" in path_with_root or path_with_root.startswith(f"/{key}/")
-        for key in COPIED_WORKSPACE_ARTIFACT_KEYS
-    ):
+    segments = [segment for segment in path.split("/") if segment]
+    # Reject copied workspace-change categories by path segment regardless of the
+    # delta directory name; a non-``workspace_delta`` root must not let a copied
+    # workspace file masquerade as runtime output just because it nests a
+    # ``runtime_artifacts`` segment further down the path.
+    if any(key in segments for key in COPIED_WORKSPACE_ARTIFACT_KEYS):
         return False
-    return "workspace_delta/runtime_artifacts/" in path or "/runtime_artifacts/" in path_with_root
+    return "runtime_artifacts" in segments
 
 
 def metric_is_runtime_result_artifact(metric: Mapping[str, Any]) -> bool:
