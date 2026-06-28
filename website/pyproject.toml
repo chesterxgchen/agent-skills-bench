@@ -1,0 +1,10 @@
+[project]
+name = "agent-skills-benchmark-website"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "zensical>=0.0.46",
+]
