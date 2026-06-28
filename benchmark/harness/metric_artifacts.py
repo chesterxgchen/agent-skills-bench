@@ -154,13 +154,24 @@ def metric_source_path_is_runtime_artifact(source_path: str) -> bool:
     if not path:
         return False
     segments = [segment for segment in path.split("/") if segment]
-    # Reject copied workspace-change categories by path segment regardless of the
-    # delta directory name; a non-``workspace_delta`` root must not let a copied
-    # workspace file masquerade as runtime output just because it nests a
-    # ``runtime_artifacts`` segment further down the path.
-    if any(key in segments for key in COPIED_WORKSPACE_ARTIFACT_KEYS):
+    if "runtime_artifacts" not in segments:
         return False
-    return "runtime_artifacts" in segments
+    runtime_index = segments.index("runtime_artifacts")
+    # The canonical capture layout nests runtime output directly under the delta
+    # root as ``<delta_root>/runtime_artifacts/...``. Recognise that boundary so a
+    # copied workspace-change category name that merely appears as an *ancestor* of
+    # the delta root (e.g. ``/tmp/changed_files/.../workspace_delta/runtime_artifacts``)
+    # or *inside* the runtime tree (e.g. ``runtime_artifacts/.../changed_files/...``)
+    # does not trigger a spurious rejection.
+    if runtime_index > 0 and segments[runtime_index - 1] == "workspace_delta":
+        return True
+    # Otherwise (e.g. a renamed delta root) only the delta-category position matters.
+    # Reject when a copied workspace-change category appears before the
+    # ``runtime_artifacts`` segment, which is where a copied file would masquerade
+    # as runtime output regardless of the delta directory name.
+    if any(segment in COPIED_WORKSPACE_ARTIFACT_KEYS for segment in segments[:runtime_index]):
+        return False
+    return True
 
 
 def metric_is_runtime_result_artifact(metric: Mapping[str, Any]) -> bool:
