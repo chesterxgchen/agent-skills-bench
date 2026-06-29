@@ -14,8 +14,18 @@ Result root: `<RESULT_ROOT>`
 
 | Run | Overall | Job | Result gate | Metric |
 |---|---|---|---|---|
-| No skills baseline | passed | completed | pass | AUROC 0.7421 (aggregated best validation metric) |
-| With skills | passed | completed | pass | AUROC 0.7689 (aggregated best validation metric) |
+| No skills baseline | needs review | completed | fail | partial: 1 reported values, no FL-level scalar |
+| With skills | needs review | completed | fail | partial: 1 reported values, no FL-level scalar |
+
+### Run Status Details
+
+**No skills baseline**
+- Overall: needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.)
+- Result gate: fail: Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.
+
+**With skills**
+- Overall: needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.)
+- Result gate: fail: Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.
 
 ### Run Context
 
@@ -48,6 +58,21 @@ This section reports the FL workflow captured in generated/runtime NVFLARE serve
 | With skills | codex | default | scenario | with_skills | Ubuntu 24.04 LTS |
 
 ## Metrics
+
+### Comparison Scorecard
+
+Quick view of the same evidence shown in the chart below.
+
+| Metric | No skills | With skills | Delta |
+|---|---|---|---|
+| Total time seconds | 180 | 240 | +33% |
+| Runtime seconds | 150 | 180 | +20% |
+| Dependency install | 30 | 60 | +100% |
+| Total tokens | 12.0k | 15.0k | +25% |
+| Commands | 4 | 5 | +25% |
+| Structure score | 0% | 0% | +0 pts |
+| Code quality | 50% | 50% | +0 pts |
+| Metrics (AUROC) | NA | NA | missing |
 
 <svg xmlns="http://www.w3.org/2000/svg" width="1180" height="728" viewBox="0 0 1180 728">
 <rect width="100%" height="100%" fill="#ffffff"/>
@@ -111,19 +136,19 @@ This section reports the FL workflow captured in generated/runtime NVFLARE serve
 <line x1="602.0" y1="628" x2="863.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <line x1="602.0" y1="483" x2="602.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <rect x="682.5" y="483.0" width="38.0" height="145.0" fill="#16a34a" rx="3"/>
-<text x="701.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">54%</text>
+<text x="701.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">50%</text>
 <text x="701.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">No skills</text>
 <rect x="744.5" y="483.0" width="38.0" height="145.0" fill="#2563eb" rx="3"/>
-<text x="763.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">54%</text>
+<text x="763.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">50%</text>
 <text x="763.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">With skills</text>
 <text x="887.0" y="406.0" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#111827">Metrics (AUROC)</text>
 <line x1="887.0" y1="628" x2="1148.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <line x1="887.0" y1="483" x2="887.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
-<rect x="967.5" y="488.1" width="38.0" height="139.9" fill="#16a34a" rx="3"/>
-<text x="986.5" y="481.1" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">0.7421</text>
+<rect x="967.5" y="604" width="38.0" height="20" fill="#e5e7eb" rx="3"/>
+<text x="986.5" y="619" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#4b5563">NA</text>
 <text x="986.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">No skills</text>
-<rect x="1029.5" y="483.0" width="38.0" height="145.0" fill="#2563eb" rx="3"/>
-<text x="1048.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">0.7689</text>
+<rect x="1029.5" y="604" width="38.0" height="20" fill="#e5e7eb" rx="3"/>
+<text x="1048.5" y="619" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#4b5563">NA</text>
 <text x="1048.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">With skills</text>
 <rect x="32" y="690" width="14" height="14" fill="#16a34a" rx="2"/>
 <text x="54" y="702" font-family="Arial, sans-serif" font-size="13" fill="#111827">No skills baseline</text>
@@ -133,27 +158,42 @@ This section reports the FL workflow captured in generated/runtime NVFLARE serve
 
 | Metric | No skills baseline | With skills |
 |---|---|---|
-| Metrics (AUROC) | AUROC 0.7421 | AUROC 0.7689 |
+| Metrics (AUROC) | AUROC NA | AUROC NA |
 
 ## Quality Signals
 
 | Run | Expected metric | Reported result | Status | Evidence |
 |---|---|---|---|---|
-| No skills baseline | AUROC | AUROC 0.7421 (aggregated best validation metric) | NA | NA |
-| With skills | AUROC | AUROC 0.7689 (aggregated best validation metric) | NA | NA |
+| No skills baseline | AUROC | AUROC NA (aggregated best validation metric) | NA | NA |
+| With skills | AUROC | AUROC NA (aggregated best validation metric) | NA | NA |
+
+## Missing, Partial, Or Mismatched Result Metrics
+
+A run can complete at the agent/container level and still need review when it omits the requested FL validation metric, reports only partial values, or reports a different metric than the job guidance requested.
+
+| Run | Result metric status | Final response metric evidence | Why results are missing, partial, or mismatched | Report action |
+|---|---|---|---|---|
+| No skills baseline | partial: 1 reported values, no FL-level scalar | AUROC 0.7421 | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. | Require the final message or benchmark record to include one aggregate FL validation metric. |
+| With skills | partial: 1 reported values, no FL-level scalar | AUROC 0.7689 | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. | Require the final message or benchmark record to include one aggregate FL validation metric. |
 
 ## Failure Analysis
 
 ### No skills baseline
 
 - Job run status: completed — simulation completed — FL workflow reached Finished state
-- Outcome: passed. AUROC 0.7421 (aggregated best validation metric).
+- Outcome: needs review. The agent process completed, but benchmark quality checks found issues.
+- Issue: Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.
+- Recovery evidence: a later job/simulator command exited 0; the FL workflow reached a Finished state.
+- Metric reporting gap: a later job/simulator command exited 0; the FL workflow reached a Finished state, but the final response/benchmark record did not include one aggregate `target metric` scalar for comparison.
 - Dependency reference: `requirements.txt` provenance: not found in captured input or workspace manifests.
 
 ### With skills
 
 - Job run status: completed — simulation completed — FL workflow reached Finished state
-- Outcome: passed. AUROC 0.7689 (aggregated best validation metric).
+- Outcome: needs review. The agent process completed, but benchmark quality checks found issues.
+- Issue: Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.
+- Recovery evidence: a later job/simulator command exited 0; the FL workflow reached a Finished state.
+- Metric reporting gap: a later job/simulator command exited 0; the FL workflow reached a Finished state, but the final response/benchmark record did not include one aggregate `target metric` scalar for comparison.
 - Dependency reference: `requirements-train.txt` provenance: not found in captured input or workspace manifests.
 
 ## Output Changes
@@ -167,9 +207,9 @@ This section reports the FL workflow captured in generated/runtime NVFLARE serve
 
 | Signal | No skills baseline | With skills |
 |---|---|---|
-| Agent/container outcome | passed | passed |
-| FL result quality gate | pass: scalar FL result metric available | pass: scalar FL result metric available |
-| Reported validation metric | AUROC 0.7421 | AUROC 0.7689 |
+| Agent/container outcome | needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.) | needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.) |
+| FL result quality gate | fail: Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. | fail: Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. |
+| Reported validation metric | AUROC NA | AUROC NA |
 | Additional/other validation metric values | AUROC 0.7421 | AUROC 0.7689 |
 | Copied workspace changes | 3 changed | 3 changed |
 | Captured generated artifacts | 3 changed/generated files, 1 runtime artifacts | 3 changed/generated files, 1 runtime artifacts |
@@ -241,12 +281,13 @@ These are evidence signals for interpreting generated-code, runtime, maintenance
 
 | Evidence signal | No skills baseline | With skills |
 |---|---|---|
-| Overall code quality signal | caution: 7.5/14 evidence points; 8/14 scored, 6 unknown | caution: 7.5/14 evidence points; 8/14 scored, 6 unknown |
+| Overall code quality signal | caution: 7.5/15 evidence points; 8/15 scored, 7 unknown | caution: 7.5/15 evidence points; 8/15 scored, 7 unknown |
 | Client data split/use | good: site-aware, explicit sharding, validation data referenced | good: site-aware, explicit sharding, validation data referenced |
 | Loss/optimizer lifecycle | good: loss/optimizer built outside FL loop | good: loss/optimizer built outside FL loop |
 | Data/DataLoader lifecycle | good: data loaded before FL loop, DataLoader built before FL loop | good: data loaded before FL loop, DataLoader built before FL loop |
 | Per-round metric workload | caution: 1 evaluate call(s) in FL loop | caution: 1 evaluate call(s) in FL loop |
 | Runtime observability | good: generated code prints per-epoch progress | good: generated code prints per-epoch progress |
+| Runtime/export output location | unknown: not captured | unknown: not captured |
 | Runtime/output locality | good: runtime artifacts captured separately from temp/runtime paths | good: runtime artifacts captured separately from temp/runtime paths |
 | Dependency install strategy | good: requirements-file install, succeeded | good: requirements-file install, accelerator-capable dependency stack, succeeded |
 | Conversion: client training/control path | good: manual Client API loop | good: manual Client API loop |
@@ -304,6 +345,17 @@ Command span timing is operation-level evidence, not a strict wall-clock partiti
 
 ## Why
 
+**Why the comparison needs review**
+
+At least one run failed the job/result quality gates, so elapsed time, token use, and artifact count should not be treated as benchmark wins until the result issue is resolved.
+
+| Run | Job run status | Result quality issue | Result metric |
+|---|---|---|---|
+| No skills baseline | completed: simulation completed — FL workflow reached Finished state | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. | partial: 1 reported values, no FL-level scalar |
+| With skills | completed: simulation completed — FL workflow reached Finished state | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. | partial: 1 reported values, no FL-level scalar |
+
+Both runs need review; neither side is a valid comparison winner until the result metrics are fixed.
+
 **Why With skills is slower and has longer runtime after install** (+60s total / +33%; +30s runtime / +20% vs No skills baseline):
 
 **Slowdown driver comparison**
@@ -359,7 +411,8 @@ Command span timing is operation-level evidence, not a strict wall-clock partiti
 
 ## Interpretation
 
-All available runs passed the benchmark quality gates captured by this report.
+Quality comparison is incomplete because these runs failed a benchmark quality gate: No skills baseline, With skills.
+For this artifact, the missing/partial signal is `AUROC` reporting, not necessarily a Docker or Python execution crash.
 Runtime winner by wall-clock seconds: No skills baseline (180s vs 240s, delta 60s).
 Token-use winner: No skills baseline (12.0k vs 15.0k, delta 3.0k).
 Read cost winners only after checking the quality gates; a cheaper run that does not report the requested FL result is not a successful benchmark winner.

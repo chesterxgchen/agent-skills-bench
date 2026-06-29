@@ -42,37 +42,21 @@ from disk. The report is not based on the agent's self-report alone; it reads
 the result root, runtime artifacts, event logs, workspace delta, and SDK-specific
 sidecars.
 
-<div class="bench-flow" aria-label="Benchmark pipeline diagram">
-  <div class="bench-step bench-step-input">
-    <span>Inputs</span>
-    <strong>SDK repo, prompt, job folder</strong>
-  </div>
-  <div class="bench-arrow" aria-hidden="true">-&gt;</div>
-  <div class="bench-step bench-step-build">
-    <span>Build</span>
-    <strong>baseline and skills images</strong>
-  </div>
-  <div class="bench-arrow" aria-hidden="true">-&gt;</div>
-  <div class="bench-step bench-step-run">
-    <span>Run pair</span>
-    <strong>isolated agent containers</strong>
-  </div>
-  <div class="bench-arrow" aria-hidden="true">-&gt;</div>
-  <div class="bench-step bench-step-report">
-    <span>Generic report</span>
-    <strong>status, metrics, costs, evidence</strong>
-  </div>
-  <div class="bench-arrow" aria-hidden="true">-&gt;</div>
-  <div class="bench-step bench-step-sdk-report">
-    <span>SDK plugin</span>
-    <strong>FLARE-specific interpretation</strong>
-  </div>
-</div>
+<figure class="bench-lane-stack" aria-label="Benchmark harness flow">
+  <img src="assets/benchmark_lane_define.png" alt="Define lane: identify skills and profiles, then capture evidence rules">
+  <img src="assets/benchmark_lane_run.png" alt="Build and run lane: build, run pair, collect evidence, interpret, and report">
+  <img src="assets/benchmark_lane_explain.png" alt="Explain lane: summarize status, compare metrics, explain root cause, and list evidence">
+</figure>
 
 ## Quick Start
 
+<div class="bench-command-grid">
+  <section class="bench-command-card">
+    <p class="bench-layer-kicker">Default agent</p>
+    <h3>Build and run Codex</h3>
+
 ```bash
-./bin/build.sh --sdk-repo /path/to/sdk-repo
+./bin/build.sh --sdk-repo /path/to/sdk-repo --agent codex
 
 ./bin/run.sh pair \
   --sdk-repo /path/to/sdk-repo \
@@ -80,15 +64,24 @@ sidecars.
   /path/to/job-folder
 ```
 
-Use a custom result location when you want to keep generated reports close to
-your working tree:
+  </section>
+  <section class="bench-command-card">
+    <p class="bench-layer-kicker">Custom output</p>
+    <h3>Run Claude with a results root</h3>
 
 ```bash
+./bin/build.sh --sdk-repo /path/to/sdk-repo --agent claude
+
 ./bin/run.sh pair \
+  --sdk-repo /path/to/sdk-repo \
+  --agent claude \
   --prompt /path/to/prompt.txt \
   /path/to/job-folder \
   --results-root /path/to/results
 ```
+
+  </section>
+</div>
 
 ## Why this benchmark exists
 
@@ -135,6 +128,56 @@ workspace and runtime evidence.
 | Metrics | `metrics_summary.json` and captured metric artifacts | Prevents a final message from inventing or omitting key values. |
 | Code quality | Workspace delta and SDK plugin checks | Shows whether the generated job uses the expected SDK pattern. |
 | Cost | Event logs, command activity, token usage | Explains why one run spent more time, commands, or model budget. |
+
+<section class="bench-scorecard" aria-label="Example report comparison">
+  <div class="bench-scorecard-head">
+    <p class="bench-layer-kicker">Report snapshot</p>
+    <h3>Comparison scorecard</h3>
+    <p>One table keeps the benchmark result scannable: each metric shows both modes, the difference, and whether evidence was missing.</p>
+  </div>
+  <div class="bench-score-row bench-score-row-head">
+    <span>Metric</span>
+    <span>No skills</span>
+    <span>With skills</span>
+    <span>Delta</span>
+  </div>
+  <div class="bench-score-row">
+    <span>Runtime</span>
+    <strong>580s</strong>
+    <strong>497s</strong>
+    <em class="bench-score-good">-14%</em>
+  </div>
+  <div class="bench-score-row">
+    <span>Total tokens</span>
+    <strong>3.7M</strong>
+    <strong>1.9M</strong>
+    <em class="bench-score-good">-49%</em>
+  </div>
+  <div class="bench-score-row">
+    <span>Commands</span>
+    <strong>186</strong>
+    <strong>126</strong>
+    <em class="bench-score-good">-32%</em>
+  </div>
+  <div class="bench-score-row">
+    <span>Structure score</span>
+    <strong>33%</strong>
+    <strong>100%</strong>
+    <em class="bench-score-better">+67 pts</em>
+  </div>
+  <div class="bench-score-row">
+    <span>Code quality</span>
+    <strong>7%</strong>
+    <strong>43%</strong>
+    <em class="bench-score-better">+36 pts</em>
+  </div>
+  <div class="bench-score-row">
+    <span>Result metric</span>
+    <strong>AUROC NA</strong>
+    <strong>AUROC 0.7484</strong>
+    <em class="bench-score-warn">baseline missing</em>
+  </div>
+</section>
 
 ## Report layers
 

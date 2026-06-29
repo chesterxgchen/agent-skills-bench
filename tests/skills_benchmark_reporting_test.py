@@ -4140,6 +4140,83 @@ def test_outcome_details_reports_observed_metrics_from_runtime_artifact(tmp_path
     assert "loss 0.5386" in display
 
 
+def test_missing_metric_section_reports_nvflare_recovered_key_metric_log(tmp_path):
+    from benchmark.harness.modes import NO_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import missing_result_metrics_section
+
+    mode_dir = tmp_path / "mode=without_skills"
+    config = (
+        mode_dir
+        / "workspace_delta"
+        / "runtime_artifacts"
+        / "sim_workspace"
+        / "server"
+        / "simulate_job"
+        / "app_server"
+        / "config"
+        / "config_fed_server.json"
+    )
+    log = mode_dir / "workspace_delta" / "runtime_artifacts" / "sim_workspace" / "server" / "log_fl.txt"
+    config.parent.mkdir(parents=True)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        json.dumps(
+            {
+                "workflows": [
+                    {
+                        "path": "nvflare.app_common.workflows.fedavg.FedAvg",
+                        "args": {"num_rounds": 3},
+                    }
+                ],
+                "components": [
+                    {
+                        "id": "model_selector",
+                        "path": "nvflare.app_common.widgets.intime_model_selector.IntimeModelSelector",
+                        "args": {"key_metric": "accuracy"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    log.write_text(
+        "2026-06-28 23:24:57,083 - IntimeModelSelector - INFO - "
+        "new best validation metric at round 1: 0.6868408986703347\n",
+        encoding="utf-8",
+    )
+    run = {
+        "available": True,
+        "mode": NO_SKILLS_MODE,
+        "label": "No skills baseline",
+        "mode_dir": mode_dir,
+        "run": {"final_container_exit_code": 0},
+        "activity": {},
+        "workspace_delta": {
+            "runtime_artifacts": [
+                {
+                    "path": "sim_workspace/server/simulate_job/app_server/config/config_fed_server.json",
+                    "artifact_path": (
+                        "runtime_artifacts/sim_workspace/server/simulate_job/app_server/config/"
+                        "config_fed_server.json"
+                    ),
+                },
+                {
+                    "path": "sim_workspace/server/log_fl.txt",
+                    "artifact_path": "runtime_artifacts/sim_workspace/server/log_fl.txt",
+                },
+            ]
+        },
+        "record": {},
+    }
+    ctx = _nv_ctx({NO_SKILLS_MODE: run}, [NO_SKILLS_MODE])
+
+    section = missing_result_metrics_section(_evruns({NO_SKILLS_MODE: run}), [NO_SKILLS_MODE], ctx)
+
+    assert "accuracy 0.6868" in section
+    assert "NVFLARE IntimeModelSelector best validation metric at round 1" in section
+    assert "no parseable validation metric was reported" not in section
+
+
 def test_failure_analysis_reports_recovered_job_failure_and_metric_gap():
     from benchmark.harness.modes import NO_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import (
@@ -6516,7 +6593,7 @@ Final round metrics:
 
 def test_metrics_chart_names_metric_once_in_panel_title():
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
-    from benchmark.harness.reports.benchmark_insights import embedded_bar_chart, outcome_metrics_table
+    from benchmark.harness.reports.benchmark_insights import comparison_scorecard, embedded_bar_chart, outcome_metrics_table
 
     def run(label: str, value: float) -> dict:
         return {
@@ -6547,7 +6624,17 @@ def test_metrics_chart_names_metric_once_in_panel_title():
         ),
         [NO_SKILLS_MODE, WITH_SKILLS_MODE],
     )
+    scorecard = comparison_scorecard(
+        _evruns(
+            {
+                NO_SKILLS_MODE: run("No skills baseline", 0.7562),
+                WITH_SKILLS_MODE: run("With skills", 0.7529),
+            }
+        )
+    )
 
+    assert "### Comparison Scorecard" in scorecard
+    assert "| Metrics (AUROC) | 0.7562 | 0.7529 |" in scorecard
     assert "Metrics (AUROC)" in chart
     assert "Code quality" in chart
     assert "FL scalar result" not in chart
@@ -6560,7 +6647,7 @@ def test_metrics_chart_names_metric_once_in_panel_title():
 
 def test_metrics_chart_uses_labeled_aggregated_metric_from_legacy_record():
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
-    from benchmark.harness.reports.benchmark_insights import embedded_bar_chart, outcome_metrics_table
+    from benchmark.harness.reports.benchmark_insights import comparison_scorecard, embedded_bar_chart, outcome_metrics_table
 
     def run(label: str, metric: dict) -> dict:
         return {
@@ -6596,8 +6683,10 @@ def test_metrics_chart_uses_labeled_aggregated_metric_from_legacy_record():
     modes = [NO_SKILLS_MODE, WITH_SKILLS_MODE]
     ctx = _nv_ctx(runs, modes)
     chart = embedded_bar_chart(_evruns(runs), ctx)
+    scorecard = comparison_scorecard(_evruns(runs), ctx)
     table = outcome_metrics_table(_evruns(runs), modes, ctx)
 
+    assert "| Metrics (AUROC) | NA | 0.7623 | missing |" in scorecard
     assert ">0.7623<" in chart
     assert "| Metrics (AUROC) | AUROC NA | AUROC 0.7623 |" in table
 
@@ -6903,6 +6992,8 @@ def test_report_generators_write_two_mode_outputs(tmp_path, monkeypatch):
     insights_markdown = (tmp_path / "benchmark_insights.md").read_text(encoding="utf-8")
     assert "<svg" in metrics_markdown
     assert "<svg" in insights_markdown
+    assert "### Comparison Scorecard" not in metrics_markdown
+    assert "### Comparison Scorecard" in insights_markdown
     assert "Metrics (AUROC)" in metrics_markdown
     assert "Metrics (AUROC)" in insights_markdown
     assert "Benchmark Metrics Comparison" not in insights_markdown

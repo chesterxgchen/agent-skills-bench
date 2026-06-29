@@ -201,6 +201,16 @@ class ReportPlugin(ABC):
 
         return ()
 
+    def observed_metric_evidence(self, run: RunEvidence) -> str:
+        """SDK-specific observed metric evidence that should not satisfy the result gate.
+
+        This is for domain logs that carry useful metric context but are not authoritative
+        final scalar artifacts. The generic engine displays the text as supporting
+        evidence; ``assess_metric`` remains the gate for successful result metrics.
+        """
+
+        return ""
+
     def section_copy(self, key: str) -> str | None:
         """SDK-specific copy for a known key embedded INSIDE a generic section, or ``None``.
 

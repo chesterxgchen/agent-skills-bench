@@ -527,11 +527,25 @@ def observed_metric_payloads(run: RunEvidence) -> list[dict[str, Any]]:
     return payloads
 
 
-def observed_metric_evidence_display(run: RunEvidence) -> str:
+def _plugin_observed_metric_evidence(run: RunEvidence, ctx: Any = None) -> str:
+    plugin = getattr(ctx, "plugin", None)
+    if plugin is None:
+        return ""
+    observer = getattr(plugin, "observed_metric_evidence", None)
+    if not callable(observer):
+        return ""
+    return str(observer(run) or "").strip()
+
+
+def observed_metric_evidence_display(run: RunEvidence, ctx: Any = None) -> str:
     payloads = observed_metric_payloads(run)
-    if not payloads:
+    parts = [metric_payload_display(payload) for payload in payloads]
+    plugin_evidence = _plugin_observed_metric_evidence(run, ctx)
+    if plugin_evidence and plugin_evidence not in parts:
+        parts.append(plugin_evidence)
+    if not parts:
         return "none"
-    return "; ".join(metric_payload_display(payload) for payload in payloads)
+    return "; ".join(parts)
 
 
 def additional_or_observed_metric_values_display(
@@ -540,7 +554,7 @@ def additional_or_observed_metric_values_display(
     additional = additional_metric_values_display(run, metric_name)
     if additional != "NA":
         return additional
-    observed = observed_metric_evidence_display(run)
+    observed = observed_metric_evidence_display(run, ctx)
     if observed != "none":
         return observed
     last_event = (_evidence_or_legacy(ev, run).job_execution or JobExecutionSignal()).last_successful_job_event or {}

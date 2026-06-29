@@ -2,14 +2,14 @@
 
 Result root: `<RESULT_ROOT>`
 
-Status: No skills baseline: passed; With skills: passed
+Status: No skills baseline: needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.); With skills: needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.)
 
 ## Runs
 
 | Run | Agent | Model | Host OS | Status | Skills available | Skills inspected | Skills applied/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |
 |---|---|---|---|---|---|---|---|---|---:|---:|---:|---|
-| No skills baseline | codex | default | Ubuntu 24.04 LTS | passed | not enabled | none | none | none | 180 | 12000 | 4 | NA |
-| With skills | codex | default | Ubuntu 24.04 LTS | passed | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | none | nvflare-convert-pytorch | none | 240 | 15000 | 5 | NA |
+| No skills baseline | codex | default | Ubuntu 24.04 LTS | needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.) | not enabled | none | none | none | 180 | 12000 | 4 | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. |
+| With skills | codex | default | Ubuntu 24.04 LTS | needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.) | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | none | nvflare-convert-pytorch | none | 240 | 15000 | 5 | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. |
 
 ## Metrics
 
@@ -75,19 +75,19 @@ Status: No skills baseline: passed; With skills: passed
 <line x1="602.0" y1="628" x2="863.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <line x1="602.0" y1="483" x2="602.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <rect x="682.5" y="483.0" width="38.0" height="145.0" fill="#16a34a" rx="3"/>
-<text x="701.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">54%</text>
+<text x="701.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">50%</text>
 <text x="701.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">No skills</text>
 <rect x="744.5" y="483.0" width="38.0" height="145.0" fill="#2563eb" rx="3"/>
-<text x="763.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">54%</text>
+<text x="763.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">50%</text>
 <text x="763.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">With skills</text>
 <text x="887.0" y="406.0" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#111827">Metrics (AUROC)</text>
 <line x1="887.0" y1="628" x2="1148.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <line x1="887.0" y1="483" x2="887.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
-<rect x="967.5" y="488.1" width="38.0" height="139.9" fill="#16a34a" rx="3"/>
-<text x="986.5" y="481.1" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">0.7421</text>
+<rect x="967.5" y="604" width="38.0" height="20" fill="#e5e7eb" rx="3"/>
+<text x="986.5" y="619" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#4b5563">NA</text>
 <text x="986.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">No skills</text>
-<rect x="1029.5" y="483.0" width="38.0" height="145.0" fill="#2563eb" rx="3"/>
-<text x="1048.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">0.7689</text>
+<rect x="1029.5" y="604" width="38.0" height="20" fill="#e5e7eb" rx="3"/>
+<text x="1048.5" y="619" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="700" fill="#4b5563">NA</text>
 <text x="1048.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">With skills</text>
 <rect x="32" y="690" width="14" height="14" fill="#16a34a" rx="2"/>
 <text x="54" y="702" font-family="Arial, sans-serif" font-size="13" fill="#111827">No skills baseline</text>
@@ -97,7 +97,7 @@ Status: No skills baseline: passed; With skills: passed
 
 | Metric | No skills baseline | With skills |
 |---|---|---|
-| Metrics (AUROC) | AUROC 0.7421 | AUROC 0.7689 |
+| Metrics (AUROC) | AUROC NA | AUROC NA |
 
 ## Activity Insights
 
@@ -114,7 +114,8 @@ Status: No skills baseline: passed; With skills: passed
 
 ## Interpretation
 
-All available runs passed the benchmark quality gates captured by this report.
+Quality comparison is incomplete because these runs failed a benchmark quality gate: No skills baseline, With skills.
+For this artifact, the missing/partial signal is `AUROC` reporting, not necessarily a Docker or Python execution crash.
 Runtime winner by wall-clock seconds: No skills baseline (180s vs 240s, delta 60s).
 Token-use winner: No skills baseline (12.0k vs 15.0k, delta 3.0k).
 Read cost winners only after checking the quality gates; a cheaper run that does not report the requested FL result is not a successful benchmark winner.
@@ -125,9 +126,19 @@ Read cost winners only after checking the quality gates; a cheaper run that does
 |---|---:|
 | elapsed_seconds_with_skills_minus_without_skills | 60 |
 | token_count_with_skills_minus_without_skills | 3000 |
-| Validation metric (AUROC) with skills minus without skills | 0.0268 |
 
 ## Why
+
+**Why the comparison needs review**
+
+At least one run failed the job/result quality gates, so elapsed time, token use, and artifact count should not be treated as benchmark wins until the result issue is resolved.
+
+| Run | Job run status | Result quality issue | Result metric |
+|---|---|---|---|
+| No skills baseline | completed: simulation completed — FL workflow reached Finished state | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. | partial: 1 reported values, no FL-level scalar |
+| With skills | completed: simulation completed — FL workflow reached Finished state | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. | partial: 1 reported values, no FL-level scalar |
+
+Both runs need review; neither side is a valid comparison winner until the result metrics are fixed.
 
 **Why With skills is slower and has longer runtime after install** (+60s total / +33%; +30s runtime / +20% vs No skills baseline):
 

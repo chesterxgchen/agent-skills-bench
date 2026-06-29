@@ -187,7 +187,7 @@ def missing_result_metrics_section(
     for mode in issue_modes:
         run = runs[mode]
         issues = run_quality_issues(run, ctx.evidence.get(mode))
-        observed_metrics = observed_metric_evidence_display(run)
+        observed_metrics = observed_metric_evidence_display(run, ctx)
         atom = _execution_atom(ctx)
         action = (
             f"Require the final message or benchmark record to include one aggregate {_result_term(ctx)}"

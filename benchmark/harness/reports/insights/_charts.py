@@ -51,6 +51,7 @@ __all__ = [
     "chart_value_display",
     "benchmark_chart_metrics",
     "chart_mode_label",
+    "comparison_scorecard",
     "embedded_bar_chart",
     "outcome_metrics_table",
 ]
@@ -190,6 +191,56 @@ def chart_mode_label(mode: str, run: RunEvidence) -> str:
     if mode == "with_skills":
         return "With skills"
     return str(run.label or MODE_LABELS.get(mode, mode))
+
+
+def _scorecard_delta(left: Any, right: Any, kind: str) -> str:
+    left_number = chart_number(left, kind)
+    right_number = chart_number(right, kind)
+    if left_number is None or right_number is None:
+        return "missing"
+    if kind == "percent":
+        return f"{(right_number - left_number) * 100:+.0f} pts"
+    if left_number == 0:
+        if right_number == 0:
+            return "0"
+        return "new"
+    delta = right_number - left_number
+    percent = delta / left_number * 100
+    if abs(percent) >= 10:
+        return f"{percent:+.0f}%"
+    if kind == "seconds":
+        return f"{delta:+.0f}s"
+    if kind == "short":
+        return fmt_short(delta)
+    return fmt_number(delta)
+
+
+def comparison_scorecard(runs: dict[str, RunEvidence], ctx: ReportContext | None = None) -> str:
+    modes = list(runs)
+    if not modes:
+        return ""
+    ctx = ctx or _report_context(runs, modes)
+    comparable_name = comparable_metric_name(runs)
+    metric_name = comparable_name or metric_name_for_runs(runs)
+    metrics = benchmark_chart_metrics(runs, metric_name, ctx)
+    labels = [markdown_cell(chart_mode_label(mode, runs[mode])) for mode in modes]
+    lines = [
+        "### Comparison Scorecard",
+        "",
+        "Quick view of the same evidence shown in the chart below.",
+        "",
+        "| Metric | " + " | ".join(labels) + " | Delta |",
+        "|---|" + "|".join("---" for _ in modes) + "|---|",
+    ]
+    for item in metrics:
+        label = markdown_cell(str(item["label"]))
+        values = [item["value"](runs[mode], ctx.evidence.get(mode)) for mode in modes]
+        displays = [markdown_cell(chart_value_display(value, item["kind"])) for value in values]
+        delta = "NA"
+        if len(values) == 2:
+            delta = _scorecard_delta(values[0], values[1], item["kind"])
+        lines.append(f"| {label} | " + " | ".join(displays) + f" | {markdown_cell(delta)} |")
+    return "\n".join(lines)
 
 
 def embedded_bar_chart(runs: dict[str, RunEvidence], ctx: ReportContext | None = None) -> str:

@@ -91,7 +91,7 @@ from .evidence import RunEvidence
 # Names the orchestration below calls are provided by the star imports above; import them
 # explicitly too so they resolve unambiguously (no F405) without changing behavior.
 from .insights._charts import *  # noqa: F401,F403
-from .insights._charts import embedded_bar_chart, interpretation_section, outcome_metrics_table
+from .insights._charts import comparison_scorecard, embedded_bar_chart, interpretation_section, outcome_metrics_table
 from .insights._code_quality import *  # noqa: F401,F403
 from .insights._code_quality import fl_algorithm_display, generated_code_quality_section
 from .insights._diagnostics import *  # noqa: F401,F403
@@ -531,6 +531,8 @@ def benchmark_report(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) 
                 "metrics",
                 [
                     "## Metrics",
+                    "",
+                    comparison_scorecard({mode: runs[mode] for mode in modes}, ctx),
                     "",
                     embedded_bar_chart({mode: runs[mode] for mode in modes}, ctx),
                     "",

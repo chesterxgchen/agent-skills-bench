@@ -215,6 +215,7 @@
       "job_scale": null,
       "job_slug": null,
       "mode": "without_skills",
+      "model_source": "scenario",
       "observed_skill_name": null,
       "phase_seconds": null,
       "prompt_hash": null,
@@ -233,7 +234,7 @@
       ],
       "quality_gate_passed": false,
       "record_dir": "records/agent=codex/model=default/workflow=default/job=ames/repeat=01/mode=without_skills",
-      "required_validation_metric_status": "not_required",
+      "required_validation_metric_status": "present",
       "run_id": "run_00001",
       "scenario_name": null,
       "sequence": null,
@@ -251,7 +252,7 @@
         "value": 0.7421,
         "value_scope": "fl_summary_metric"
       },
-      "validation_metric_status": "not_required",
+      "validation_metric_status": "present",
       "workflow": null
     },
     {
@@ -296,6 +297,7 @@
       "job_scale": null,
       "job_slug": null,
       "mode": "with_skills",
+      "model_source": "scenario",
       "observed_skill_name": "nvflare-convert-pytorch",
       "phase_seconds": null,
       "prompt_hash": null,
@@ -314,7 +316,7 @@
       ],
       "quality_gate_passed": false,
       "record_dir": "records/agent=codex/model=default/workflow=default/job=ames/repeat=01/mode=with_skills",
-      "required_validation_metric_status": "not_required",
+      "required_validation_metric_status": "present",
       "run_id": "run_00002",
       "scenario_name": null,
       "sequence": null,
@@ -332,7 +334,7 @@
         "value": 0.7689,
         "value_scope": "fl_summary_metric"
       },
-      "validation_metric_status": "not_required",
+      "validation_metric_status": "present",
       "workflow": null
     }
   ],

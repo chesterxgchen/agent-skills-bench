@@ -231,6 +231,9 @@ class NvflareReportPlugin(ReportPlugin):
         # SDK-specific log interpretation the generic engine must not own (§7.2).
         return (r"\b(?:best\s+)?(?:aggregated|global|server)\s+validation\b",)
 
+    def observed_metric_evidence(self, run: RunEvidence) -> str:
+        return _logic.recovered_runtime_metric_evidence(run.raw)
+
     def score_structure(self, run: RunEvidence) -> StructureSignal:
         # Owned here (step 4): the implementation lives in the neutral _logic
         # leaf, operating on the captured per-run bundle (run.raw).

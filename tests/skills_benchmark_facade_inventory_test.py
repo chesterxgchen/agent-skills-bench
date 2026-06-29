@@ -135,6 +135,7 @@ PRE_SPLIT_EXPORTS = frozenset(
         "command_failure_diagnostics_table",
         "command_succeeded",
         "commands_for_run",
+        "comparison_scorecard",
         "comparable_metric_name",
         "cost_comparison_section",
         "count_map",

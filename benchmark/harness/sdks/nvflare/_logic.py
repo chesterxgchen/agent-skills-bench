@@ -88,6 +88,7 @@ from ...reports._text import (
     _shell_command_parts,
     _shell_command_segments,
     _strip_quoted,
+    fmt_number,
     markdown_cell,
     strip_ansi,
 )
@@ -661,6 +662,69 @@ def fl_algorithm_info(run: dict[str, Any]) -> dict[str, Any]:
             "evidence": "no server workflow config captured; job was not started",
         }
     return {"algorithm": "not captured", "evidence": "no server workflow config captured"}
+
+
+def _server_config_key_metric(run: dict[str, Any]) -> str:
+    for _key, item in _server_config_items(run):
+        path = _workspace_artifact_path(run, item)
+        if not path or not path.exists():
+            continue
+        config = load_json(path, {}) or {}
+        workflows = config.get("workflows") if isinstance(config, dict) else None
+        if not isinstance(workflows, list):
+            workflows = []
+        components = config.get("components") if isinstance(config, dict) else None
+        if not isinstance(components, list):
+            components = []
+        for entry in [*workflows, *components]:
+            if not isinstance(entry, dict):
+                continue
+            args = entry.get("args")
+            if not isinstance(args, dict):
+                continue
+            key_metric = canonical_metric_name(args.get("key_metric"))
+            if key_metric:
+                return key_metric
+    return ""
+
+
+def recovered_runtime_metric_evidence(run: dict[str, Any]) -> str:
+    """Recover non-authoritative metric context from NVFLARE server logs."""
+
+    key_metric = _server_config_key_metric(run)
+    if not key_metric:
+        return ""
+    best: tuple[int, float] | None = None
+    fallback_values: list[float] = []
+    for _rel_path, text in _runtime_artifact_texts(run, r"(^|/)server/log(?:_fl)?\.txt$", max_bytes=128_000):
+        for line in strip_ansi(text).splitlines():
+            best_match = re.search(
+                r"\bnew best validation metric at round\s+(\d+):\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)",
+                line,
+                flags=re.IGNORECASE,
+            )
+            if best_match:
+                candidate = (int(best_match.group(1)), float(best_match.group(2)))
+                if best is None or candidate[0] >= best[0]:
+                    best = candidate
+                continue
+            value_match = re.search(
+                r"\bvalidation metric\s+([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)\s+from client\b",
+                line,
+                flags=re.IGNORECASE,
+            )
+            if value_match:
+                fallback_values.append(float(value_match.group(1)))
+    if best is not None:
+        round_number, value = best
+        return (
+            f"{key_metric} {fmt_number(value)} "
+            f"(NVFLARE IntimeModelSelector best validation metric at round {round_number})"
+        )
+    if fallback_values:
+        value = fallback_values[-1]
+        return f"{key_metric} {fmt_number(value)} (NVFLARE IntimeModelSelector validation metric log)"
+    return ""
 
 
 def _recipe_expected_algorithms(recipe: str) -> set[str]:

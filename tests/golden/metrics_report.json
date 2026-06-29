@@ -1,8 +1,7 @@
 {
   "comparison": {
     "elapsed_seconds_with_skills_minus_without_skills": 60,
-    "token_count_with_skills_minus_without_skills": 3000,
-    "validation_metric_AUROC_with_skills_minus_without_skills": 0.026800000000000046
+    "token_count_with_skills_minus_without_skills": 3000
   },
   "metric_name": "AUROC",
   "result_root": "<RESULT_ROOT>",
@@ -400,6 +399,6 @@
       }
     }
   ],
-  "status": "No skills baseline: passed; With skills: passed",
+  "status": "No skills baseline: needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.); With skills: needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.)",
   "title": "Benchmark Metrics"
 }
