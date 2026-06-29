@@ -178,6 +178,7 @@ def benchmark_chart_metrics(
             "value": lambda run, ev: (_evidence_or_legacy(ev, run).code_quality or CodeQualitySignal()).score,
         },
         {
+            "id": "metric",
             "label": f"Metrics ({metric_name or 'result'})",
             "kind": "number",
             "value": lambda run, ev: metric_value(run, metric_name, ev),
@@ -221,6 +222,11 @@ def comparison_scorecard(runs: dict[str, RunEvidence], ctx: ReportContext | None
         return ""
     ctx = ctx or _report_context(runs, modes)
     comparable_name = comparable_metric_name(runs)
+    # When runs report different validation metrics there is no shared scalar to
+    # compare, so ``metric_name_for_runs`` returns the synthetic "mixed validation
+    # metrics" label. Feeding that name to ``metric_value`` filters out every run's
+    # real metric (the names never match), rendering valid per-run values as NA.
+    metric_is_mixed = comparable_name is None and bool(metric_names_for_runs(runs))
     metric_name = comparable_name or metric_name_for_runs(runs)
     metrics = benchmark_chart_metrics(runs, metric_name, ctx)
     labels = [markdown_cell(chart_mode_label(mode, runs[mode])) for mode in modes]
@@ -234,6 +240,13 @@ def comparison_scorecard(runs: dict[str, RunEvidence], ctx: ReportContext | None
     ]
     for item in metrics:
         label = markdown_cell(str(item["label"]))
+        if metric_is_mixed and item.get("id") == "metric":
+            # Show each run's own metric (name + value) instead of the synthetic name.
+            displays = [
+                markdown_cell(metric_display(runs[mode], None, ctx.evidence.get(mode))) for mode in modes
+            ]
+            lines.append(f"| {label} | " + " | ".join(displays) + f" | {markdown_cell('not comparable')} |")
+            continue
         values = [item["value"](runs[mode], ctx.evidence.get(mode)) for mode in modes]
         displays = [markdown_cell(chart_value_display(value, item["kind"])) for value in values]
         delta = "NA"

@@ -6693,7 +6693,7 @@ def test_metrics_chart_uses_labeled_aggregated_metric_from_legacy_record():
 
 def test_metrics_chart_marks_mixed_metric_names_non_comparable():
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
-    from benchmark.harness.reports.benchmark_insights import embedded_bar_chart, outcome_metrics_table
+    from benchmark.harness.reports.benchmark_insights import comparison_scorecard, embedded_bar_chart, outcome_metrics_table
 
     def run(label: str, metric_name: str, value: float) -> dict:
         return {
@@ -6710,6 +6710,7 @@ def test_metrics_chart_marks_mixed_metric_names_non_comparable():
     }
 
     chart = embedded_bar_chart(_evruns(runs))
+    scorecard = comparison_scorecard(_evruns(runs))
     table = outcome_metrics_table(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
 
     assert "Metrics (mixed validation metrics)" in chart
@@ -6717,6 +6718,9 @@ def test_metrics_chart_marks_mixed_metric_names_non_comparable():
     assert "No skills baseline: accuracy" in chart
     assert "With skills: AUROC" in chart
     assert "| Metrics (mixed validation metrics) | accuracy 0.8123 | AUROC 0.7529 |" in table
+    # The scorecard must show each run's own metric, not NA from the synthetic name.
+    assert "| Metrics (mixed validation metrics) | accuracy 0.8123 | AUROC 0.7529 | not comparable |" in scorecard
+    assert "NA |" not in scorecard.split("Metrics (mixed validation metrics)")[1].splitlines()[0]
 
 
 def test_metrics_chart_uses_common_runtime_metric_when_selected_keys_differ(tmp_path):

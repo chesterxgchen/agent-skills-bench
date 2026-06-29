@@ -51,7 +51,7 @@ sidecars.
 ## Quick Start
 
 <div class="bench-command-grid">
-  <section class="bench-command-card">
+  <section class="bench-command-card" markdown="1">
     <p class="bench-layer-kicker">Default agent</p>
     <h3>Build and run Codex</h3>
 
@@ -65,7 +65,7 @@ sidecars.
 ```
 
   </section>
-  <section class="bench-command-card">
+  <section class="bench-command-card" markdown="1">
     <p class="bench-layer-kicker">Custom output</p>
     <h3>Run Claude with a results root</h3>
 
