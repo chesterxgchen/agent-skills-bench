@@ -8143,9 +8143,14 @@ def test_status_guarded_failed_bare_module_command_still_recovers_via_bare_rerun
     # nonzero, so a status guard on it (`|| exit 1`, a trailing `;` command)
     # says nothing about its token shape — it must still verify as a bare
     # module invocation so a later clean bare rerun clears the failure.
+    # `exit`'s operand may also be a status expansion (`$?`, `$status`,
+    # `${status}`), which is just as inert as a literal code.
     for failed in (
         "python3 -m nvflare.cli || exit 1",
         "python3 -m nvflare.cli ; false",
+        "python3 -m nvflare.cli || exit $?",
+        'python3 -m nvflare.cli || exit "$status"',
+        "python3 -m nvflare.cli || exit ${status}",
     ):
         events = command(failed, output=traceback, exit_code=1) + "\n" + command(
             "python3 -m nvflare.cli", output="done"
@@ -8186,7 +8191,9 @@ def test_failed_bare_module_with_chained_real_work_not_cleared_by_bare_rerun():
     # bare module proves nothing and must not clear the terminal failure.
     # A segment that merely STARTS with a status command is not a harmless
     # guard: `true | bash run_job.sh` pipes into real work, and that work can
-    # be the traceback's source just as much as an unguarded segment.
+    # be the traceback's source just as much as an unguarded segment. The same
+    # goes for an `exit` whose operand executes commands (`$(...)`, backticks)
+    # rather than expanding a plain status value.
     for failed in (
         "python3 -m nvflare.cli ; bash run_job.sh",
         "bash run_job.sh ; python3 -m nvflare.cli",
@@ -8194,6 +8201,9 @@ def test_failed_bare_module_with_chained_real_work_not_cleared_by_bare_rerun():
         "python3 -m nvflare.cli ; true | bash run_job.sh",
         "false | python3 train.py ; python3 -m nvflare.cli",
         "python3 -m nvflare.cli || true && bash run_job.sh",
+        "python3 -m nvflare.cli || exit $(bash run_job.sh)",
+        "python3 -m nvflare.cli || exit `bash run_job.sh`",
+        "python3 -m nvflare.cli || exit 1 2",
     ):
         events = command(failed, output=traceback, exit_code=1) + "\n" + command(
             "python3 -m nvflare.cli", output="done"

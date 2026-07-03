@@ -978,14 +978,22 @@ def _segment_success_implied_by_zero_exit(parts: list[tuple[str, str]], index: i
     return all(operator == "&&" for _segment, operator in parts[index:-1])
 
 
+# ``exit``'s status operand is inert only when it's a literal code (``1``,
+# ``143``) or a plain status expansion: ``$?``, ``$status``, ``${status}``.
+# Anything else — ``$(cmd)``, backticks, arithmetic, glob metacharacters —
+# can execute or hide extra work and must not count as a pure status guard.
+_SAFE_EXIT_STATUS_OPERAND_RE = re.compile(r"\d+|\$\?|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+
+
 def _segment_is_harmless_status_guard(segment: str) -> bool:
     """True when the segment is ONLY a status command: ``true``, ``false``,
-    ``:``, or ``exit [code]`` — nothing else.
+    ``:``, or ``exit [status]`` — nothing else.
 
     Segments split on ``&&``/``||``/``;`` but not on ``|``, so a first-command
     check alone would bless ``true | bash run_job.sh``, whose pipeline executes
     real work behind the status command. Requiring the status command to be the
-    segment's only token (plus a numeric exit code) also rejects redirections,
+    segment's only token (plus an inert exit status operand — a literal code,
+    ``$?``, or a simple variable reference) also rejects redirections,
     backgrounding, and substitutions hiding extra work.
     """
 
@@ -994,7 +1002,11 @@ def _segment_is_harmless_status_guard(segment: str) -> bool:
         return False
     if len(tokens) == 1:
         return True
-    return Path(tokens[0]).name.lower() == "exit" and len(tokens) == 2 and tokens[1].isdigit()
+    return (
+        Path(tokens[0]).name.lower() == "exit"
+        and len(tokens) == 2
+        and _SAFE_EXIT_STATUS_OPERAND_RE.fullmatch(tokens[1]) is not None
+    )
 
 
 def _is_bare_module_invocation(command: str, module: str, *, require_success_implied_by_zero_exit: bool = True) -> bool:
@@ -1016,7 +1028,7 @@ def _is_bare_module_invocation(command: str, module: str, *, require_success_imp
     which exited nonzero): there a status guard like ``python -m mod || exit
     1`` must not disqualify it from later recovery — but the module segment
     must still be the command's ONLY real work. Every other segment has to be
-    a pure status guard (``true``/``false``/``:``/``exit [code]`` alone — a
+    a pure status guard (``true``/``false``/``:``/``exit [status]`` alone — a
     pipeline like ``true | bash run_job.sh`` executes real work and does not
     count); otherwise a chained command like ``python -m mod ; bash
     run_job.sh`` whose failure came from the OTHER segment would read as a
