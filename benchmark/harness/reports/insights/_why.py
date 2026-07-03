@@ -51,8 +51,13 @@ from ._spans import (
     _assistant_turns,
     _command_span_total_seconds,
     _dependency_install_slowdown_note,
+    _dependency_install_spans,
     _dependency_install_total_seconds,
     _elapsed_excluding_dependency_install,
+    _install_cpu_only_evidence_display,
+    _install_stack_evidence,
+    _install_strategy_summary,
+    _install_total_seconds,
     _non_dependency_command_seconds,
     _run_usage,
     _thinking_token_events,
@@ -854,6 +859,90 @@ def _comparison_failure_explanation(
     return lines
 
 
+def _root_cause_lead(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext | None = None) -> list[str]:
+    """Ranked, concrete root-cause bullets that LEAD the Why section.
+
+    Each bullet names the cause, the attributed seconds, and the evidence in one
+    sentence, so the answer is readable before the supporting driver tables.
+    """
+
+    with_label = with_run.label or "With skills"
+    base_label = base_run.label or "No skills baseline"
+    causes: list[tuple[float, str]] = []
+
+    with_installs = _dependency_install_spans(with_run)
+    base_installs = _dependency_install_spans(base_run)
+    with_install_seconds = _install_total_seconds(with_installs)
+    install_delta = with_install_seconds - _install_total_seconds(base_installs)
+    if with_installs and install_delta >= 60:
+        base_cpu_only = _install_cpu_only_evidence_display(base_installs)
+        with_cpu_only = _install_cpu_only_evidence_display(with_installs)
+        with_stack = _install_stack_evidence(with_installs)
+        detail = (
+            f"{with_label} spent {fmt_seconds_with_unit(with_install_seconds)} on "
+            f"{_install_strategy_summary(with_installs)}, vs "
+            f"{fmt_seconds_with_unit(_install_total_seconds(base_installs))} for {base_label}"
+        )
+        if base_cpu_only and not with_cpu_only:
+            detail += (
+                f". The gap is wheel selection, not download luck: the baseline explicitly installed the "
+                f"CPU-only framework wheel, while {with_label} resolved an {with_stack} from its requirements "
+                "file. For a CPU-only benchmark, pinning CPU wheels in the skill/requirements removes this delta"
+            )
+        elif "accelerator-capable" in with_stack:
+            detail += f". The {with_label} install resolved an {with_stack}"
+        causes.append((install_delta, f"**Dependency install +{fmt_seconds(install_delta)}s** — {detail}."))
+
+    with_ev = _run_evidence(ctx, with_run)
+    with_job_spans = list((with_ev.job_execution or JobExecutionSignal()).successful_job_spans)
+    base_job_spans = list((_run_evidence(ctx, base_run).job_execution or JobExecutionSignal()).successful_job_spans)
+    if len(with_job_spans) > 1:
+        with_job_seconds = _span_total_seconds(with_job_spans) or 0.0
+        longest = max((as_number(span.get("duration_seconds")) or 0.0) for span in with_job_spans)
+        rerun_seconds = max(0.0, with_job_seconds - longest)
+        if rerun_seconds >= 30:
+            atom = _execution_atom(ctx) or "job"
+            causes.append(
+                (
+                    rerun_seconds,
+                    f"**Repeated {atom} executions +{fmt_seconds(rerun_seconds)}s** — {with_label} ran "
+                    f"{len(with_job_spans)} successful executions (total {fmt_seconds_with_unit(with_job_seconds)}) "
+                    f"vs {len(base_job_spans)} for {base_label}; the reruns beyond the first are re-validation "
+                    "work (captured rationale in the repeated-executions table below).",
+                )
+            )
+
+    with_residual = _agent_interaction_seconds(with_run)
+    base_residual = _agent_interaction_seconds(base_run)
+    if with_residual is not None and base_residual is not None:
+        residual_delta = with_residual - base_residual
+        if residual_delta > 30:
+            with_turns = _assistant_turns(with_run)
+            base_turns = _assistant_turns(base_run)
+            with_skill_calls = count_map(with_run, "tool_counts").get("Skill", 0)
+            base_skill_calls = count_map(base_run, "tool_counts").get("Skill", 0)
+            turn_phrase = ""
+            if with_turns is not None and base_turns is not None:
+                turn_phrase = f" ({with_turns} vs {base_turns} assistant turns"
+                if with_skill_calls or base_skill_calls:
+                    turn_phrase += f", {with_skill_calls} vs {base_skill_calls} Skill loads"
+                turn_phrase += ")"
+            causes.append(
+                (
+                    residual_delta,
+                    f"**Agent/model loop +{fmt_seconds(residual_delta)}s** — time outside captured commands: "
+                    f"model round-trips, skill loading, and file inspection{turn_phrase}.",
+                )
+            )
+
+    if not causes:
+        return []
+    causes.sort(key=lambda item: item[0], reverse=True)
+    lines = ["**Root causes (ranked by attributed time)**", ""]
+    lines.extend(f"{index}. {text}" for index, (_seconds, text) in enumerate(causes, start=1))
+    return lines
+
+
 def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext | None = None) -> list[str]:
     with_label = with_run.label or "With skills"
     base_label = base_run.label or "No skills baseline"
@@ -897,6 +986,10 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
     lines = [heading, ""]
     quality_explanation = _quality_regression_explanation(with_run, base_run, ctx)
     include_slowdown_context = elapsed_is_slower or runtime_is_slower or not quality_explanation
+    if include_slowdown_context:
+        root_causes = _root_cause_lead(with_run, base_run, ctx)
+        if root_causes:
+            lines.extend([*root_causes, ""])
     if quality_explanation:
         lines.extend([*quality_explanation, ""])
     slowdown_table = _slowdown_reason_table(

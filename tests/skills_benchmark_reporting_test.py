@@ -29,6 +29,11 @@ def _evruns(runs):
     return {mode: _ev(run) for mode, run in runs.items()}
 
 
+def _unwrap_cells(markdown: str) -> str:
+    """Undo markdown_cell's <br> soft-wrapping so substring asserts stay stable."""
+    return markdown.replace("<br>", " ")
+
+
 def _nv_ev(run):
     """NVFLARE per-run PluginEvidence (the sidecar render helpers consume).
 
@@ -440,6 +445,81 @@ def test_reports_resolve_unspecified_agent_model_from_agent_log(tmp_path):
     assert scenario_summary["runs"][0]["model_source"] == "agent_log"
 
 
+def test_resolved_record_model_outranks_summary_sentinel(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import collect_benchmark_runs
+    from benchmark.harness.scenario_summaries import write_scenario_summaries
+
+    record_dir = tmp_path / "records" / "agent=codex" / "model=unspecified_default" / "mode=without_skills"
+    record_dir.mkdir(parents=True)
+    (record_dir / "agent_events.jsonl").write_text('{"type":"thread.started"}\n', encoding="utf-8")
+    (record_dir / "agent_stderr.txt").write_text("", encoding="utf-8")
+    write_json(
+        record_dir / "record_summary.json",
+        {"agent": "codex", "agent_model": "unspecified_default", "model_source": "agent_config"},
+    )
+    write_json(
+        record_dir / "run_summary.json",
+        {"agent": "codex", "agent_model": "unspecified_default", "model_source": "adapter_default"},
+    )
+    write_json(
+        record_dir / "benchmark_record.json",
+        {"agent_model": "gpt-5.5", "model_source": "agent_config"},
+    )
+    write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+    write_json(
+        tmp_path / "run_plan.json",
+        {
+            "entries": [
+                {
+                    "run_id": "run_00001",
+                    "mode": NO_SKILLS_MODE,
+                    "agent": "codex",
+                    "agent_model": "unspecified_default",
+                    "model_source": "adapter_default",
+                    "record_dir": str(record_dir.relative_to(tmp_path)),
+                }
+            ]
+        },
+    )
+
+    insight_runs = collect_benchmark_runs(tmp_path)
+    scenario_summary = write_scenario_summaries(tmp_path, {"run_00001": 0})
+
+    assert insight_runs[NO_SKILLS_MODE]["agent_model"] == "gpt-5.5"
+    assert insight_runs[NO_SKILLS_MODE]["model_source"] == "agent_config"
+    assert scenario_summary["runs"][0]["agent_model"] == "gpt-5.5"
+    assert scenario_summary["runs"][0]["model_source"] == "agent_config"
+
+
+def test_canonicalize_keeps_resolved_model_over_plan_sentinel(tmp_path):
+    from benchmark.harness.common import load_json, write_json
+    from benchmark.harness.host.runner import canonicalize_entry_artifacts
+    from benchmark.harness.modes import NO_SKILLS_MODE
+
+    record_dir = tmp_path / "records" / "agent=codex" / "model=unspecified_default" / "mode=without_skills"
+    record_dir.mkdir(parents=True)
+    write_json(
+        record_dir / "run_summary.json",
+        {"agent": "codex", "agent_model": "gpt-5.5", "model_source": "agent_config"},
+    )
+    entry = {
+        "run_id": "run_00001",
+        "mode": NO_SKILLS_MODE,
+        "agent": "codex",
+        "agent_model": "unspecified_default",
+        "model_source": "adapter_default",
+        "record_dir": str(record_dir.relative_to(tmp_path)),
+    }
+
+    canonicalize_entry_artifacts(tmp_path, entry, 0)
+
+    summary = load_json(record_dir / "record_summary.json", {})
+    assert summary["agent_model"] == "gpt-5.5"
+    assert summary["model_source"] == "agent_config"
+
+
 def test_reports_surface_captured_host_os(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
@@ -505,6 +585,47 @@ def test_reports_surface_captured_host_os(tmp_path):
     assert "| No skills baseline | codex | default | Ubuntu 24.04 LTS |" in metrics_markdown
     assert "Host OS: `Ubuntu 24.04 LTS`" in scenario_markdown
     assert "| run_00001 | without_skills | codex | default | scenario | without_skills | Ubuntu 24.04 LTS |" in scenario_markdown
+
+
+def test_benchmark_report_surfaces_captured_prompt(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import benchmark_report, collect_benchmark_runs
+
+    prompt = "convert this job folder to federated learning with NVFLARE, three clients, three round using fedavg"
+    entries = []
+    for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
+        record_dir = tmp_path / "records" / "agent=codex" / "model=default" / f"mode={mode}"
+        record_dir.mkdir(parents=True)
+        entries.append(
+            {
+                "run_id": f"run_{index:05d}",
+                "mode": mode,
+                "agent": "codex",
+                "agent_model": "default",
+                "model_source": "scenario",
+                "record_dir": str(record_dir.relative_to(tmp_path)),
+                "skills_enabled": mode == WITH_SKILLS_MODE,
+            }
+        )
+        write_json(record_dir / "run_summary.json", {"mode": mode, "agent": "codex", "agent_model": "default"})
+        write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+        write_json(record_dir / "benchmark_record.json", {"mode": mode})
+        (record_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
+        write_json(
+            record_dir / "prompt_metadata.json",
+            {"prompt_sha256": "2496d624db0e7b55" + "0" * 48, "prompt_bytes": len(prompt)},
+        )
+    write_json(tmp_path / "run_plan.json", {"entries": entries})
+
+    runs = collect_benchmark_runs(tmp_path)
+    insights = benchmark_report(tmp_path, runs)
+
+    assert runs[NO_SKILLS_MODE]["prompt_text"] == prompt
+    assert runs[NO_SKILLS_MODE]["prompt_metadata"]["prompt_bytes"] == len(prompt)
+    assert "## Benchmark Input" in insights
+    assert prompt in insights
+    assert "| No skills baseline | 2496d624db0e7b55 |" in insights
 
 
 def test_benchmark_reports_read_canonical_record_layout(tmp_path):
@@ -1095,6 +1216,44 @@ recipe = FedAvgRecipe(
     assert "Conversion: round metric progression" in section
     assert "good: AUROC 0.7305 -> 0.7449 -> 0.7573" in section
     assert "bad: AUROC 0.4860 -> 0.4860 -> 0.4860 (flat)" in section
+
+
+def test_evaluation_rules_score_profile_outside_reporting_engine(tmp_path):
+    from benchmark.harness.evaluation import load_evaluation_rules, main, score_profile
+
+    rules = load_evaluation_rules("nvflare")
+    profile = {
+        "partitioning": "seeded shuffled site partition",
+        "data_packaging": "hardcoded absolute data path in generated client code (`/data/x.csv`)",
+        "metric_progression": "AUROC 0.4860 -> 0.4860 -> 0.4860 (flat)",
+        "training_control": "manual Client API loop",
+        "execution_model": "not captured",
+    }
+    verdicts = score_profile(rules, profile, {"target_framework": "lightning"})
+    assert verdicts == {
+        "partitioning": "good",
+        "data_packaging": "bad",
+        "metric_progression": "bad",
+        "training_control": "caution",
+        "execution_model": "unknown",
+    }
+    # Same signals under a non-lightning target: the manual loop is acceptable.
+    assert score_profile(rules, profile, {"target_framework": "pytorch"})["training_control"] == "good"
+
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    assert main(["--sdk", "nvflare", "--profile", str(profile_path)]) == 0
+
+
+def test_conversion_quality_rows_derive_from_evaluation_yaml():
+    from benchmark.harness.evaluation import load_evaluation_rules
+    from benchmark.harness.sdks.nvflare._logic import CONVERSION_QUALITY_ROWS
+
+    signals = load_evaluation_rules("nvflare")["signals"]
+    assert [key for key, _label in CONVERSION_QUALITY_ROWS] == list(signals)
+    labels = dict(CONVERSION_QUALITY_ROWS)
+    assert labels["data_packaging"] == "Conversion: data packaging/path"
+    assert labels["training_control"] == "Conversion: client training/control path"
 
 
 def test_nvflare_data_packaging_rules():
@@ -2975,10 +3134,12 @@ def test_dependency_strategy_scores_with_skills_cpu_shortcut_as_instruction_fail
             "Successfully installed torch-2.12.0+cpu",
         ),
     }
-    section = generated_code_quality_section(
-        _evruns(runs),
-        [NO_SKILLS_MODE, WITH_SKILLS_MODE],
-        _nv_ctx(runs, [NO_SKILLS_MODE, WITH_SKILLS_MODE]),
+    section = _unwrap_cells(
+        generated_code_quality_section(
+            _evruns(runs),
+            [NO_SKILLS_MODE, WITH_SKILLS_MODE],
+            _nv_ctx(runs, [NO_SKILLS_MODE, WITH_SKILLS_MODE]),
+        )
     )
 
     assert "caution: targeted package install, CPU-only framework wheel, succeeded" in section
@@ -3459,6 +3620,52 @@ def test_metric_mismatch_reports_actual_metric_without_marking_missing():
     assert "| Metrics (accuracy) | accuracy 0.8123 |" in outcome_metrics_table(_evruns(runs), [NO_SKILLS_MODE])
 
 
+def test_reported_expected_metric_earns_partial_credit():
+    from benchmark.harness.modes import NO_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import (
+        benchmark_outcome,
+        missing_result_metrics_section,
+        run_quality_issues,
+        run_status_kind,
+    )
+
+    from benchmark.harness.quality_signals import metric_value_entry, reported_metric_payload
+
+    payload = reported_metric_payload(
+        "AUROC",
+        [
+            metric_value_entry(0.7037, "AUROC"),
+            metric_value_entry(0.6369, "accuracy"),
+            metric_value_entry(0.5434, "loss"),
+        ],
+    )
+    signal = {
+        "status": "partial",
+        "expected_primary_metric": "AUROC",
+        "reported_validation_metric": payload,
+    }
+    run = {
+        "available": True,
+        "label": "No skills baseline",
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0},
+        "record": {"quality_signals": {"job_guidance_primary_validation_metric": signal}},
+        "validation_metric": payload,
+    }
+
+    assert payload["value_scope"] == "reported_values_only"
+    assert payload["value"] is None
+    issues = run_quality_issues(_ev(run))
+    assert not any("fl_metric_scalar" in issue for issue in issues)
+    outcome = benchmark_outcome(_ev(run))
+    assert outcome.startswith("partial:")
+    assert "AUROC 0.7037" in outcome
+    assert run_status_kind(_ev(run)) == "passed"
+    section = missing_result_metrics_section(_evruns({NO_SKILLS_MODE: run}), [NO_SKILLS_MODE])
+    assert "Partial credit" in section
+    assert "Counted with partial credit" in section
+
+
 def test_artifact_metric_satisfies_result_gate_when_final_response_metric_is_incomplete():
     from benchmark.harness.modes import WITH_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import (
@@ -3692,7 +3899,7 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
     assert "metrics_summary.json" in with_issues
     assert human_readable_status(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("needs review")
     assert benchmark_outcome(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("fail:")
-    why = why_section(typed, modes, ctx)
+    why = _unwrap_cells(why_section(typed, modes, ctx))
     assert "## Why" in why
     assert "**Why With skills needs more work**" in why
     assert "**Primary result failure**" in why
@@ -4065,7 +4272,7 @@ def test_incomplete_background_runtime_overrides_successful_launch_status(tmp_pa
     modes = [NO_SKILLS_MODE, WITH_SKILLS_MODE]
     typed = _evruns(runs)
     ctx = _nv_ctx(runs, modes)
-    why = why_section(typed, modes, ctx)
+    why = _unwrap_cells(why_section(typed, modes, ctx))
     assert "**Root cause of missing FL result**" in why
     assert "agent run ended while the background simulation was still running" in why
     assert "scheduled wakeup did not keep the non-interactive benchmark run alive" in why
@@ -6457,8 +6664,10 @@ def test_failure_analysis_explains_missing_module_during_background_dependency_i
         "agent_events_text": "\n".join(json.dumps(event) for event in events),
     }
 
-    section = failure_analysis_section(
-        _evruns({WITH_SKILLS_MODE: run}), [WITH_SKILLS_MODE], _nv_ctx({WITH_SKILLS_MODE: run}, [WITH_SKILLS_MODE])
+    section = _unwrap_cells(
+        failure_analysis_section(
+            _evruns({WITH_SKILLS_MODE: run}), [WITH_SKILLS_MODE], _nv_ctx({WITH_SKILLS_MODE: run}, [WITH_SKILLS_MODE])
+        )
     )
 
     assert "ModuleNotFoundError: No module named 'torch'" in section

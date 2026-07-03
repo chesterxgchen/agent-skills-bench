@@ -154,6 +154,8 @@ def _compact_result_gate(outcome: str) -> str:
         return "fail"
     if outcome.startswith("warn:"):
         return "warn"
+    if outcome.startswith("partial:"):
+        return "partial"
     return outcome or "NA"
 
 
@@ -328,6 +330,47 @@ def _benchmark_target_framework_display(runs: dict[str, RunEvidence]) -> str:
         job_path,
     )
     return f"{target_framework} target" if target_framework else ""
+
+
+_MAX_PROMPT_DISPLAY_CHARS = 4_000
+
+
+def _prompt_fence(text: str) -> list[str]:
+    body = text.strip()
+    if len(body) > _MAX_PROMPT_DISPLAY_CHARS:
+        body = body[:_MAX_PROMPT_DISPLAY_CHARS].rstrip() + "\n… (truncated for display)"
+    return ["````text", body, "````"]
+
+
+def _benchmark_input_section(runs: dict[str, RunEvidence], modes: list[str]) -> list[str]:
+    captured = [(mode, runs[mode]) for mode in modes if runs[mode].available and runs[mode].prompt_text.strip()]
+    if not captured:
+        return []
+    lines = [
+        "## Benchmark Input",
+        "",
+        "The verbatim prompt given to the agent (captured `prompt.txt`; the harness does not inject mode, path, or skill instructions).",
+        "",
+        "| Run | Prompt SHA-256 | Bytes |",
+        "|---|---|---|",
+    ]
+    for _mode, run in captured:
+        meta = run.prompt_metadata or {}
+        digest = str(meta.get("prompt_sha256") or run.summary.get("prompt_hash") or "")
+        size = meta.get("prompt_bytes")
+        size_cell = str(size) if isinstance(size, int) else str(len(run.prompt_text.encode("utf-8")))
+        lines.append(f"| {markdown_cell(run.label)} | {markdown_cell(digest[:16] or 'NA')} | {size_cell} |")
+    lines.append("")
+    texts = {run.prompt_text.strip() for _mode, run in captured}
+    if len(texts) == 1:
+        lines.extend(_prompt_fence(captured[0][1].prompt_text))
+    else:
+        for _mode, run in captured:
+            lines.extend([f"**{run.label}**", ""])
+            lines.extend(_prompt_fence(run.prompt_text))
+            lines.append("")
+        lines.pop()
+    return lines
 
 
 def _run_status_detail_lines(label: str, overall: str, job_status: str, outcome: str) -> list[str]:
@@ -525,6 +568,9 @@ def benchmark_report(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) 
         ),
         ("run_identity", ["## Run Identity", "", run_identity_table(runs, modes), ""]),
     ]
+    benchmark_input = _benchmark_input_section(runs, modes)
+    if benchmark_input:
+        generic_blocks.append(("benchmark_input", [*benchmark_input, ""]))
     generic_blocks.extend(
         [
             (

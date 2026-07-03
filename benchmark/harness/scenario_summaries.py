@@ -20,7 +20,7 @@ import statistics
 from pathlib import Path
 from typing import Any, Mapping
 
-from .agent_identity import resolve_agent_model_from_events_path
+from .agent_identity import preferred_agent_model, resolve_agent_model_from_events_path
 from .common import load_json
 from .common import write_json_atomic as common_write_json_atomic
 from .host_environment import host_os_display
@@ -291,9 +291,14 @@ def run_summary_for_entry(
         record.get("host_os"),
         host_os_display(captured_host_environment),
     )
+    configured_model, configured_model_source = preferred_agent_model(
+        (summary.get("agent_model"), summary.get("model_source")),
+        (record.get("agent_model"), record.get("model_source")),
+        (entry.get("agent_model"), entry.get("model_source")),
+    )
     agent_model, model_source = resolve_agent_model_from_events_path(
-        first_non_empty(summary.get("agent_model"), record.get("agent_model"), entry.get("agent_model")),
-        first_non_empty(summary.get("model_source"), record.get("model_source"), entry.get("model_source")),
+        configured_model,
+        configured_model_source,
         artifacts["record_dir"] / "agent_events.jsonl",
         artifacts["record_dir"] / "agent_stderr.txt",
     )

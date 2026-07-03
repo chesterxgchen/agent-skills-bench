@@ -2,6 +2,11 @@
 
 **Why With skills is slower and has longer runtime after install** (+300s total / +50%; +180s runtime / +32% vs No skills baseline):
 
+**Root causes (ranked by attributed time)**
+
+1. **Repeated simulator executions +360s** — With skills ran 2 successful executions (total 730s) vs 1 for No skills baseline; the reruns beyond the first are re-validation work (captured rationale in the repeated-executions table below).
+2. **Dependency install +120s** — With skills spent 150s on 1 requirements-file install(s), vs 30s for No skills baseline. The With skills install resolved an accelerator-capable dependency stack (nvidia-cublas-cu13, nvidia-cudnn-cu13).
+
 **Slowdown driver comparison**
 
 | Driver | With skills | No skills baseline | Delta | Interpretation |
@@ -21,7 +26,7 @@ These are full successful job or simulator executions, excluding export, help, a
 
 | Run | Successful executions | Total captured job time | Executions | Captured reason/evidence |
 |---|---:|---:|---|---|
-| With skills | 2 | 730s | 1. `python3 job.py --num-sites 3 --num-rounds 3` (360s, exit 0); 2. `python3 job.py --num-sites 3 --num-rounds 3` (370s, exit 0) | not captured; inspect commands around the repeated run |
+| With skills | 2 | 730s | 1. `python3 job.py --num-sites 3 --num-rounds 3` (360s, exit 0); 2.<br>`python3 job.py --num-sites 3 --num-rounds 3` (370s, exit 0) | not captured; inspect commands around the repeated run |
 
 Baseline comparison: No skills baseline had 1 command classified successful job/simulator execution totaling 560s.
 

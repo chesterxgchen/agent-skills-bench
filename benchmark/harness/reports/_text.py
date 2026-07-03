@@ -36,9 +36,35 @@ def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_PATTERN.sub("", text)
 
 
+# Markdown renderers size table columns by each cell's longest unbroken line, so
+# one long single-line cell starves every other column. Soft-wrapping long cells
+# with <br> bounds the intrinsic width and lets renderers balance the columns.
+MARKDOWN_CELL_WRAP_WIDTH = 100
+
+_CELL_WORD_PATTERN = re.compile(r"`[^`]*`|\S+")
+
+
+def _soft_wrap_cell_line(text: str, width: int) -> str:
+    if len(text) <= width:
+        return text
+    lines: list[str] = []
+    current = ""
+    # Inline code spans are atomic: a <br> inside backticks would render literally.
+    for word in _CELL_WORD_PATTERN.findall(text):
+        if current and len(current) + 1 + len(word) > width:
+            lines.append(current)
+            current = word
+        else:
+            current = f"{current} {word}" if current else word
+    if current:
+        lines.append(current)
+    return "<br>".join(lines)
+
+
 def markdown_cell(value: Any) -> str:
     text = "NA" if value is None or value == "" else str(value)
-    return text.replace("|", "\\|").replace("\n", "<br>")
+    text = text.replace("|", "\\|").replace("\n", "<br>")
+    return "<br>".join(_soft_wrap_cell_line(line, MARKDOWN_CELL_WRAP_WIDTH) for line in text.split("<br>"))
 
 
 def fmt_number(value: Any) -> str:

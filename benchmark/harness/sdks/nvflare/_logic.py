@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from ...common import load_json
+from ...evaluation import load_evaluation_rules, overall_thresholds, score_signal, verdict_points
 from ...quality_signals import canonical_metric_name, metric_names_match
 from ...reports._events import (
     _job_rerun_reason,
@@ -1686,10 +1687,6 @@ def conversion_quality_profile(run: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _metric_progression_values(value: str) -> list[float]:
-    return [float(match.group(1)) for match in re.finditer(r"\b([0-9]+\.[0-9]+)\b", value)]
-
-
 def _target_framework(run: dict[str, Any] | None) -> str:
     if not isinstance(run, dict):
         return ""
@@ -1704,52 +1701,11 @@ def _target_framework(run: dict[str, Any] | None) -> str:
 
 
 def conversion_quality_score(signal: str, value: str, run: dict[str, Any] | None = None) -> str:
-    text = value.lower()
-    if not text or text == "not captured":
-        return "unknown"
-    if signal == "training_control":
-        if "lightning client api patch" in text:
-            return "good"
-        if "manual client api loop" in text:
-            return "caution" if _target_framework(run) == "lightning" else "good"
-    if signal == "partitioning":
-        if "seeded shuffled" in text or "stratified seeded" in text:
-            return "good"
-        if "deterministic stride" in text:
-            return "bad"
-        if "site partition" in text:
-            return "caution"
-    if signal == "class_weighting":
-        if "per-site" in text or "computed from loaded training data" in text:
-            return "good"
-        if "fixed/global" in text:
-            return "bad"
-    if signal == "metric_reporting":
-        if "auroc" in text or "torchmetrics" in text:
-            return "good"
-        if "metric dict" in text:
-            return "caution"
-    if signal == "data_packaging":
-        if "configurable data_root argument" in text or "original data path" in text:
-            return "good"
-        if "ephemeral" in text or "hardcoded absolute data path" in text:
-            return "bad"
-        if "data directory argument" in text:
-            return "caution"
-    if signal == "execution_model":
-        if "external client process" in text:
-            return "good"
-        if "in-process client api executor" in text:
-            return "good"
-    if signal == "metric_progression":
-        if "flat" in text:
-            return "bad"
-        values = _metric_progression_values(value)
-        if len(values) >= 2:
-            return "good" if values[-1] > values[0] else "bad"
-        if values:
-            return "caution"
-    return "caution"
+    # The verdict rules are standard evaluation input (config/evaluation/nvflare.yaml)
+    # applied through the SDK-neutral scorer, so external tools can score the same
+    # signal profile outside the reporting engine and get identical verdicts.
+    rules = load_evaluation_rules("nvflare")
+    return score_signal(rules, signal, value, {"target_framework": _target_framework(run)})
 
 
 def _background_task_interruption_cause(run: dict[str, Any]) -> str:
@@ -2354,17 +2310,29 @@ CODE_QUALITY_ROWS = (
 
 CODE_QUALITY_CONTEXT_ROWS = (("API pattern", _api_pattern_signal),)
 
-CONVERSION_QUALITY_ROWS = (
-    ("training_control", "Conversion: client training/control path"),
-    ("partitioning", "Conversion: site data partitioning"),
-    ("class_weighting", "Conversion: loss weighting (`pos_weight`)"),
-    ("metric_reporting", "Conversion: metric implementation/reporting"),
-    ("data_packaging", "Conversion: data packaging/path"),
-    ("execution_model", "Conversion: client execution/model exchange"),
-    ("metric_progression", "Conversion: round metric progression"),
-)
+def _conversion_quality_rows_from_rules() -> tuple[tuple[str, str], ...]:
+    """One report row per evaluation criterion in config/evaluation/nvflare.yaml.
 
-CODE_QUALITY_POINTS = {"good": 1.0, "caution": 0.5, "poor": 0.0, "bad": 0.0}
+    The rules file is the single source of truth for the criteria list: a
+    criterion added there appears in the Generated Code Quality table even
+    before a detector captures evidence for it (rendered as not captured)."""
+
+    signals = load_evaluation_rules("nvflare").get("signals")
+    rows: list[tuple[str, str]] = []
+    for key, entry in (signals or {}).items():
+        label = entry.get("label") if isinstance(entry, dict) else None
+        rows.append((str(key), str(label or f"Conversion: {key}")))
+    return tuple(rows)
+
+
+CONVERSION_QUALITY_ROWS = _conversion_quality_rows_from_rules()
+
+def _code_quality_points() -> dict[str, float]:
+    return verdict_points(load_evaluation_rules("nvflare"))
+
+
+# Module-level view kept for callers/tests; sourced from the evaluation rules file.
+CODE_QUALITY_POINTS = _code_quality_points()
 
 
 def generated_code_quality_assessments(run: dict[str, Any]) -> list[tuple[str, str, str]]:
@@ -2387,9 +2355,10 @@ def generated_code_quality_overall(run: dict[str, Any]) -> str:
         return "unknown: no generated-code evidence captured"
     points = sum(CODE_QUALITY_POINTS[status] for status, _ in known)
     score_ratio = points / total
-    if score_ratio >= 0.8:
+    thresholds = overall_thresholds(load_evaluation_rules("nvflare"))
+    if score_ratio >= thresholds.get("good", 0.8):
         label = "good"
-    elif score_ratio >= 0.5:
+    elif score_ratio >= thresholds.get("caution", 0.5):
         label = "caution"
     else:
         label = "poor"

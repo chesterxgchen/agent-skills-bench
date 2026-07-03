@@ -200,20 +200,20 @@ A run can complete at the agent/container level and still need review when it om
 
 | Run | Changed files | Added | Modified | Notable files |
 |---|---:|---:|---:|---|
-| No skills baseline | 3 | NA | NA | nvflare_jobs/ames_fedavg/client.py; nvflare_jobs/ames_fedavg/model.py; nvflare_jobs/ames_fedavg/job.py |
-| With skills | 3 | NA | NA | nvflare_jobs/ames_fedavg/client.py; nvflare_jobs/ames_fedavg/model.py; nvflare_jobs/ames_fedavg/job.py |
+| No skills baseline | 3 | NA | NA | nvflare_jobs/ames_fedavg/client.py; nvflare_jobs/ames_fedavg/model.py;<br>nvflare_jobs/ames_fedavg/job.py |
+| With skills | 3 | NA | NA | nvflare_jobs/ames_fedavg/client.py; nvflare_jobs/ames_fedavg/model.py;<br>nvflare_jobs/ames_fedavg/job.py |
 
 ## Outcome Details
 
 | Signal | No skills baseline | With skills |
 |---|---|---|
-| Agent/container outcome | needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.) | needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.) |
-| FL result quality gate | fail: Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. | fail: Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. |
+| Agent/container outcome | needs review (Failed check `result_metric_scalar` : AUROC was reported, but no FL-level scalar value<br>was found.) | needs review (Failed check `result_metric_scalar` : AUROC was reported, but no FL-level scalar value<br>was found.) |
+| FL result quality gate | fail: Failed check `result_metric_scalar` : AUROC was reported, but no FL-level scalar value was<br>found. | fail: Failed check `result_metric_scalar` : AUROC was reported, but no FL-level scalar value was<br>found. |
 | Reported validation metric | AUROC NA | AUROC NA |
 | Additional/other validation metric values | AUROC 0.7421 | AUROC 0.7689 |
 | Copied workspace changes | 3 changed | 3 changed |
 | Captured generated artifacts | 3 changed/generated files, 1 runtime artifacts | 3 changed/generated files, 1 runtime artifacts |
-| Required structure files | 0/3 present; missing client.py, model.py, job.py; nested copies ignored for current-structure score: nvflare_jobs/ames_fedavg | 0/3 present; missing client.py, model.py, job.py; nested copies ignored for current-structure score: nvflare_jobs/ames_fedavg |
+| Required structure files | 0/3 present; missing client.py, model.py, job.py; nested copies ignored for current-structure score:<br>nvflare_jobs/ames_fedavg | 0/3 present; missing client.py, model.py, job.py; nested copies ignored for current-structure score:<br>nvflare_jobs/ames_fedavg |
 | Optional structure files | download_data.py | download_data.py |
 
 ## Structure Correctness
@@ -222,7 +222,7 @@ The structure checks look for the core converted source files and captured runti
 
 | Structure signal | No skills baseline | With skills |
 |---|---|---|
-| Required converted files | 0/3 present; missing client.py, model.py, job.py; nested copies ignored for current-structure score: nvflare_jobs/ames_fedavg | 0/3 present; missing client.py, model.py, job.py; nested copies ignored for current-structure score: nvflare_jobs/ames_fedavg |
+| Required converted files | 0/3 present; missing client.py, model.py, job.py; nested copies ignored for current-structure score:<br>nvflare_jobs/ames_fedavg | 0/3 present; missing client.py, model.py, job.py; nested copies ignored for current-structure score:<br>nvflare_jobs/ames_fedavg |
 | Nested generated job source | nvflare_jobs/ames_fedavg (client.py, job.py, model.py) | nvflare_jobs/ames_fedavg (client.py, job.py, model.py) |
 | Optional helper files | download_data.py | download_data.py |
 | Final workspace Python inventory | none | none |

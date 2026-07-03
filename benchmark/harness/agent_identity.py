@@ -113,6 +113,29 @@ def observed_agent_model_from_events_path(path: Path) -> str:
     return observed_agent_model_from_events_text(text)
 
 
+def is_resolved_agent_model(model: Any) -> bool:
+    text = str(model or "").strip()
+    return bool(text) and text != UNSPECIFIED_AGENT_MODEL
+
+
+def preferred_agent_model(*candidates: tuple[Any, Any]) -> tuple[Any, Any]:
+    """Pick the first ``(model, source)`` pair with a genuinely resolved model.
+
+    The ``unspecified_default`` sentinel is a placeholder, not a resolution — a
+    later candidate carrying a concrete model name outranks an earlier sentinel
+    (e.g. a plan-time entry that predates the container's config-file lookup).
+    Falls back to the first non-empty model/source independently when no
+    candidate is resolved.
+    """
+
+    for model, source in candidates:
+        if is_resolved_agent_model(model):
+            return model, source
+    model = next((model for model, _ in candidates if model not in (None, "")), None)
+    source = next((source for _, source in candidates if source not in (None, "")), None)
+    return model, source
+
+
 def resolve_agent_model(
     configured_model: Any,
     model_source: Any,

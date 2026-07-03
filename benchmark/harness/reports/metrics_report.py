@@ -510,8 +510,8 @@ def html_report(
   <title>{html.escape(summary['title'])}</title>
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #1f2933; }}
-    table {{ border-collapse: collapse; width: 100%; margin: 16px 0; }}
-    th, td {{ border: 1px solid #d9e2ec; padding: 8px; text-align: left; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 16px 0; table-layout: fixed; }}
+    th, td {{ border: 1px solid #d9e2ec; padding: 8px; text-align: left; overflow-wrap: anywhere; vertical-align: top; }}
     th {{ background: #f5f7fa; }}
     .bar-row {{ display: grid; grid-template-columns: 180px 1fr 80px; gap: 12px; align-items: center; margin: 8px 0; }}
     .bar-track {{ background: #e4e7eb; height: 14px; position: relative; }}

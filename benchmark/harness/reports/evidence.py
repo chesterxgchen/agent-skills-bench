@@ -66,6 +66,10 @@ class RunEvidence:
     runtime_image: Mapping[str, Any]
     container_exit: Mapping[str, Any]
     validation_metric: Mapping[str, Any] | None
+    # The verbatim agent input prompt captured per run (prompt.txt +
+    # prompt_metadata.json) — generic across SDKs.
+    prompt_text: str
+    prompt_metadata: Mapping[str, Any]
     # Structured captured-text artifacts (§5): the agent/console text Stage 3 wrote.
     agent_last_message: str
     agent_stderr: str
@@ -108,6 +112,8 @@ def _run_evidence_from_bundle(bundle: Mapping[str, Any]) -> RunEvidence:
         runtime_image=bundle.get("runtime_image") or {},
         container_exit=bundle.get("container_exit") or {},
         validation_metric=bundle.get("validation_metric"),
+        prompt_text=str(bundle.get("prompt_text") or ""),
+        prompt_metadata=bundle.get("prompt_metadata") or {},
         agent_last_message=str(bundle.get("agent_last_message") or ""),
         agent_stderr=str(bundle.get("agent_stderr") or ""),
         agent_events_text=str(bundle.get("agent_events_text") or ""),

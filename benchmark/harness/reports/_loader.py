@@ -27,13 +27,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..agent_identity import MAX_AGENT_EVENTS_TEXT_BYTES, resolve_agent_model
+from ..agent_identity import MAX_AGENT_EVENTS_TEXT_BYTES, preferred_agent_model, resolve_agent_model
 from ..common import load_json
 from ..host_environment import host_os_display
 from ..metric_artifacts import validation_metric_from_workspace_delta_manifest
 from ..modes import BENCHMARK_RUNS
 from ..quality_signals import canonical_metric_name, is_numeric_metric_value, reported_metric_payload
 from ._runs import read_text
+
+
+# The verbatim agent input prompt captured by the container run (prompt.txt).
+# Generic for all SDKs; capped so a pathological prompt cannot bloat the report.
+MAX_PROMPT_TEXT_BYTES = 64_000
 
 
 def first_non_empty(*values: Any) -> Any:
@@ -198,13 +203,10 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
         if run_host_environment:
             summary = {**summary, "host_environment": run_host_environment}
         agent = first_non_empty(summary.get("agent"), record.get("agent"), run_plan_entry.get("agent"))
-        configured_agent_model = first_non_empty(
-            summary.get("agent_model"),
-            record.get("agent_model"),
-            run_plan_entry.get("agent_model"),
-        )
-        configured_model_source = first_non_empty(
-            summary.get("model_source"), record.get("model_source"), run_plan_entry.get("model_source")
+        configured_agent_model, configured_model_source = preferred_agent_model(
+            (summary.get("agent_model"), summary.get("model_source")),
+            (record.get("agent_model"), record.get("model_source")),
+            (run_plan_entry.get("agent_model"), run_plan_entry.get("model_source")),
         )
         agent_events_text = (
             read_text(mode_dir / "agent_events.jsonl", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES)
@@ -246,6 +248,8 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "activity": load_json(mode_dir / "agent_activity.json", {}) if mode_dir.exists() else {},
             "workspace_delta": workspace_delta,
             "skills_list": skills_list,
+            "prompt_text": read_text(mode_dir / "prompt.txt", max_bytes=MAX_PROMPT_TEXT_BYTES) if mode_dir.exists() else "",
+            "prompt_metadata": load_json(mode_dir / "prompt_metadata.json", {}) if mode_dir.exists() else {},
             "runtime_image": load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {},
             "agent_last_message": read_text(mode_dir / "agent_last_message.txt") if mode_dir.exists() else "",
             "agent_stderr": agent_stderr_text,

@@ -28,6 +28,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Iterable
 
+from ..agent_identity import preferred_agent_model
 from ..agents.parsers import parse_cached_usage_and_activity
 from ..agents.registry import DEFAULT_BENCHMARK_AGENT, load_agent_adapter
 from ..common import load_json, write_json
@@ -682,6 +683,13 @@ def canonicalize_entry_artifacts(result_root: Path, entry: dict[str, object], st
         activity = {}
     host_environment = read_host_environment(result_root)
     host_os = host_os_display(host_environment)
+    # The plan entry is authoritative for run identity, except the model: the
+    # container resolves the real model after plan time (config file / runtime
+    # evidence), so a plan-time sentinel must not clobber a resolved name.
+    resolved_model, resolved_source = preferred_agent_model(
+        (summary.get("agent_model"), summary.get("model_source")),
+        (entry.get("agent_model"), entry.get("model_source")),
+    )
     summary.update(
         {
             key: entry.get(key)
@@ -691,7 +699,6 @@ def canonicalize_entry_artifacts(result_root: Path, entry: dict[str, object], st
                 "comparison_type",
                 "comparison_group_id",
                 "agent",
-                "agent_model",
                 "workflow",
                 "job_name",
                 "job_slug",
@@ -704,6 +711,9 @@ def canonicalize_entry_artifacts(result_root: Path, entry: dict[str, object], st
             )
         }
     )
+    summary["agent_model"] = resolved_model
+    if resolved_source not in (None, ""):
+        summary["model_source"] = resolved_source
     summary["host_status"] = status
     summary["artifact_paths"] = entry.get("artifact_paths") or {}
     summary.setdefault("runtime_image", runtime_image.get("runtime_image"))

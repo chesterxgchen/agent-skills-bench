@@ -8,8 +8,8 @@ Status: No skills baseline: needs review (Failed check `result_metric_scalar`: A
 
 | Run | Agent | Model | Host OS | Status | Skills available | Skills inspected | Skills applied/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |
 |---|---|---|---|---|---|---|---|---|---:|---:|---:|---|
-| No skills baseline | codex | default | Ubuntu 24.04 LTS | needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.) | not enabled | none | none | none | 180 | 12000 | 4 | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. |
-| With skills | codex | default | Ubuntu 24.04 LTS | needs review (Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found.) | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | none | nvflare-convert-pytorch | none | 240 | 15000 | 5 | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. |
+| No skills baseline | codex | default | Ubuntu 24.04 LTS | needs review (Failed check `result_metric_scalar` : AUROC was reported, but no FL-level scalar value<br>was found.) | not enabled | none | none | none | 180 | 12000 | 4 | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. |
+| With skills | codex | default | Ubuntu 24.04 LTS | needs review (Failed check `result_metric_scalar` : AUROC was reported, but no FL-level scalar value<br>was found.) | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | none | nvflare-convert-pytorch | none | 240 | 15000 | 5 | Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found. |
 
 ## Metrics
 

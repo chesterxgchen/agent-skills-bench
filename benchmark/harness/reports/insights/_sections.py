@@ -30,7 +30,7 @@ from .._events import (
     fmt_seconds_with_unit,
     artifact_validation_metric_evidence,
 )
-from .._text import markdown_cell
+from .._text import fmt_number, markdown_cell
 from ..evidence import RunEvidence
 from ._code_quality import fl_algorithm_display
 from ._diagnostics import (
@@ -53,6 +53,7 @@ from ._metrics import (
     metric_reporting_gap_evidence,
     observed_metric_evidence_display,
     quality_signal,
+    reported_expected_metric_value,
     run_analysis,
     run_quality_issues,
     run_result_metric_status,
@@ -171,7 +172,12 @@ def missing_result_metrics_section(
     runs: dict[str, RunEvidence], modes: list[str], ctx: ReportContext | None = None
 ) -> str:
     ctx = ctx or _report_context(runs, modes)
-    issue_modes = [mode for mode in modes if run_quality_issues(runs[mode], ctx.evidence.get(mode))]
+    issue_modes = [
+        mode
+        for mode in modes
+        if run_quality_issues(runs[mode], ctx.evidence.get(mode))
+        or reported_expected_metric_value(runs[mode], ctx.evidence.get(mode))
+    ]
     if not issue_modes:
         return ""
     lines = [
@@ -193,6 +199,17 @@ def missing_result_metrics_section(
             f"Require the final message or benchmark record to include one aggregate {_result_term(ctx)}"
             "validation metric."
         )
+        partial = reported_expected_metric_value(run, ctx.evidence.get(mode))
+        if partial and not issues:
+            name, value = partial
+            issues = [
+                f"Partial credit: `{name}` {fmt_number(value)} was reported in the final response, "
+                "but no single aggregate scalar was selected."
+            ]
+            action = (
+                f"Counted with partial credit; report one aggregate {_result_term(ctx)}"
+                "validation metric for full credit."
+            )
         if metric_mismatch_with_reported_scalar(run, ctx.evidence.get(mode)):
             action = (
                 "Treat the run as completed with a reported scalar metric, but flag that it did not follow the target "

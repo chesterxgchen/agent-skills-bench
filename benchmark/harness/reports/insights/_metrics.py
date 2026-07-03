@@ -26,6 +26,7 @@ from ...quality_signals import (
     canonical_metric_name,
     is_numeric_metric_value,
     is_plausible_metric_value,
+    metric_names_match,
     metric_value_label as payload_metric_value_label,
     metric_value_entries,
     reported_metric_payload,
@@ -235,7 +236,9 @@ def run_quality_issues(run: RunEvidence, ev: Any = None) -> list[str]:
                 issues.append(f"Failed check `primary_metric_reporting`: {evidence}")
     metric = run.validation_metric if isinstance(run.validation_metric, dict) else {}
     metric_name = canonical_metric_name(metric.get("name") or expected)
-    if expected and metric_value(run, metric_name, ev) is None:
+    if expected and metric_value(run, metric_name, ev) is None and reported_expected_metric_value(run, ev) is None:
+        # A final-response value reported under the expected metric's own name earns
+        # partial credit (benchmark_outcome "partial: ...") instead of a fatal issue.
         issues.append(
             f"Failed check `fl_metric_scalar`: no {_scalar_term(ev)} value was found for expected metric `{expected}`."
         )
@@ -441,6 +444,37 @@ def metric_display(run: RunEvidence, metric_name: str | None, ev: Any = None) ->
     return f"{display_name} {fmt_number(value)}"
 
 
+def reported_expected_metric_value(run: RunEvidence, ev: Any = None) -> tuple[str, Any] | None:
+    """Partial credit: the final response reported a value under the expected
+    metric's own name, but no single summary scalar was selected (e.g. several
+    plausible metrics were listed together). Returns ``(name, value)`` or None."""
+
+    record = run.record if isinstance(run.record, dict) else {}
+    expected = canonical_metric_name(quality_signal(record).get("expected_primary_metric"))
+    if not expected:
+        return None
+    metric = run.validation_metric if isinstance(run.validation_metric, dict) else {}
+    if not metric_names_match(metric.get("name"), expected):
+        return None
+    if metric_value(run, expected, ev) is not None:
+        return None
+    values = metric.get("reported_values")
+    labels = metric.get("reported_value_labels")
+    if not isinstance(values, list):
+        values = metric.get("site_values")
+        labels = metric.get("site_value_labels")
+    if not isinstance(values, list):
+        return None
+    for index, value in enumerate(values):
+        if not is_numeric_metric_value(value):
+            continue
+        label = labels[index] if isinstance(labels, list) and index < len(labels) else None
+        words = [word for word in re.split(r"[^A-Za-z0-9]+", str(label or "")) if word]
+        if any(metric_names_match(word, expected) for word in words):
+            return expected, value
+    return None
+
+
 def metric_reported_value_count(metric: dict[str, Any] | None) -> int:
     if not isinstance(metric, dict):
         return 0
@@ -597,6 +631,13 @@ def benchmark_outcome(run: RunEvidence, ev: Any = None) -> str:
         if metric_mismatch_with_reported_scalar(run, ev):
             return "warn: scalar metric reported, but it does not match the target metric instruction"
         return "fail: " + issues[0]
+    partial = reported_expected_metric_value(run, ev)
+    if partial:
+        name, value = partial
+        return (
+            f"partial: expected metric {name} {fmt_number(value)} reported in the final response, "
+            f"but no {_scalar_term(ev)} was selected"
+        )
     # The "good result" wording is SDK vocabulary (Inversion 2): the active plugin's
     # MetricAssessment.gate_phrase, with a neutral fallback for a flat/absent SDK.
     metric_assessment = getattr(ev, "metric", None)

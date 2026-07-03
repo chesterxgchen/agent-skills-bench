@@ -1,0 +1,91 @@
+# NVFLARE conversion-quality evaluation rules.
+#
+# Standard evaluation input consumed by ``benchmark.harness.evaluation`` — the
+# SDK-neutral scorer that maps detected evidence signals to verdicts. The
+# reporting engine loads this same file, so evaluation and scoring can be run
+# outside the engine (``python -m benchmark.harness.evaluation --sdk nvflare
+# --profile <profile.json>``) against the identical rules.
+#
+# Per signal: ordered rules, first match wins. Matchers (all against the
+# lower-cased evidence string):
+#   contains:       substring match
+#   contains_any:   any of the listed substrings
+#   trend:          direction of the numeric series embedded in the evidence
+#                   (improving | not_improving | single_value)
+#   when_context:   extra gate — every key must equal the caller's context value
+# Empty / "not captured" evidence is always "unknown"; when no rule matches,
+# ``default_verdict`` applies.
+schema_version: 1
+sdk: nvflare
+default_verdict: caution
+# Each signal is one evaluation criterion. ``label`` is the report row title —
+# the Generated Code Quality table lists every criterion in this file, so a
+# criterion with no captured evidence still appears (as "unknown: not captured").
+signals:
+  training_control:
+    label: "Conversion: client training/control path"
+    rules:
+      - contains: "lightning client api patch"
+        verdict: good
+      - contains: "manual client api loop"
+        when_context: {target_framework: lightning}
+        verdict: caution
+      - contains: "manual client api loop"
+        verdict: good
+  partitioning:
+    label: "Conversion: site data partitioning"
+    rules:
+      - contains_any: ["seeded shuffled", "stratified seeded"]
+        verdict: good
+      - contains: "deterministic stride"
+        verdict: bad
+      - contains: "site partition"
+        verdict: caution
+  class_weighting:
+    label: "Conversion: loss weighting (`pos_weight`)"
+    rules:
+      - contains_any: ["per-site", "computed from loaded training data"]
+        verdict: good
+      - contains: "fixed/global"
+        verdict: bad
+  metric_reporting:
+    label: "Conversion: metric implementation/reporting"
+    rules:
+      - contains_any: ["auroc", "torchmetrics"]
+        verdict: good
+      - contains: "metric dict"
+        verdict: caution
+  data_packaging:
+    label: "Conversion: data packaging/path"
+    rules:
+      - contains_any: ["configurable data_root argument", "original data path"]
+        verdict: good
+      - contains_any: ["ephemeral", "hardcoded absolute data path"]
+        verdict: bad
+      - contains: "data directory argument"
+        verdict: caution
+  execution_model:
+    label: "Conversion: client execution/model exchange"
+    rules:
+      - contains_any: ["external client process", "in-process client api executor"]
+        verdict: good
+  metric_progression:
+    label: "Conversion: round metric progression"
+    rules:
+      - contains: "flat"
+        verdict: bad
+      - trend: improving
+        verdict: good
+      - trend: not_improving
+        verdict: bad
+      - trend: single_value
+        verdict: caution
+scoring:
+  points:
+    good: 1.0
+    caution: 0.5
+    poor: 0.0
+    bad: 0.0
+  overall_thresholds:
+    good: 0.8
+    caution: 0.5
