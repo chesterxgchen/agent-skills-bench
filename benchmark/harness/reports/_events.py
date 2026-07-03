@@ -470,6 +470,7 @@ _MODULE_VALUE_LONG_OPTIONS: dict[str, frozenset[str]] = {
     ),
     "benchmark.harness.host.build": frozenset(
         {
+            "--agent",
             "--agent-profile",
             "--node-image",
             "--sdk-profile",

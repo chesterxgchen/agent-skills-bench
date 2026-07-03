@@ -7860,6 +7860,15 @@ def test_repo_host_module_key_consumes_value_options_and_keys_on_job_target():
         command_recovery_key("python3 -m benchmark.harness.host.build --uv-image img:latest --no-cache")
         == "python -m benchmark.harness.host.build"
     )
+    # build accepts `--agent` as a value-taking alias for `--agent-profile`;
+    # the bare, inline `=`, and canonical spellings must share one key rather
+    # than leaking the agent name into a positional slot.
+    assert (
+        command_recovery_key("python3 -m benchmark.harness.host.build --agent codex")
+        == command_recovery_key("python3 -m benchmark.harness.host.build --agent=codex")
+        == command_recovery_key("python3 -m benchmark.harness.host.build --agent-profile codex")
+        == "python -m benchmark.harness.host.build"
+    )
 
 
 def test_attached_module_form_keys_on_module_and_reads_as_job_run():
