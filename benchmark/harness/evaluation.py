@@ -56,15 +56,20 @@ EVALUATION_RULES_SCHEMA_VERSION = 1
 _NUMBER_RE = re.compile(r"\b([0-9]+\.[0-9]+)\b")
 
 
-def evaluation_rules_resource(sdk: str):
-    """Packaged rules document (package data works in wheels/sdists, not just checkouts)."""
-    return resources.files(EVALUATION_RULES_PACKAGE) / "config" / "evaluation" / f"{sdk}.yaml"
+def evaluation_sdk_dir(sdk: str):
+    """Packaged per-SDK rules directory (package data works in wheels/sdists)."""
+    return resources.files(EVALUATION_RULES_PACKAGE) / "config" / "evaluation" / sdk
 
 
-def _parse_rules(text: str, source: str) -> Mapping[str, Any]:
+def _parse_document(text: str, source: str) -> dict[str, Any]:
     document = yaml.safe_load(text) or {}
     if not isinstance(document, dict):
         raise ValueError(f"evaluation rules must be a mapping: {source}")
+    return document
+
+
+def _parse_manifest(text: str, source: str) -> dict[str, Any]:
+    document = _parse_document(text, source)
     version = document.get("schema_version")
     if version != EVALUATION_RULES_SCHEMA_VERSION:
         raise ValueError(
@@ -74,16 +79,102 @@ def _parse_rules(text: str, source: str) -> Mapping[str, Any]:
     return document
 
 
-@lru_cache(maxsize=8)
-def _load_rules_cached(sdk: str, path_text: str | None) -> Mapping[str, Any]:
+def _merge_document(composed: dict[str, Any], document: Mapping[str, Any]) -> None:
+    """Later documents win. Signals replace whole entries (label + rules), so each
+    document in the composition chain stays independently readable."""
+
+    signals = document.get("signals")
+    if isinstance(signals, Mapping):
+        composed.setdefault("signals", {}).update(signals)
+    if document.get("default_verdict"):
+        composed["default_verdict"] = document["default_verdict"]
+    scoring = document.get("scoring")
+    if isinstance(scoring, Mapping):
+        composed.setdefault("scoring", {}).update(scoring)
+
+
+@lru_cache(maxsize=64)
+def _load_rules_cached(
+    sdk: str, task: str | None, selector_items: tuple[tuple[str, str], ...], path_text: str | None
+) -> Mapping[str, Any]:
     if path_text is not None:
-        return _parse_rules(Path(path_text).read_text(encoding="utf-8"), path_text)
-    resource = evaluation_rules_resource(sdk)
-    return _parse_rules(resource.read_text(encoding="utf-8"), str(resource))
+        # Explicit rules file: a single self-contained document (no composition).
+        return _parse_manifest(Path(path_text).read_text(encoding="utf-8"), path_text)
+    sdk_dir = evaluation_sdk_dir(sdk)
+    manifest_resource = sdk_dir / "index.yaml"
+    manifest = _parse_manifest(manifest_resource.read_text(encoding="utf-8"), str(manifest_resource))
+    tasks = manifest.get("tasks") if isinstance(manifest.get("tasks"), Mapping) else {}
+    task_name = task or str(manifest.get("default_task") or "")
+    task_entry = tasks.get(task_name)
+    if not isinstance(task_entry, Mapping):
+        known = sorted(str(name) for name in tasks)
+        raise ValueError(f"unknown evaluation task {task_name!r} for sdk {sdk!r}; known tasks: {known}")
+    composed: dict[str, Any] = {
+        "schema_version": manifest.get("schema_version"),
+        "sdk": manifest.get("sdk") or sdk,
+        "task": task_name,
+        "signals": {},
+        "scoring": {},
+    }
+    _merge_document(composed, manifest)
+    common_ref = task_entry.get("common")
+    if common_ref:
+        common_resource = sdk_dir / str(common_ref)
+        _merge_document(composed, _parse_document(common_resource.read_text(encoding="utf-8"), str(common_resource)))
+    # Overlay dimensions are task-defined (framework, algorithm, deployment, ...):
+    # applied in manifest declaration order; a selector for an unregistered
+    # dimension or value simply applies no overlay.
+    selectors = dict(selector_items)
+    overlays = task_entry.get("overlays") if isinstance(task_entry.get("overlays"), Mapping) else {}
+    applied: dict[str, str] = {}
+    for dimension, values in overlays.items():
+        if not isinstance(values, Mapping):
+            continue
+        selected = selectors.get(str(dimension))
+        if not selected or selected not in values:
+            continue
+        overlay_resource = sdk_dir / str(values[selected])
+        _merge_document(
+            composed, _parse_document(overlay_resource.read_text(encoding="utf-8"), str(overlay_resource))
+        )
+        applied[str(dimension)] = selected
+    if applied:
+        composed["selectors"] = applied
+    return composed
 
 
-def load_evaluation_rules(sdk: str, path: str | Path | None = None) -> Mapping[str, Any]:
-    return _load_rules_cached(sdk, str(Path(path)) if path else None)
+def load_evaluation_rules(
+    sdk: str,
+    path: str | Path | None = None,
+    *,
+    task: str | None = None,
+    selectors: Mapping[str, str] | None = None,
+    framework: str | None = None,
+) -> Mapping[str, Any]:
+    """Composed rules for (sdk, task, selectors).
+
+    Composition: manifest defaults -> the task group's common document -> one
+    overlay per task-declared dimension whose selector carries a registered
+    value (in manifest declaration order). ``task`` falls back to the
+    manifest's ``default_task``; a selector with no registered overlay simply
+    applies nothing. ``framework=`` is sugar for ``selectors={"framework":
+    ...}``. ``path`` bypasses composition and loads one self-contained rules
+    document.
+    """
+
+    combined = dict(selectors or {})
+    if framework:
+        combined.setdefault("framework", framework)
+    selector_items = tuple(sorted((str(key), str(value)) for key, value in combined.items() if value))
+    return _load_rules_cached(sdk, task, selector_items, str(Path(path)) if path else None)
+
+
+def available_tasks(sdk: str) -> list[str]:
+    sdk_dir = evaluation_sdk_dir(sdk)
+    manifest_resource = sdk_dir / "index.yaml"
+    manifest = _parse_manifest(manifest_resource.read_text(encoding="utf-8"), str(manifest_resource))
+    tasks = manifest.get("tasks") if isinstance(manifest.get("tasks"), Mapping) else {}
+    return sorted(str(name) for name in tasks)
 
 
 def _evidence_numbers(evidence: str) -> list[float]:
@@ -165,16 +256,33 @@ def overall_thresholds(rules: Mapping[str, Any]) -> dict[str, float]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Score a signals profile against an SDK's evaluation rules.")
-    parser.add_argument("--sdk", required=True, help="SDK id, resolves benchmark/config/evaluation/<sdk>.yaml")
-    parser.add_argument("--rules", help="Explicit rules file path (overrides --sdk resolution)")
+    parser.add_argument("--sdk", required=True, help="SDK id, resolves benchmark/config/evaluation/<sdk>/index.yaml")
+    parser.add_argument("--task", help="Task group (default: the manifest's default_task)")
+    parser.add_argument(
+        "--select",
+        action="append",
+        default=[],
+        metavar="DIM=VALUE",
+        help="Overlay selector, repeatable (e.g. --select framework=pytorch --select algorithm=fedavg)",
+    )
+    parser.add_argument("--rules", help="Explicit self-contained rules file path (overrides composition)")
     parser.add_argument("--profile", required=True, help="JSON file of {signal: evidence string}")
     parser.add_argument("--context", help="JSON object of context values (e.g. {\"target_framework\": \"lightning\"})")
     args = parser.parse_args(argv)
-    rules = load_evaluation_rules(args.sdk, args.rules)
+    selectors = {}
+    for item in args.select:
+        dimension, _, value = str(item).partition("=")
+        if not dimension or not value:
+            raise SystemExit(f"--select expects DIM=VALUE, got {item!r}")
+        selectors[dimension] = value
+    rules = load_evaluation_rules(args.sdk, args.rules, task=args.task, selectors=selectors)
     profile = json.loads(Path(args.profile).read_text(encoding="utf-8"))
     context = json.loads(args.context) if args.context else {}
     verdicts = score_profile(rules, profile, context)
-    print(json.dumps({"sdk": args.sdk, "verdicts": verdicts}, indent=2, sort_keys=True))
+    result = {"sdk": args.sdk, "task": rules.get("task"), "verdicts": verdicts}
+    if rules.get("selectors"):
+        result["selectors"] = rules["selectors"]
+    print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 

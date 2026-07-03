@@ -1,0 +1,49 @@
+# NVFLARE evaluation manifest.
+#
+# Evaluation rules are composed from small documents instead of one flat file,
+# so the structure scales across independent axes:
+#   SDK        — one directory per SDK under config/evaluation/
+#   task group — conversion, federated-statistics, ... (each its own subtree;
+#                a task group does not have to be framework-based at all)
+#   overlay dimensions — each task declares its OWN dimensions under
+#                `overlays:` (this SDK uses `framework`; another SDK/task can
+#                declare algorithm, deployment, data-modality, ... — any
+#                number, any names).
+#
+# Composition order (later documents win, whole-signal replacement):
+#   1. this manifest's `scoring` / `default_verdict` defaults
+#   2. the task group's `common` document
+#   3. one overlay per declared dimension, in declaration order, when the
+#      caller's selectors carry a registered value — an overlay REPLACES each
+#      signal it names in full (label + rules), so each document stays
+#      independently readable.
+#
+# Adding a framework/dimension value = one file + one line here. Adding a
+# dimension or task group = a subtree. Nothing else changes: the scorer, the
+# CLI, and the report engine all resolve through this manifest.
+schema_version: 1
+sdk: nvflare
+default_task: conversion
+default_verdict: caution
+scoring:
+  points:
+    good: 1.0
+    caution: 0.5
+    poor: 0.0
+    bad: 0.0
+  overall_thresholds:
+    good: 0.8
+    caution: 0.5
+tasks:
+  conversion:
+    common: tasks/conversion/common.yaml
+    overlays:
+      framework:
+        pytorch: tasks/conversion/pytorch.yaml
+        lightning: tasks/conversion/lightning.yaml
+        # xgboost: tasks/conversion/xgboost.yaml
+        # tensorflow: tasks/conversion/tensorflow.yaml
+        # huggingface: tasks/conversion/huggingface.yaml
+        # jax: tasks/conversion/jax.yaml
+  federated-statistics:
+    common: tasks/federated-statistics/common.yaml

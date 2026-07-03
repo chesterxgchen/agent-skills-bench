@@ -1701,11 +1701,13 @@ def _target_framework(run: dict[str, Any] | None) -> str:
 
 
 def conversion_quality_score(signal: str, value: str, run: dict[str, Any] | None = None) -> str:
-    # The verdict rules are standard evaluation input (benchmark/config/evaluation/nvflare.yaml)
-    # applied through the SDK-neutral scorer, so external tools can score the same
-    # signal profile outside the reporting engine and get identical verdicts.
-    rules = load_evaluation_rules("nvflare")
-    return score_signal(rules, signal, value, {"target_framework": _target_framework(run)})
+    # The verdict rules are standard evaluation input (benchmark/config/evaluation/nvflare/,
+    # composed as manifest -> task common -> framework overlay) applied through the
+    # SDK-neutral scorer, so external tools can score the same signal profile
+    # outside the reporting engine and get identical verdicts.
+    framework = _target_framework(run)
+    rules = load_evaluation_rules("nvflare", task="conversion", framework=framework or None)
+    return score_signal(rules, signal, value, {"target_framework": framework})
 
 
 def _background_task_interruption_cause(run: dict[str, Any]) -> str:

@@ -7777,3 +7777,44 @@ def test_rca_resynthesize_auto_topic_scans_saved_trails(tmp_path):
     assert report_path is not None
     assert report_path.name == "rca_report_slowdown.md"
     assert "Repeated simulator runs." in report_path.read_text(encoding="utf-8")
+
+
+def test_evaluation_rules_compose_task_and_overlay_dimensions():
+    from benchmark.harness.evaluation import available_tasks, load_evaluation_rules, score_signal
+
+    assert available_tasks("nvflare") == ["conversion", "federated-statistics"]
+
+    # Default task composition: manifest scoring + conversion common criteria.
+    base = load_evaluation_rules("nvflare")
+    assert base["task"] == "conversion"
+    assert "data_packaging" in base["signals"]
+    assert base["scoring"]["points"]["good"] == 1.0
+
+    # Framework overlay replaces the whole signal it names.
+    pytorch = load_evaluation_rules("nvflare", task="conversion", framework="pytorch")
+    assert pytorch["selectors"] == {"framework": "pytorch"}
+    assert score_signal(pytorch, "training_control", "Lightning Client API patch") == "caution"
+    assert score_signal(pytorch, "training_control", "manual Client API loop") == "good"
+    lightning = load_evaluation_rules("nvflare", task="conversion", framework="lightning")
+    assert score_signal(lightning, "training_control", "manual Client API loop") == "caution"
+    assert score_signal(lightning, "training_control", "Lightning Client API patch") == "good"
+    # Signals the overlay does not name still come from the task common document.
+    assert score_signal(pytorch, "partitioning", "stratified seeded site partition") == "good"
+
+    # An unregistered selector value applies no overlay.
+    unknown = load_evaluation_rules("nvflare", task="conversion", selectors={"framework": "jax"})
+    assert "selectors" not in unknown
+    assert score_signal(unknown, "training_control", "manual Client API loop") == "good"
+
+    # A task group without frameworks (federated statistics) composes fine.
+    stats = load_evaluation_rules("nvflare", task="federated-statistics")
+    assert "statistics_config" in stats["signals"]
+    assert "data_packaging" not in stats["signals"]
+    assert score_signal(stats, "privacy_thresholds", "min_count threshold configured") == "good"
+
+    try:
+        load_evaluation_rules("nvflare", task="no-such-task")
+    except ValueError as exc:
+        assert "known tasks" in str(exc)
+    else:
+        raise AssertionError("unknown task must raise")

@@ -1,0 +1,26 @@
+# NVFLARE federated-statistics task — evaluation criteria.
+#
+# A task group with no framework axis: statistics jobs are judged on the
+# statistics workflow itself. Starter criteria — extend as detectors for this
+# task land; a criterion listed here appears in the report even before its
+# detector exists (as "unknown: not captured").
+signals:
+  statistics_config:
+    label: "Statistics: configured measures/targets"
+    rules:
+      - contains_any: ["histogram", "mean", "stddev", "quantile", "count"]
+        verdict: good
+  privacy_thresholds:
+    label: "Statistics: privacy/min-count thresholds"
+    rules:
+      - contains_any: ["min_count", "min count threshold", "noise level"]
+        verdict: good
+      - contains: "no privacy threshold"
+        verdict: bad
+  statistics_outputs:
+    label: "Statistics: aggregated output artifacts"
+    rules:
+      - contains_any: ["statistics.json", "aggregated statistics artifact"]
+        verdict: good
+      - contains: "per-site outputs only"
+        verdict: caution

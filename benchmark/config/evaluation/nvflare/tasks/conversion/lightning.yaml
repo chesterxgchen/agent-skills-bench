@@ -1,0 +1,14 @@
+# NVFLARE conversion — PyTorch Lightning framework overlay.
+#
+# Replaces whole signals from tasks/conversion/common.yaml when the run's
+# target framework is lightning. The Lightning `flare.patch(trainer)` path is
+# the reference implementation; falling back to a manual Client API loop loses
+# the Lightning callbacks/logging integration, so it is a caution.
+signals:
+  training_control:
+    label: "Conversion: client training/control path"
+    rules:
+      - contains: "lightning client api patch"
+        verdict: good
+      - contains: "manual client api loop"
+        verdict: caution

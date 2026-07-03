@@ -1,0 +1,14 @@
+# NVFLARE conversion — plain-PyTorch framework overlay.
+#
+# Replaces whole signals from tasks/conversion/common.yaml when the run's
+# target framework is pytorch. For a plain-torch target the manual Client API
+# loop is the reference implementation, so it scores good without a context
+# gate.
+signals:
+  training_control:
+    label: "Conversion: client training/control path"
+    rules:
+      - contains: "manual client api loop"
+        verdict: good
+      - contains: "lightning client api patch"
+        verdict: caution
