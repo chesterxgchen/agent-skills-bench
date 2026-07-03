@@ -32,6 +32,10 @@ model_config:
   key: model
 agent_home_env: CODEX_HOME
 container_home: /workspace/.codex
+# Codex writes session rollouts (turn_context.payload.model) under this dir
+# relative to the agent home; the container recovers the run model from them
+# when no model was configured (model_source=agent_session).
+session_evidence_dir: sessions
 legacy_artifact_prefixes:
   - codex
 

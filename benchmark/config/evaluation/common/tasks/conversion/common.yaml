@@ -7,6 +7,7 @@
 # (`shared:tasks/conversion/common.yaml`), then layer SDK-specific criteria
 # and framework overlays on top; an SDK document can override any signal here
 # by redefining it (whole-signal replacement).
+schema_version: 1
 signals:
   partitioning:
     label: "Conversion: site data partitioning"

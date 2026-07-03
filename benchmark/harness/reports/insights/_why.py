@@ -36,7 +36,7 @@ from .._events import (
     run_activity,
 )
 from .._runs import run_workspace_delta
-from .._text import _command_count_display, fmt_number, markdown_cell
+from .._text import _command_count_display, fmt_number, markdown_cell, sanitize_agent_markdown
 from ..evidence import RunEvidence
 from ._code_quality import _code_quality_assessment_map
 from ._plugin_view import (
@@ -1010,8 +1010,10 @@ def _root_cause_lead(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportCo
     base_job_spans = list((_run_evidence(ctx, base_run).job_execution or JobExecutionSignal()).successful_job_spans)
     if len(with_job_spans) > 1:
         with_job_seconds = _span_total_seconds(with_job_spans) or 0.0
-        longest = max((as_number(span.get("duration_seconds")) or 0.0) for span in with_job_spans)
-        rerun_seconds = max(0.0, with_job_seconds - longest)
+        # "Reruns beyond the first": attribute everything after the first
+        # execution in timeline order, matching the sentence rendered below.
+        first_run_seconds = as_number(with_job_spans[0].get("duration_seconds")) or 0.0
+        rerun_seconds = max(0.0, with_job_seconds - first_run_seconds)
         if rerun_seconds >= 30:
             atom = _execution_atom(ctx) or "job"
             causes.append(
@@ -1056,15 +1058,22 @@ def _root_cause_lead(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportCo
 
 
 def _agent_rca_section(run: RunEvidence, fallback_label: str) -> list[str]:
-    """Render an agent-driven RCA report (benchmark.harness.rca) for a run, if one was captured."""
+    """Render an agent-driven RCA report (benchmark.harness.rca) for a run, if one exists.
 
-    report = run.rca_report.strip()
+    The report is an AGENT-AUTHORED post-run analysis, not captured Stage-3
+    evidence — it is read from ``run.raw`` (the dict-bundle bridge), labeled as
+    unverified, and sanitized before verbatim embedding (Contract B keeps the
+    typed ``RunEvidence`` fields captured-only)."""
+
+    raw = run.raw if isinstance(run.raw, dict) else {}
+    report = str(raw.get("rca_report") or "").strip()
     if not report:
         return []
     return [
-        f"**Agent root-cause investigation ({run.label or fallback_label})**",
+        f"**Agent root-cause investigation ({run.label or fallback_label})** — agent-authored analysis "
+        "(unverified); check the quoted evidence and `rca/investigation_*.jsonl` trail before acting on it.",
         "",
-        report,
+        sanitize_agent_markdown(report),
         "",
     ]
 
@@ -1118,20 +1127,21 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
             lines.extend([*root_causes, ""])
     if quality_explanation:
         lines.extend([*quality_explanation, ""])
+    # The deterministic evidence chain always renders; the agent-authored RCA
+    # (when present) is additional labeled interpretation, never a replacement
+    # for evidence-derived analysis.
+    root_cause_chain = _failure_root_cause_chain(with_run, base_run)
+    if root_cause_chain:
+        lines.extend([*root_cause_chain, ""])
     rca_lines = _agent_rca_section(with_run, "With skills")
     if rca_lines:
-        # An agent-driven RCA investigation ran (benchmark.harness.rca): its
-        # report is authoritative over the deterministic seed chain.
         lines.extend(rca_lines)
-    else:
-        root_cause_chain = _failure_root_cause_chain(with_run, base_run)
-        if root_cause_chain:
-            lines.extend([*root_cause_chain, ""])
-            lines.append(
-                "_Run `python -m benchmark.harness.rca <result_root>` to have an agent investigate this "
-                "failure iteratively and embed its root-cause report here._"
-            )
-            lines.append("")
+    elif root_cause_chain:
+        lines.append(
+            "_Run `python -m benchmark.harness.rca <result_root>` to have an agent investigate this "
+            "failure iteratively and embed its root-cause report here._"
+        )
+        lines.append("")
     slowdown_table = _slowdown_reason_table(
         with_run,
         base_run,

@@ -1271,6 +1271,17 @@ def write_configured_failure(
     )
 
 
+def _agent_sessions_dir(config: AgentRunConfig) -> Path | None:
+    """The agent-declared session-rollout dir (agent config ``session_evidence_dir``).
+
+    Per-agent layout knowledge lives in the agent config, not in this generic
+    runner; agents without session evidence resolve to None.
+    """
+
+    session_dir = getattr(load_agent_adapter(config.agent), "session_evidence_dir", None)
+    return config.agent_home / session_dir if session_dir else None
+
+
 def resolve_model_from_session_evidence(
     config: AgentRunConfig,
     previous_snapshot: dict[str, tuple[int, int]] | None = None,
@@ -1283,11 +1294,12 @@ def resolve_model_from_session_evidence(
     auditable from captured artifacts alone.
     """
 
+    sessions_dir = _agent_sessions_dir(config)
     configured = str(config.agent_model or "").strip()
-    if config.agent != "codex" or (configured and configured != UNSPECIFIED_AGENT_MODEL):
+    if sessions_dir is None or (configured and configured != UNSPECIFIED_AGENT_MODEL):
         return config
     evidence, evidence_path = observed_agent_session_evidence_from_files(
-        config.agent_home / "sessions",
+        sessions_dir,
         previous_snapshot=previous_snapshot,
     )
     model = str(evidence.get("model") or "").strip()
@@ -1364,9 +1376,10 @@ def run_agent_benchmark() -> int:
 
         phase = "agent_exec"
         progress = ProgressWriter(config.mode, script_start, config.progress_log_path)
+        sessions_dir = _agent_sessions_dir(config)
         session_snapshot = (
-            agent_session_file_snapshot(config.agent_home / "sessions")
-            if config.agent == "codex" and config.agent_model == UNSPECIFIED_AGENT_MODEL
+            agent_session_file_snapshot(sessions_dir)
+            if sessions_dir is not None and config.agent_model == UNSPECIFIED_AGENT_MODEL
             else None
         )
         agent_start, agent_end, agent_exit = run_agent(config, progress, skill_exposure, agent_launch)

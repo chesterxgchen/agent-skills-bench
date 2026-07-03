@@ -4,6 +4,7 @@
 # target framework is lightning. The Lightning `flare.patch(trainer)` path is
 # the reference implementation; falling back to a manual Client API loop loses
 # the Lightning callbacks/logging integration, so it is a caution.
+schema_version: 1
 signals:
   training_control:
     label: "Conversion: client training/control path"

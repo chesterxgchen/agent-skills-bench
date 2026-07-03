@@ -4,6 +4,7 @@
 # statistics workflow itself. Starter criteria — extend as detectors for this
 # task land; a criterion listed here appears in the report even before its
 # detector exists (as "unknown: not captured").
+schema_version: 1
 signals:
   statistics_config:
     label: "Statistics: configured measures/targets"

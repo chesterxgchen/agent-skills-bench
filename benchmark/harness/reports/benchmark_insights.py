@@ -339,7 +339,11 @@ def _prompt_fence(text: str) -> list[str]:
     body = text.strip()
     if len(body) > _MAX_PROMPT_DISPLAY_CHARS:
         body = body[:_MAX_PROMPT_DISPLAY_CHARS].rstrip() + "\n… (truncated for display)"
-    return ["````text", body, "````"]
+    # A prompt containing backtick runs must not close the fence early: the
+    # fence is always one backtick longer than the longest run in the body.
+    longest_backtick_run = max((len(match) for match in re.findall(r"`+", body)), default=0)
+    fence = "`" * max(4, longest_backtick_run + 1)
+    return [f"{fence}text", body, fence]
 
 
 def _benchmark_input_section(runs: dict[str, RunEvidence], modes: list[str]) -> list[str]:

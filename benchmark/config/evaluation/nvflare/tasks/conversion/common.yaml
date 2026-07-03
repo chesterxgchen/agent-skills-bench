@@ -11,15 +11,17 @@
 # contains_any, trend (numeric series direction), when_context (caller
 # context gate). Empty / "not captured" evidence is always "unknown";
 # unmatched evidence gets the manifest's default_verdict.
+schema_version: 1
 signals:
+  # Framework-specific training_control judgments live ONLY in the framework
+  # overlays (pytorch.yaml, lightning.yaml) — one mechanism, not two. These
+  # rules apply when no framework was detected: both known-good implementation
+  # shapes are acceptable.
   training_control:
     label: "Conversion: client training/control path"
     rules:
       - contains: "lightning client api patch"
         verdict: good
-      - contains: "manual client api loop"
-        when_context: {target_framework: lightning}
-        verdict: caution
       - contains: "manual client api loop"
         verdict: good
   execution_model:

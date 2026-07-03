@@ -48,17 +48,31 @@ def first_non_empty(*values: Any) -> Any:
     return None
 
 
+# Agent-authored RCA reports are post-run interpretation, not Stage-3 capture:
+# they ride in the loader bundle (reached via RunEvidence.raw), never as a
+# typed Contract B field. Own display cap, unrelated to the prompt cap.
+MAX_RCA_REPORT_TEXT_BYTES = 200_000
+
+
 def _combined_rca_reports(mode_dir: Path) -> str:
     """All agent RCA reports for a run (one per investigated topic), joined."""
 
     rca_dir = mode_dir / "rca"
     if not rca_dir.is_dir():
         return ""
-    reports = [
-        read_text(path, max_bytes=MAX_PROMPT_TEXT_BYTES).strip()
-        for path in sorted(rca_dir.glob("rca_report*.md"))
-    ]
-    return "\n\n".join(report for report in reports if report)
+    reports = []
+    for path in sorted(rca_dir.glob("rca_report*.md")):
+        report = read_text(path, max_bytes=MAX_RCA_REPORT_TEXT_BYTES).strip()
+        if not report:
+            continue
+        try:
+            truncated = path.stat().st_size > MAX_RCA_REPORT_TEXT_BYTES
+        except OSError:
+            truncated = False
+        if truncated:
+            report += "\n\n_… RCA report truncated for display._"
+        reports.append(report)
+    return "\n\n".join(reports)
 
 
 def mode_dir_for_benchmark(root: Path, mode: str) -> Path:

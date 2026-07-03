@@ -70,9 +70,6 @@ class RunEvidence:
     # prompt_metadata.json) — generic across SDKs.
     prompt_text: str
     prompt_metadata: Mapping[str, Any]
-    # Agent-authored root-cause analysis, when an RCA investigation ran
-    # (benchmark.harness.rca writes rca/rca_report.md into the mode dir).
-    rca_report: str
     # Structured captured-text artifacts (§5): the agent/console text Stage 3 wrote.
     agent_last_message: str
     agent_stderr: str
@@ -117,7 +114,6 @@ def _run_evidence_from_bundle(bundle: Mapping[str, Any]) -> RunEvidence:
         validation_metric=bundle.get("validation_metric"),
         prompt_text=str(bundle.get("prompt_text") or ""),
         prompt_metadata=bundle.get("prompt_metadata") or {},
-        rca_report=str(bundle.get("rca_report") or ""),
         agent_last_message=str(bundle.get("agent_last_message") or ""),
         agent_stderr=str(bundle.get("agent_stderr") or ""),
         agent_events_text=str(bundle.get("agent_events_text") or ""),

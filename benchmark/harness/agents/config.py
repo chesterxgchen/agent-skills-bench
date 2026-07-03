@@ -133,6 +133,9 @@ class AgentConfig:
     exit_config: dict[str, Any]
     exit_classifier: str
     availability_probe: list[str] = field(default_factory=list)
+    # Relative dir under the agent home holding agent-written session rollouts
+    # that name the run model (e.g. codex `sessions`); None = no such evidence.
+    session_evidence_dir: str | None = None
 
     @classmethod
     def load(cls, config_path: Path) -> "AgentConfig":
@@ -246,6 +249,7 @@ class AgentConfig:
             exit_config=exit_config,
             exit_classifier=exit_classifier,
             availability_probe=[str(item) for item in data.get("availability_probe") or []],
+            session_evidence_dir=(str(data["session_evidence_dir"]) if data.get("session_evidence_dir") else None),
         )
 
 
@@ -344,6 +348,10 @@ class ConfigurableAgentAdapter(AgentAdapter):
     @property
     def container_home(self) -> str:
         return self._cfg.container_home
+
+    @property
+    def session_evidence_dir(self) -> str | None:
+        return self._cfg.session_evidence_dir
 
     def model_from_env(self, env: Mapping[str, str]) -> str:
         explicit_model = env.get("BENCHMARK_AGENT_MODEL") or (

@@ -61,6 +61,40 @@ def _soft_wrap_cell_line(text: str, width: int) -> str:
     return "<br>".join(lines)
 
 
+_HTML_TAG_OPEN_RE = re.compile(r"<(?=[A-Za-z/!])")
+_SHALLOW_HEADING_RE = re.compile(r"^#{1,2}(?=\s)")
+_INLINE_CODE_SPLIT_RE = re.compile(r"(`[^`]*`)")
+
+
+def sanitize_agent_markdown(text: str) -> str:
+    """Neutralize agent-authored markdown for verbatim embedding in a report.
+
+    Raw HTML openers are escaped (an injected ``<script>``/``<img onerror>``
+    must not survive into HTML-rendered reports) and h1/h2 headings are demoted
+    to h3 so the embedded block cannot restructure the host document. Inline
+    code spans and fenced blocks are left untouched — quoted commands keep
+    their ``<`` characters.
+    """
+
+    lines: list[str] = []
+    in_fence = False
+    for line in str(text or "").splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            lines.append(line)
+            continue
+        if in_fence:
+            lines.append(line)
+            continue
+        line = _SHALLOW_HEADING_RE.sub("###", line)
+        parts = _INLINE_CODE_SPLIT_RE.split(line)
+        lines.append(
+            "".join(part if part.startswith("`") else _HTML_TAG_OPEN_RE.sub("&lt;", part) for part in parts)
+        )
+    return "\n".join(lines)
+
+
 def markdown_cell(value: Any) -> str:
     text = "NA" if value is None or value == "" else str(value)
     text = text.replace("|", "\\|").replace("\n", "<br>")

@@ -349,3 +349,40 @@ derived `PluginEvidence` sidecars — no live SDK, no Docker — so `report`
 regeneration still works from `RESULT_ROOT` alone. A result root predating a
 capture rule renders the affected section as "evidence not captured" rather than
 failing.
+
+## 7. Post-Stage-3 additions (evaluation rules, agentic RCA)
+
+Two components sit OUTSIDE the Stage 1-3 capture pipeline and its contracts:
+
+**Evaluation rules (`benchmark/harness/evaluation.py` + `benchmark/config/evaluation/`).**
+A neutral leaf (stdlib + PyYAML only; never imports the engine or SDK plugins)
+that scores detected evidence signals against rules composed from a per-SDK
+tree: `config/evaluation/<sdk>/index.yaml` (manifest: tasks, overlay
+dimensions, scoring defaults) -> the task's `compose` documents (a `shared:`
+ref resolves from the SDK-agnostic `config/evaluation/common/` layer) -> one
+overlay per task-declared dimension (e.g. `framework`), with whole-signal
+replacement. Detection (evidence strings) stays in SDK detectors; judgment
+(verdict/points/thresholds) is data. The same rules power the report engine
+and the standalone CLI (`python -m benchmark.harness.evaluation`). Composed
+documents may declare `schema_version`; a mismatch is an error, never a
+silent fallthrough.
+
+**Agent-driven RCA (`benchmark/harness/rca.py`).** An OPTIONAL post-run tool:
+a deterministic seed names an observation (terminal failure signature,
+elapsed/token delta, or a custom question), then an investigator agent CLI
+(read-only tools, cwd = result root) answers iterative questions from the
+captured evidence until it declares a conclusion. The Q/A trail
+(`rca/investigation_<topic>.jsonl`) is written incrementally; the synthesized
+report lands in `rca/rca_report_<topic>.md`. These artifacts are
+AGENT-AUTHORED INTERPRETATION, not Stage-3 capture: the loader carries them in
+the raw bundle only (never as typed `RunEvidence` fields), and the Why section
+embeds them sanitized and labeled unverified, alongside — never instead of —
+the deterministic evidence chain. Prompts sent to the investigator delimit
+captured text as untrusted data (see `_UNTRUSTED_DATA_PREAMBLE`).
+
+**Contract B additions.** `RunEvidence` gained `prompt_text`/`prompt_metadata`
+— genuinely captured Stage-3 artifacts (`prompt.txt`, `prompt_metadata.json`)
+— consistent with the captured-only rule above. Per-agent session-evidence
+layout (codex model recovery from `sessions/` rollouts) is declared by the
+agent config (`session_evidence_dir` in `config/agents/<agent>.yaml`), not
+hardcoded in the generic container runner.

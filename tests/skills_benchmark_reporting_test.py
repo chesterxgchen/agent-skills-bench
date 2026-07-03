@@ -1221,7 +1221,6 @@ recipe = FedAvgRecipe(
 def test_evaluation_rules_score_profile_outside_reporting_engine(tmp_path):
     from benchmark.harness.evaluation import load_evaluation_rules, main, score_profile
 
-    rules = load_evaluation_rules("nvflare")
     profile = {
         "partitioning": "seeded shuffled site partition",
         "data_packaging": "hardcoded absolute data path in generated client code (`/data/x.csv`)",
@@ -1229,7 +1228,9 @@ def test_evaluation_rules_score_profile_outside_reporting_engine(tmp_path):
         "training_control": "manual Client API loop",
         "execution_model": "not captured",
     }
-    verdicts = score_profile(rules, profile, {"target_framework": "lightning"})
+    # Framework judgments come from the overlay dimension (one mechanism).
+    lightning_rules = load_evaluation_rules("nvflare", framework="lightning")
+    verdicts = score_profile(lightning_rules, profile)
     assert verdicts == {
         "partitioning": "good",
         "data_packaging": "bad",
@@ -1237,8 +1238,14 @@ def test_evaluation_rules_score_profile_outside_reporting_engine(tmp_path):
         "training_control": "caution",
         "execution_model": "unknown",
     }
-    # Same signals under a non-lightning target: the manual loop is acceptable.
-    assert score_profile(rules, profile, {"target_framework": "pytorch"})["training_control"] == "good"
+    # Same signals under a plain-pytorch target: the manual loop is the reference shape.
+    pytorch_rules = load_evaluation_rules("nvflare", framework="pytorch")
+    assert score_profile(pytorch_rules, profile)["training_control"] == "good"
+    # Direction-aware trend: a decreasing loss series is an improvement.
+    loss_profile = {"metric_progression": "loss 0.9000 -> 0.5000"}
+    assert score_profile(load_evaluation_rules("nvflare"), loss_profile)["metric_progression"] == "good"
+    rising_loss = {"metric_progression": "loss 0.5000 -> 0.9000"}
+    assert score_profile(load_evaluation_rules("nvflare"), rising_loss)["metric_progression"] == "bad"
 
     profile_path = tmp_path / "profile.json"
     profile_path.write_text(json.dumps(profile), encoding="utf-8")
@@ -7943,3 +7950,95 @@ def test_evaluation_rules_compose_task_and_overlay_dimensions():
         assert "known tasks" in str(exc)
     else:
         raise AssertionError("unknown task must raise")
+
+
+def test_agent_markdown_is_sanitized_and_prompt_fence_is_dynamic(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import benchmark_report, collect_benchmark_runs
+    from benchmark.harness.reports._text import sanitize_agent_markdown
+
+    sanitized = sanitize_agent_markdown(
+        "# Big heading\n<script>alert(1)</script>\nkeep `cmd <<'PY'` code spans\n```\n<pre>fenced</pre>\n```"
+    )
+    assert "### Big heading" in sanitized
+    assert "<script>" not in sanitized
+    assert "&lt;script>alert(1)&lt;/script>" in sanitized
+    assert "`cmd <<'PY'`" in sanitized
+    assert "<pre>fenced</pre>" in sanitized  # fenced blocks untouched
+
+    prompt = "convert this\n`````\n## Injected section\n<img src=x onerror=steal()>"
+    entries = []
+    for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
+        record_dir = tmp_path / "records" / f"mode={mode}"
+        record_dir.mkdir(parents=True)
+        entries.append(
+            {"run_id": f"run_{index:05d}", "mode": mode, "agent": "codex", "record_dir": str(record_dir.relative_to(tmp_path))}
+        )
+        write_json(record_dir / "run_summary.json", {"mode": mode})
+        write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+        write_json(record_dir / "benchmark_record.json", {"mode": mode})
+        (record_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
+    write_json(tmp_path / "run_plan.json", {"entries": entries})
+
+    insights = benchmark_report(tmp_path, collect_benchmark_runs(tmp_path))
+    fence_start = insights.index("## Benchmark Input")
+    section = insights[fence_start : insights.index("## Metrics", fence_start)]
+    # The fence must be longer than the 5-backtick run inside the prompt.
+    assert "``````text" in section
+    assert section.count("``````") == 2
+
+
+def test_terminal_failure_anchor_ignores_inspection_command_quotes():
+    from benchmark.harness.reports._events import (
+        event_timeline_from_text,
+        predicted_failure_message,
+        terminal_failure_anchor,
+    )
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"type": "command_execution", "command": cmd, "aggregated_output": output, "exit_code": exit_code},
+            }
+        )
+
+    def message(text):
+        return json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": text}})
+
+    # A cat of an OLD traceback must not become the failure anchor, and a cat of
+    # an OLD success log must not suppress the real terminal failure.
+    events = "\n".join(
+        [
+            command("python3 job.py", output="ModuleNotFoundError: No module named 'torch'", exit_code=1),
+            command("/bin/bash -lc \"cat /tmp/old_run/log.txt\"", output="Result can be found in /tmp/old", exit_code=0),
+            command("grep -n Error notes.txt", output="KeyError: 'accuracy'", exit_code=1),
+        ]
+    )
+    timeline = event_timeline_from_text(events)
+    anchored = terminal_failure_anchor(timeline)
+    assert anchored is not None
+    anchor_index, signature = anchored
+    assert "torch" in signature["display"]
+    assert timeline[anchor_index]["command"] == "python3 job.py"
+
+    # A remediation statement ("not installed, so I'll install it") is NOT a
+    # known-doomed-execution prediction.
+    remediation_events = "\n".join(
+        [
+            message("torch is not installed, so I'll install it first."),
+            command("python3 job.py", output="ModuleNotFoundError: No module named 'torch'", exit_code=1),
+        ]
+    )
+    assert predicted_failure_message(remediation_events) is None
+
+    prediction_events = "\n".join(
+        [
+            message("Since torch is absent I expect the simulation to fail at import."),
+            command("python3 job.py", output="ModuleNotFoundError: No module named 'torch'", exit_code=1),
+        ]
+    )
+    prediction = predicted_failure_message(prediction_events)
+    assert prediction is not None
+    assert "expect the simulation to fail" in prediction["quote"]

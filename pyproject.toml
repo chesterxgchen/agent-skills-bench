@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+# >=62.3: recursive ** globs in [tool.setuptools.package-data] (evaluation rules tree).
+requires = ["setuptools>=62.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]

@@ -4,6 +4,7 @@
 # target framework is pytorch. For a plain-torch target the manual Client API
 # loop is the reference implementation, so it scores good without a context
 # gate.
+schema_version: 1
 signals:
   training_control:
     label: "Conversion: client training/control path"

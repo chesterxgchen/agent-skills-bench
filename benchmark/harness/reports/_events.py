@@ -30,7 +30,13 @@ from typing import Any
 
 from ..metric_artifacts import metric_is_runtime_result_artifact
 from ._runs import combined_text
-from ._text import fmt_number, strip_ansi
+from ._text import (
+    FILE_INSPECTION_COMMANDS,
+    _first_command_name,
+    _shell_command_segments,
+    fmt_number,
+    strip_ansi,
+)
 
 
 def parse_event_timestamp(value: Any) -> datetime | None:
@@ -697,6 +703,26 @@ def error_signature_from_output(output: str) -> dict[str, str] | None:
     return None
 
 
+_SHELL_WRAPPER_RE = re.compile(r"^\s*(?:/bin/)?(?:ba|z)?sh\s+-l?c\s+", re.IGNORECASE)
+
+
+def _command_is_inspection_only(command: str) -> bool:
+    """True when every shell segment only reads/inspects files (cat/grep/sed/...).
+
+    Inspection commands echo file contents, so their output can quote an old
+    traceback or an old success marker — they are neither failure anchors nor
+    recovery evidence for `terminal_failure_anchor`.
+    """
+
+    text = _SHELL_WRAPPER_RE.sub("", str(command or "")).strip()
+    if text[:1] in {"'", '"'} and text[-1:] == text[:1]:
+        text = text[1:-1]
+    segments = [segment for segment in _shell_command_segments(text) if segment.strip()]
+    if not segments:
+        return False
+    return all(_first_command_name(segment) in FILE_INSPECTION_COMMANDS for segment in segments)
+
+
 def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[str, str]] | None:
     """Last failed command with a recognized error signature, if the run never recovered.
 
@@ -717,6 +743,10 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     for index, item in enumerate(timeline):
         if item.get("kind") != "command":
             continue
+        # Inspection commands (cat/grep/...) echo file contents: an old
+        # traceback they quote is not this run's failure.
+        if _command_is_inspection_only(str(item.get("command") or "")):
+            continue
         candidate = error_signature_from_output(str(item.get("output") or ""))
         if candidate and item.get("exit_code") not in (0,):
             anchor_index, signature = index, candidate
@@ -729,6 +759,10 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     failed_command_was_script_run = failed_key.startswith("python ")
     for item in timeline[anchor_index + 1 :]:
         if item.get("kind") != "command":
+            continue
+        # Inspection commands can quote an OLD success log; they are not
+        # recovery evidence.
+        if _command_is_inspection_only(str(item.get("command") or "")):
             continue
         output = str(item.get("output") or "")
         if job_output_succeeded(output):
@@ -750,20 +784,18 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     return anchor_index, signature
 
 
-# Each cue must itself express expected failure or blockage. A bare
+# Each cue must itself express a PREDICTION of failure or blockage. Bare state
+# descriptions ("torch is missing", "not installed") are excluded: they also
+# appear in remediation statements ("torch is not installed, so I'll install
+# it first"), which are the opposite of a known-doomed execution. A bare
 # expectation verb ("expect", "anticipate") also matches predictions of
-# success ("I expect torch is installed"), so those verbs only count when a
-# failure word follows within the same sentence.
+# success, so those verbs only count with a failure word in the same sentence.
 _FAILURE_PREDICTION_CUE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(pattern)
     for pattern in (
         r"\b(?:will|would|going to|known to|expected to|likely to|bound to)\s+(?:fail|stop|break|crash|error)\b",
-        r"\b(?:expect|anticipat)\w*\b[^.!?\n]{0,80}\b(?:fail\w*|error\w*|stop|break|crash\w*|blocked?|missing)\b",
+        r"\b(?:expect|anticipat)\w*\b[^.!?\n]{0,80}\b(?:fail\w*|error\w*|stop|break|crash\w*|blocked?)\b",
         r"\bstop at\b",
-        r"\bmissing\b",
-        r"\bblocked\b",
-        r"\bnot installed\b",
-        r"\bunavailable\b",
     )
 )
 

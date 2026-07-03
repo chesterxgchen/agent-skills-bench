@@ -41,6 +41,7 @@ the document's ``default_verdict`` applies.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 from functools import lru_cache
@@ -66,18 +67,31 @@ def evaluation_sdk_dir(sdk: str):
 
 def _resolve_document_ref(sdk_dir, ref: str):
     """A ``shared:`` ref resolves from the SDK-agnostic config/evaluation/common/
-    layer; a plain path resolves from the SDK's own directory."""
+    layer; a plain path resolves from the SDK's own directory. Refs must stay
+    inside the rules tree — no absolute paths or parent traversal."""
 
+    relative = ref[len(SHARED_RULES_PREFIX) :] if ref.startswith(SHARED_RULES_PREFIX) else ref
+    if relative.startswith(("/", "\\")) or ".." in Path(relative).parts:
+        raise ValueError(f"evaluation rules ref must be a relative path inside the rules tree: {ref!r}")
     if ref.startswith(SHARED_RULES_PREFIX):
         shared_dir = resources.files(EVALUATION_RULES_PACKAGE) / "config" / "evaluation" / "common"
-        return shared_dir / ref[len(SHARED_RULES_PREFIX) :]
-    return sdk_dir / ref
+        return shared_dir / relative
+    return sdk_dir / relative
 
 
 def _parse_document(text: str, source: str) -> dict[str, Any]:
     document = yaml.safe_load(text) or {}
     if not isinstance(document, dict):
         raise ValueError(f"evaluation rules must be a mapping: {source}")
+    # Sub-documents (task commons, overlays, the shared layer) may declare a
+    # schema_version; when they do it must match — a vocabulary change in one
+    # composed document must not be silently half-applied.
+    version = document.get("schema_version")
+    if version is not None and version != EVALUATION_RULES_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported evaluation rules schema_version {version!r} in {source} "
+            f"(expected {EVALUATION_RULES_SCHEMA_VERSION})"
+        )
     return document
 
 
@@ -183,7 +197,10 @@ def load_evaluation_rules(
     if framework:
         combined.setdefault("framework", framework)
     selector_items = tuple(sorted((str(key), str(value)) for key, value in combined.items() if value))
-    return _load_rules_cached(sdk, task, selector_items, str(Path(path)) if path else None)
+    # Absolute cache key for explicit files (cwd-independent), and a deep copy
+    # on the way out so no caller can mutate the cached composition.
+    path_text = str(Path(path).resolve()) if path else None
+    return copy.deepcopy(_load_rules_cached(sdk, task, selector_items, path_text))
 
 
 def available_tasks(sdk: str) -> list[str]:
@@ -198,16 +215,23 @@ def _evidence_numbers(evidence: str) -> list[float]:
     return [float(match.group(1)) for match in _NUMBER_RE.finditer(evidence)]
 
 
+# Metric families where a DECREASING series is the improvement. Trend matching
+# is direction-aware: "improving" always means "got better for this metric".
+_LOWER_IS_BETTER_RE = re.compile(r"\b(?:loss|error|err|rmse|mae|mse|perplexity|regret)\b", re.IGNORECASE)
+
+
 def _trend_matches(kind: str, evidence: str) -> bool:
     values = _evidence_numbers(evidence)
     if kind == "single_value":
         return len(values) == 1
     if len(values) < 2:
         return False
+    lower_is_better = bool(_LOWER_IS_BETTER_RE.search(evidence))
+    improved = values[-1] < values[0] if lower_is_better else values[-1] > values[0]
     if kind == "improving":
-        return values[-1] > values[0]
+        return improved
     if kind == "not_improving":
-        return values[-1] <= values[0]
+        return not improved
     return False
 
 
