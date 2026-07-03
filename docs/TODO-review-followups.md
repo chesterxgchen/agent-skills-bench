@@ -56,6 +56,21 @@ The harness already has the Docker machinery for benchmark runs. Scope:
 
 ---
 
+## 3. Auto-run RCA on a with-skills regression — DONE
+
+**Status:** Implemented. The live pair run (`run_pair`) now calls
+`autorun_rca_investigations` right after report generation: for each mode the
+Root Cause Analysis section would flag (failure / slowdown / tokens /
+structure regression, via `resolve_seed(..., "auto")`), it runs the RCA
+investigation in the container sandbox and regenerates
+`benchmark_insights.md` so the explanation embeds automatically. Structure
+regressions are gated on the host-persisted `quality_summary.json`
+(`persist_quality_summary`). Best-effort: skips cleanly when no investigator
+image/CLI is available, never fails the run, and `BENCHMARK_AUTO_RCA=0`
+disables it.
+
+---
+
 ## 2. NVFLARE quality scoring hard-coded to `task="conversion"` (correctness / feature)
 
 **Finding (5b):** `benchmark/harness/sdks/nvflare/_logic.py`

@@ -868,3 +868,73 @@ def test_container_config_rejects_mode_skill_flag_conflict(monkeypatch):
         assert "expected false" in str(exc)
     else:
         raise AssertionError("MODE and USE_PREINSTALLED_SKILLS disagreement should fail fast")
+
+
+def test_autorun_rca_investigates_regressed_modes_and_regenerates(monkeypatch):
+    from benchmark.harness.host import runner
+
+    calls = {"investigations": [], "regenerated": 0}
+
+    # Only with_skills has an auto seed (a regression); without_skills has none.
+    import benchmark.harness.rca as rca
+
+    monkeypatch.setattr(
+        rca,
+        "resolve_seed",
+        lambda root, mode, topic, q, run_id=None: {"topic": "auto"} if mode == "with_skills" else None,
+    )
+    monkeypatch.setattr(rca, "resolve_invoker", lambda agent, sandbox="auto": ("codex", lambda p, c: "{}"))
+
+    def fake_run_investigation(root, mode, invoker, *, topic="auto", **kw):
+        calls["investigations"].append((mode, topic))
+        return root / "records" / f"mode={mode}" / "rca" / "rca_report_failure.md"
+
+    monkeypatch.setattr(rca, "run_investigation", fake_run_investigation)
+    monkeypatch.setattr(
+        runner,
+        "write_benchmark_reports",
+        lambda root, **kw: calls.__setitem__("regenerated", calls["regenerated"] + 1) or {},
+    )
+    monkeypatch.delenv("BENCHMARK_AUTO_RCA", raising=False)
+
+    runner.autorun_rca_investigations(__import__("pathlib").Path("/tmp/does-not-matter"))
+
+    assert calls["investigations"] == [("with_skills", "auto")]
+    assert calls["regenerated"] == 1  # regenerated once so RCA embeds
+
+
+def test_autorun_rca_disabled_by_env(monkeypatch):
+    import benchmark.harness.rca as rca
+    from benchmark.harness.host import runner
+
+    touched = {"seed": 0}
+    monkeypatch.setattr(
+        rca, "resolve_seed", lambda *a, **k: touched.__setitem__("seed", touched["seed"] + 1) or {"topic": "auto"}
+    )
+    monkeypatch.setenv("BENCHMARK_AUTO_RCA", "0")
+
+    runner.autorun_rca_investigations(__import__("pathlib").Path("/tmp/x"))
+    assert touched["seed"] == 0  # opt-out short-circuits before any work
+
+
+def test_autorun_rca_skips_when_no_investigator_available(monkeypatch):
+    import benchmark.harness.rca as rca
+    from benchmark.harness.host import runner
+
+    monkeypatch.setattr(
+        rca, "resolve_seed", lambda root, mode, *a, **k: {"topic": "auto"} if mode == "with_skills" else None
+    )
+
+    def no_agent(agent, sandbox="auto"):
+        raise SystemExit("no image, none on PATH")
+
+    monkeypatch.setattr(rca, "resolve_invoker", no_agent)
+    regen = {"n": 0}
+    monkeypatch.setattr(
+        runner, "write_benchmark_reports", lambda root, **kw: regen.__setitem__("n", regen["n"] + 1) or {}
+    )
+    monkeypatch.delenv("BENCHMARK_AUTO_RCA", raising=False)
+
+    # Should not raise and should not regenerate when no investigator is available.
+    runner.autorun_rca_investigations(__import__("pathlib").Path("/tmp/x"))
+    assert regen["n"] == 0

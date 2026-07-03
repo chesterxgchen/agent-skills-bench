@@ -987,6 +987,45 @@ def write_benchmark_reports(result_root: Path, *, logs: Iterable[Path] = ()) -> 
         parse_cached_usage_and_activity.cache_clear()
 
 
+def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
+    """Drill into every mode the Root Cause Analysis section flags as worse.
+
+    RCA exists to explain a with-skills regression — a failure, slowdown, extra
+    tokens, or a structure regression. This fires it automatically right after
+    the report so the explanation lands in benchmark_insights.md with no manual
+    step. It uses the container sandbox by default (safer over attacker-authored
+    evidence). Best-effort: it never fails the run, skips cleanly when no
+    investigator agent/image is available, and BENCHMARK_AUTO_RCA=0 disables it.
+    """
+
+    if os.environ.get("BENCHMARK_AUTO_RCA", "1") == "0":
+        return
+    from ..rca import resolve_invoker, resolve_seed, run_investigation
+
+    targets = [spec.mode for spec in PAIR_RUNS if resolve_seed(result_root, spec.mode, "auto", None) is not None]
+    if not targets:
+        return
+    try:
+        agent_name, invoker = resolve_invoker(None, sandbox="auto")
+    except SystemExit as exc:
+        emit(f"Auto-RCA skipped: {exc}", logs=logs, stderr=True)
+        return
+    emit(f"Running automatic RCA on {', '.join(targets)} (set BENCHMARK_AUTO_RCA=0 to disable)", logs=logs)
+    investigated = False
+    for mode in targets:
+        try:
+            report_path = run_investigation(result_root, mode, invoker, topic="auto", agent_name=agent_name)
+        except Exception as exc:
+            emit(f"Auto-RCA failed for {mode}: {type(exc).__name__}: {exc}", logs=logs, stderr=True)
+            continue
+        if report_path is not None:
+            investigated = True
+            emit(f"Auto-RCA ({mode}, {agent_name}): {report_path}", logs=logs)
+    if investigated:
+        # Regenerate so the fresh RCA reports embed in the Root Cause Analysis section.
+        write_benchmark_reports(result_root, logs=logs)
+
+
 def emit_benchmark_report_paths(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
     emit(f"Benchmark insights: {result_root / 'benchmark_insights.md'}", logs=logs)
     emit(f"Metrics report: {result_root / 'metrics_report.md'}", logs=logs)
@@ -1067,6 +1106,7 @@ def run_pair(argv: list[str]) -> int:
     emit(f"Scenario summary: {result_root / 'scenario_summary.json'}", logs=logs)
     emit(f"Scenario report: {result_root / 'reports' / 'scenario_report.md'}", logs=logs)
     report_statuses = write_benchmark_reports(result_root, logs=logs)
+    autorun_rca_investigations(result_root, logs=logs)
     emit_benchmark_report_paths(result_root, logs=logs)
     write_host_report_status(result_root, report_statuses)
     return (
