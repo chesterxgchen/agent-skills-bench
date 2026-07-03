@@ -32,8 +32,11 @@ classification (step 5).
 
 from __future__ import annotations
 
+import ast
+import io
 import json
 import re
+import tokenize
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1346,28 +1349,74 @@ def _detect_metric_reporting(text: str) -> str:
 
 _RUN_WORKSPACE_PATH_MARKERS = ("/tmp/nvflare", "simulate_job", "simulator_workspace")
 _DATA_PATH_HINT_RE = re.compile(r"data|dataset|\.csv|\.parquet|\.npz|\.jsonl?", re.IGNORECASE)
+_ADD_FILE_DATA_ARG_RE = re.compile(
+    r"\b(?:args\.)?(?:data|dataset)_(?:dir|root|path)\b",
+    re.IGNORECASE,
+)
+
+
+def _string_token_value(token_value: str) -> str:
+    try:
+        value = ast.literal_eval(token_value)
+    except (SyntaxError, ValueError):
+        without_prefix = re.sub(r"^[rRuUbBfF]*", "", token_value)
+        for quote in ('"""', "'''", '"', "'"):
+            if without_prefix.startswith(quote) and without_prefix.endswith(quote):
+                return without_prefix[len(quote) : -len(quote)]
+        return token_value
+    return value if isinstance(value, str) else ""
+
+
+def _source_string_literal_spans(text: str) -> list[tuple[str, int]]:
+    spans: list[tuple[str, int]] = []
+    line_offsets = [0]
+    for line in text.splitlines(keepends=True):
+        line_offsets.append(line_offsets[-1] + len(line))
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        for token in tokens:
+            if token.type == tokenize.STRING:
+                row, column = token.start
+                spans.append((_string_token_value(token.string), line_offsets[row - 1] + column))
+        return spans
+    except (IndentationError, SyntaxError, tokenize.TokenError):
+        spans.clear()
+
+    # Fallback for malformed snippets. Skip comment-only lines and drop inline comments
+    # before scanning for simple quoted values.
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            offset += len(line)
+            continue
+        code = line.split("#", 1)[0]
+        spans.extend((match.group(1), offset + match.start()) for match in re.finditer(r"""["']([^"']*)["']""", code))
+        offset += len(line)
+    return spans
+
+
+def _source_string_literals(text: str) -> list[str]:
+    return [literal for literal, _offset in _source_string_literal_spans(text)]
 
 
 def _ephemeral_workspace_data_path_marker(text: str) -> str:
-    # Only quoted path expressions count — source headers and comments routinely
-    # mention simulate_job/runtime workspace paths without reading data from them.
-    for line in text.splitlines():
-        if line.lstrip().startswith("#"):
-            continue
-        for match in re.finditer(r"""["']([^"']*)["']""", line):
-            literal = match.group(1)
-            marker = next((marker for marker in _RUN_WORKSPACE_PATH_MARKERS if marker in literal), "")
-            if marker and _DATA_PATH_HINT_RE.search(literal):
-                return marker
+    # Only actual string literals count. Source headers and comments routinely mention
+    # simulate_job/runtime workspace paths without reading data from them.
+    for literal in _source_string_literals(text):
+        marker = next((marker for marker in _RUN_WORKSPACE_PATH_MARKERS if marker in literal), "")
+        if marker and _DATA_PATH_HINT_RE.search(literal):
+            return marker
     return ""
 
 
 def _hardcoded_absolute_data_path(text: str) -> str:
-    for match in re.finditer(r"""["'](/[^"'\s]+)["']""", text):
-        literal = match.group(1)
+    for literal, offset in _source_string_literal_spans(text):
+        if not re.fullmatch(r"/\S+", literal):
+            continue
         if not _DATA_PATH_HINT_RE.search(literal):
             continue
-        prefix = text[max(0, match.start() - 48) : match.start()]
+        prefix = text[max(0, offset - 48) : offset]
         # An absolute path is acceptable as a configurable-arg default in simulation.
         if re.search(r"default\s*=\s*(?:str\(\s*)?(?:Path\(\s*)?$", prefix):
             continue
@@ -1375,11 +1424,84 @@ def _hardcoded_absolute_data_path(text: str) -> str:
     return ""
 
 
+def _iter_call_sources(text: str, function_name: str) -> list[str]:
+    calls: list[str] = []
+    pattern = re.compile(rf"(?<!\w){re.escape(function_name)}\s*\(")
+    for match in pattern.finditer(text):
+        start = match.end() - 1
+        depth = 0
+        quote = ""
+        triple = False
+        escaped = False
+        index = start
+        while index < len(text):
+            char = text[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif triple and text.startswith(quote * 3, index):
+                    quote = ""
+                    triple = False
+                    index += 2
+                elif not triple and char == quote:
+                    quote = ""
+                index += 1
+                continue
+            if char in {"'", '"'}:
+                quote = char
+                triple = text.startswith(char * 3, index)
+                if triple:
+                    index += 3
+                else:
+                    index += 1
+                continue
+            if char == "#":
+                newline = text.find("\n", index)
+                if newline == -1:
+                    break
+                index = newline + 1
+                continue
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    calls.append(text[match.start() : index + 1])
+                    break
+            index += 1
+    return calls
+
+
+def _path_literal_points_at_data(literal: str) -> bool:
+    normalized = literal.replace("\\", "/").lower().strip()
+    if not normalized:
+        return False
+    parts = [part for part in normalized.split("/") if part]
+    if any(part in {"data", "dataset", "datasets"} for part in parts):
+        return True
+    basename = parts[-1] if parts else normalized
+    stem = basename.split(".", 1)[0]
+    if stem in {"data", "dataset", "datasets"} and re.search(r"\.(?:csv|json|jsonl|parquet|npz)(?:$|[?#])", basename):
+        return True
+    return bool(re.search(r"\.(?:csv|parquet|npz|jsonl)(?:$|[?#])", normalized))
+
+
+def _add_file_to_clients_copies_data(text: str) -> bool:
+    for call in _iter_call_sources(text, "add_file_to_clients"):
+        if _ADD_FILE_DATA_ARG_RE.search(call):
+            return True
+        if any(_path_literal_points_at_data(literal) for literal in _source_string_literals(call)):
+            return True
+    return False
+
+
 def _detect_data_packaging(text: str) -> str:
     marker = _ephemeral_workspace_data_path_marker(text)
     if marker:
         return f"data path points into ephemeral nvflare run workspace (`{marker}`)"
-    if re.search(r"add_file_to_clients\([^)]*data", text, re.IGNORECASE):
+    if _add_file_to_clients_copies_data(text):
         return "copies dataset into client app; clients read it from the ephemeral run workspace"
     hardcoded = _hardcoded_absolute_data_path(text)
     if hardcoded:

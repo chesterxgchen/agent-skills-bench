@@ -1126,11 +1126,25 @@ def test_nvflare_data_packaging_rules():
     )
     assert header_only.startswith("configurable data_root argument")
 
+    comment_only = _detect_data_packaging(
+        '# "/tmp/nvflare/workspaces/ames/site-1/simulate_job/app_site-1/data"\n'
+        'parser.add_argument("--data-root", type=Path, default=Path("/workspace/data/ames"))\n'
+    )
+    assert comment_only.startswith("configurable data_root argument")
+
     non_data_packaging = _detect_data_packaging(
         'recipe.job.add_file_to_clients("requirements.txt")\n'
         'parser.add_argument("--data-root", type=Path, default=Path("/workspace/data/ames"))\n'
     )
     assert non_data_packaging.startswith("configurable data_root argument")
+
+    data_named_helper_packaging = _detect_data_packaging(
+        'recipe.job.add_file_to_clients("datamodule.py")\n'
+        'recipe.job.add_file_to_clients("dataset.py")\n'
+        'recipe.job.add_file_to_clients("metadata.json")\n'
+        'parser.add_argument("--data-root", type=Path, default=Path("/workspace/data/ames"))\n'
+    )
+    assert data_named_helper_packaging.startswith("configurable data_root argument")
 
 
 def test_nvflare_conversion_quality_prefers_local_client_pos_weight_over_server_default(tmp_path):
