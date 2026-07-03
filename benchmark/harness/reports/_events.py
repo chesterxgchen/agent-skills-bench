@@ -419,6 +419,48 @@ def command_succeeded(event: dict[str, Any]) -> bool:
     )
 
 
+def _module_invocation_key_suffix(command: str, module: str) -> str:
+    """Positional tokens (subcommand and job target) that narrow a module key.
+
+    Keying a ``python -m`` run on the module alone lets any later successful
+    invocation of the same module (e.g. ``python3 -m nvflare.cli --help``)
+    pass for a rerun of a failed ``python3 -m nvflare.cli simulator ...``
+    job. The first two positional arguments carry the actual subcommand and
+    job target, so they join the key; option values are skipped, and paths
+    reduce to their basename so relative/absolute rerun paths still match.
+    """
+
+    for segment in _shell_command_segments(command):
+        tokens = _command_tokens(segment)
+        module_end = None
+        for index, token in enumerate(tokens):
+            if token == "-m" and index + 1 < len(tokens) and tokens[index + 1] == module:
+                module_end = index + 2
+                break
+            if token == f"-m{module}":
+                module_end = index + 1
+                break
+        if module_end is None:
+            continue
+        positionals: list[str] = []
+        skip_value = False
+        for token in tokens[module_end:]:
+            if skip_value:
+                skip_value = False
+                continue
+            if token.startswith("-"):
+                # Short alphabetic options (`-w ws`, `-gpu 0`) consume the
+                # next token as their value; attached (`-n2`) and
+                # `--flag[=value]` forms do not.
+                skip_value = bool(re.fullmatch(r"-[A-Za-z]+", token))
+                continue
+            positionals.append(Path(token).name)
+            if len(positionals) == 2:
+                break
+        return " ".join(positionals)
+    return ""
+
+
 def command_recovery_key(command: str) -> str:
     command = _unwrap_shell_command(command)
     if re.search(r"\bpip\s+install\b", command):
@@ -428,13 +470,16 @@ def command_recovery_key(command: str) -> str:
     if script:
         role = "export" if "--export" in command else "run"
         return f"python {Path(script.group(1)).name} {role}"
-    # `python -m <module>` runs key on the module, not the bare interpreter:
-    # otherwise any later successful `python3 ...` (e.g. an import probe)
-    # would look like a rerun of the failed module job. `\s*` also covers the
-    # attached `-mmodule` form Python accepts.
+    # `python -m <module>` runs key on the module plus its positional
+    # subcommand/job target, not the bare interpreter or bare module:
+    # otherwise any later successful `python3 ...` (e.g. an import probe) or
+    # same-module non-rerun (e.g. `python3 -m nvflare.cli --help`) would look
+    # like a rerun of the failed module job. `\s*` also covers the attached
+    # `-mmodule` form Python accepts.
     module = re.search(r"\bpython[\d.]*\s+(?:-[^m]\S*\s+)*-m\s*([A-Za-z0-9_.]+)", command)
     if module:
-        return f"python -m {module.group(1)}"
+        suffix = _module_invocation_key_suffix(command, module.group(1))
+        return f"python -m {module.group(1)} {suffix}".rstrip()
     first_word = re.search(r"(?:^|['\"])([A-Za-z0-9_./-]+)", command)
     return first_word.group(1) if first_word else command[:80]
 

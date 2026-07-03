@@ -7747,12 +7747,28 @@ def test_why_keeps_root_cause_chain_when_shell_wrapped_job_is_never_rerun_after_
 def test_module_job_recovery_key_is_module_specific():
     from benchmark.harness.reports._events import command_recovery_key
 
-    # Module job runs key on the module — not the bare interpreter — so an
-    # unrelated `python3 ...` success cannot pass for a rerun of the job.
-    assert command_recovery_key("python3 -m nvflare.cli simulator jobs/train -n 2") == "python -m nvflare.cli"
+    # Module job runs key on the module plus its subcommand/job target — not
+    # the bare interpreter or bare module — so neither an unrelated
+    # `python3 ...` success nor a same-module non-rerun (`--help`, another
+    # subcommand) can pass for a rerun of the job.
+    assert (
+        command_recovery_key("python3 -m nvflare.cli simulator jobs/train -n 2")
+        == "python -m nvflare.cli simulator train"
+    )
     assert command_recovery_key("python3 -c 'import torch'") != command_recovery_key(
         "python3 -m nvflare.cli simulator jobs/train -n 2"
     )
+    assert command_recovery_key("python3 -m nvflare.cli --help") != command_recovery_key(
+        "python3 -m nvflare.cli simulator jobs/train -n 2"
+    )
+    assert command_recovery_key("python3 -m nvflare.cli job list") != command_recovery_key(
+        "python3 -m nvflare.cli simulator jobs/train -n 2"
+    )
+    # Option values must not read as positionals, and a rerun with an
+    # absolute job path keys the same as the original relative one.
+    assert command_recovery_key(
+        "python3 -m nvflare.cli simulator -w /tmp/ws /workspace/jobs/train -n 2"
+    ) == command_recovery_key("python3 -m nvflare.cli simulator jobs/train -w ws2")
     # A shell-wrapped module run keys the same as the bare invocation, so a
     # plain rerun of the same module still counts as recovery.
     assert command_recovery_key(
@@ -7774,7 +7790,10 @@ def test_attached_module_form_keys_on_module_and_reads_as_job_run():
     # the broad `python3` key or stop reading as a job run — otherwise a later
     # successful `python3 -c "import torch"` (also keyed `python3`) would pass
     # for a rerun of the failed module job.
-    assert command_recovery_key("python3 -mnvflare.cli simulator jobs/train -n 2") == "python -m nvflare.cli"
+    assert (
+        command_recovery_key("python3 -mnvflare.cli simulator jobs/train -n 2")
+        == "python -m nvflare.cli simulator train"
+    )
     assert _command_is_python_job_run("python3 -mnvflare.cli simulator jobs/train -n 2")
     assert not _command_is_python_job_run('python3 -c "import torch"')
 
@@ -7842,6 +7861,48 @@ def test_terminal_failure_anchor_survives_import_probe_after_install():
 
     # A successful rerun of the same module job IS recovery.
     recovered = events + "\n" + command("python3 -m nvflare.cli simulator jobs/train -n 2 -t 2", output="done")
+    assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
+
+
+def test_terminal_failure_anchor_survives_same_module_non_rerun():
+    from benchmark.harness.reports._events import event_timeline_from_text, terminal_failure_anchor
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    # A later successful invocation of the same module that is not a rerun of
+    # the failed job — `--help` or another subcommand — must not read as
+    # recovery of the failed simulator run.
+    events = "\n".join(
+        [
+            command(
+                "python3 -m nvflare.cli simulator jobs/train -n 2 -t 2",
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            command("python3 -m nvflare.cli --help", output="usage: nvflare [-h] ..."),
+            command("python3 -m nvflare.cli job list", output="no jobs"),
+        ]
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "torch" in anchored[1]["display"]
+
+    # A rerun of the same simulator job with reordered flags/absolute paths
+    # still keys the same and counts as recovery.
+    recovered = (
+        events + "\n" + command("python3 -m nvflare.cli simulator -w /tmp/ws /workspace/jobs/train -n 2", output="done")
+    )
     assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
 
 
