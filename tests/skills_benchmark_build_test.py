@@ -308,8 +308,9 @@ def test_build_main_routes_prepared_evaluation_to_both_image_metadata(tmp_path, 
     adapter = SimpleNamespace(
         name="agent",
         display_name="Agent",
+        availability_probe=[],
         image_targets=lambda: SimpleNamespace(skills="skills", baseline="baseline", report="report"),
-        build_args=lambda: {},
+        build_args=lambda *, cli_version="": {},
     )
     monkeypatch.setattr(build, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(build, "load_sdk_profile", lambda _profile: sdk)
@@ -899,3 +900,33 @@ def test_host_common_all_is_curated():
 
     assert "parse_host_cli_options" in common.__all__
     assert "subprocess" not in common.__all__
+
+
+def test_resolve_host_agent_cli_version_parses_probe_output(monkeypatch):
+    import subprocess as sp
+    from types import SimpleNamespace
+
+    from benchmark.harness.host import build
+
+    adapter = SimpleNamespace(availability_probe=["codex", "--version"], name="codex")
+    monkeypatch.setattr(
+        build.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(stdout="codex-cli 0.142.5\n", stderr=""),
+    )
+    assert build.resolve_host_agent_cli_version(adapter) == "0.142.5"
+
+    def raise_missing(*_a, **_k):
+        raise FileNotFoundError("codex not on PATH")
+
+    monkeypatch.setattr(build.subprocess, "run", raise_missing)
+    assert build.resolve_host_agent_cli_version(adapter) == ""
+    assert sp  # keep import referenced
+
+
+def test_resolve_host_agent_cli_version_no_probe_returns_empty():
+    from types import SimpleNamespace
+
+    from benchmark.harness.host import build
+
+    assert build.resolve_host_agent_cli_version(SimpleNamespace(availability_probe=[], name="x")) == ""

@@ -164,7 +164,7 @@ class AgentAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def build_args(self) -> dict[str, str]:
+    def build_args(self, *, cli_version: str = "") -> dict[str, str]:
         raise NotImplementedError
 
     @abstractmethod

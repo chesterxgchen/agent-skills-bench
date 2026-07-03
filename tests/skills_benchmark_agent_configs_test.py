@@ -768,8 +768,22 @@ def test_codex_adapter_build_args_come_from_profile():
     assert build_args["BENCHMARK_DOCKER_AGENT"] == "codex"
     assert build_args["BENCHMARK_AGENT_HOME"] == "/workspace/.codex"
     assert build_args["AGENT_CLI_NAME"] == "codex"
-    assert build_args["AGENT_INSTALL_COMMAND"] == 'npm install -g "@openai/codex@0.137.0"'
+    # No caller-supplied version -> the profile default pin.
+    assert build_args["AGENT_INSTALL_COMMAND"] == 'npm install -g "@openai/codex@0.142.5"'
     assert build_args["AGENT_VERSION_COMMAND"] == "codex --version"
+
+
+def test_codex_adapter_tracks_caller_supplied_cli_version():
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    adapter = load_agent_adapter("codex")
+    # The build passes the host's installed codex version so the container CLI
+    # matches it and accepts the same host config (e.g. newer reasoning tiers).
+    build_args = adapter.build_args(cli_version="0.142.5")
+    assert build_args["AGENT_INSTALL_COMMAND"] == 'npm install -g "@openai/codex@0.142.5"'
+    # A blank version falls back to the profile default rather than producing
+    # an unpinned "@openai/codex@".
+    assert 'codex@0.142.5"' in adapter.build_args(cli_version="")["AGENT_INSTALL_COMMAND"]
 
 
 def test_claude_adapter_build_auth_and_skill_exposure_contract(tmp_path):

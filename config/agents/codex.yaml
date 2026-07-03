@@ -46,12 +46,17 @@ images:
   report: agent-skills-benchmark:{agent}-skills
 
 # Docker build inputs for the agent CLI layer and SDK skills setup target.
+# default_cli_version is the fallback pin; the build tracks the host's installed
+# codex version instead when it can detect one (via availability_probe), so the
+# container runs the same CLI the operator uses and accepts the same config
+# (e.g. newer model_reasoning_effort tiers a stale pin would reject).
 build:
+  default_cli_version: "0.142.5"
   args:
     BENCHMARK_DOCKER_AGENT: codex
     BENCHMARK_AGENT_HOME: /workspace/.codex
     AGENT_CLI_NAME: codex
-    AGENT_INSTALL_COMMAND: npm install -g "@openai/codex@0.137.0"
+    AGENT_INSTALL_COMMAND: npm install -g "@openai/codex@{agent_cli_version}"
     AGENT_VERSION_COMMAND: codex --version
 
 # Optional runtime auth inputs from the host.

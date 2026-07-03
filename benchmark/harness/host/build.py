@@ -21,6 +21,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -126,6 +127,29 @@ def repo_has_markers(path: Path, markers: tuple[str, ...]) -> bool:
         elif not marker_path.exists():
             return False
     return True
+
+
+_CLI_VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?")
+
+
+def resolve_host_agent_cli_version(adapter: AgentAdapter) -> str:
+    """The agent CLI version installed on the HOST, or "" when undetectable.
+
+    Runs the profile's availability probe (e.g. ``codex --version``) and parses
+    a semver. Lets the image track the operator's own CLI so the container
+    accepts the same host config (auth/config.toml) instead of failing on
+    settings a stale pinned CLI does not understand. Any failure — no CLI on
+    PATH, unexpected output — yields "" and the profile default is used."""
+
+    probe = list(getattr(adapter, "availability_probe", []) or [])
+    if not probe:
+        return ""
+    try:
+        result = subprocess.run(probe, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    match = _CLI_VERSION_RE.search(f"{result.stdout}\n{result.stderr}")
+    return match.group(0) if match else ""
 
 
 def resolve_sdk_source(sdk: SdkAdapter) -> SdkSource:
@@ -764,7 +788,8 @@ def main(argv: list[str] | None = None) -> int:
         skills_setup = resolve_sdk_skills_setup(sdk)
         targets = adapter.image_targets()
         sdk_build_args = sdk.docker_build_args()
-        agent_build_args = adapter.build_args()
+        host_cli_version = resolve_host_agent_cli_version(adapter)
+        agent_build_args = adapter.build_args(cli_version=host_cli_version)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -779,6 +804,10 @@ def main(argv: list[str] | None = None) -> int:
         emit("=== Preparing minimal Docker build context ===")
         context = prepare_build_context()
         emit(f"Agent profile: {args.agent_profile} -> {adapter.display_name} ({adapter.name})")
+        if host_cli_version:
+            emit(f"Agent CLI version: tracking host {adapter.name} {host_cli_version}")
+        else:
+            emit(f"Agent CLI version: host {adapter.name} not detected; using profile default")
         emit(f"SDK profile: {args.sdk_profile} -> {sdk.display_name} ({sdk.package_name})")
         emit(f"SDK wheel build: {wheel_build.build_type}")
         if build_skills_image:

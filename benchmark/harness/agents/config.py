@@ -421,16 +421,23 @@ class ConfigurableAgentAdapter(AgentAdapter):
         match = pattern.search(text)
         return match.group(1).strip() if match else ""
 
-    def build_args(self) -> dict[str, str]:
+    def build_args(self, *, cli_version: str = "") -> dict[str, str]:
         build = self._cfg.raw.get("build") or {}
         if not isinstance(build, dict):
             return {}
+        # ``{agent_cli_version}`` lets a profile pin the agent CLI to whatever
+        # version the caller resolved (e.g. the host's installed CLI), so the
+        # container runs the same CLI the operator uses rather than a stale
+        # hard-coded pin. Falls back to the profile's own default when the
+        # caller passes nothing (no host CLI found, or non-build call sites).
+        effective_cli_version = cli_version or str(build.get("default_cli_version") or "")
+        render_values = {"agent": self.name, "agent_cli_version": effective_cli_version}
         args = {}
         for key, value in (build.get("args") or {}).items():
             if isinstance(value, dict):
                 raise ValueError(f"{self._cfg.source_path}: build.args.{key} must be a scalar profile value")
             else:
-                args[str(key)] = render_string(str(value), {"agent": self.name})
+                args[str(key)] = render_string(str(value), render_values)
         return args
 
     def image_targets(self) -> AgentImageTargets:
