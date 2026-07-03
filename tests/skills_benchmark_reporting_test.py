@@ -8669,6 +8669,100 @@ def test_rca_auto_fires_structure_when_persisted_score_regressed(tmp_path):
     assert resolve_seed(tmp_path, "with_skills", "auto", None) is None
 
 
+def _multi_run_root(tmp_path):
+    from benchmark.harness.common import write_json
+
+    entries = []
+    for group in ("g1", "g2"):
+        for mode in ("with_skills", "without_skills"):
+            record_dir = f"records/{group}/mode={mode}"
+            d = tmp_path / record_dir
+            d.mkdir(parents=True)
+            write_json(d / "run_summary.json", {"mode": mode})
+            entries.append(
+                {
+                    "mode": mode,
+                    "run_id": f"{group}-{mode}",
+                    "record_dir": record_dir,
+                    "comparison_group_id": group,
+                }
+            )
+    write_json(tmp_path / "run_plan.json", {"entries": entries})
+
+
+def test_rca_auto_structure_gate_uses_the_selected_runs_scores(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resolve_seed
+
+    _multi_run_root(tmp_path)
+    # The g1 with_skills run regressed vs its comparison-group peer; the g2 run
+    # did not. The mode-level map (built from the default per-mode run) claims a
+    # regression and must NOT drive the gate for the g2 run.
+    write_json(
+        tmp_path / "quality_summary.json",
+        {
+            "structure_score": {"with_skills": 33.3, "without_skills": 100.0},
+            "structure_score_by_run": {
+                "g1-with_skills": 33.3,
+                "g1-without_skills": 100.0,
+                "g2-with_skills": 100.0,
+                "g2-without_skills": 100.0,
+            },
+        },
+    )
+    seed = resolve_seed(tmp_path, "with_skills", "auto", None, run_id="g1-with_skills")
+    assert seed is not None
+    assert seed["topic"] == "structure"
+    assert seed["base_mode"] == "without_skills"
+    assert resolve_seed(tmp_path, "with_skills", "auto", None, run_id="g2-with_skills") is None
+
+
+def test_rca_auto_skips_structure_in_multi_run_roots_without_run_scores(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resolve_seed
+
+    _multi_run_root(tmp_path)
+    # Only a mode-level map: in a multi-run root it reflects the default run,
+    # not the selected one, so auto must not gate structure on it.
+    write_json(tmp_path / "quality_summary.json", {"structure_score": {"with_skills": 33.3, "without_skills": 100.0}})
+    assert resolve_seed(tmp_path, "with_skills", "auto", None, run_id="g1-with_skills") is None
+
+
+def test_persist_quality_summary_writes_run_keyed_scores(tmp_path, monkeypatch):
+    import json as json_module
+    from types import SimpleNamespace
+
+    from benchmark.harness.common import write_json
+    from benchmark.harness.reports import benchmark_insights
+    from benchmark.harness.sdks import report_registry
+    from benchmark.harness.sdks.report_plugin import StructureSignal
+
+    _multi_run_root(tmp_path)
+    by_run_scores = {
+        "g1-with_skills": 33.3,
+        "g1-without_skills": 100.0,
+        "g2-with_skills": 100.0,
+        "g2-without_skills": 100.0,
+    }
+    for group in ("g1", "g2"):
+        for mode in ("with_skills", "without_skills"):
+            write_json(
+                tmp_path / f"records/{group}/mode={mode}" / "run_summary.json",
+                {"mode": mode, "score": by_run_scores[f"{group}-{mode}"]},
+            )
+    fake_plugin = SimpleNamespace(
+        score_structure=lambda run: StructureSignal(score=(run.get("run") or {}).get("score")),
+    )
+    monkeypatch.setattr(report_registry, "resolve_from_result_root", lambda root: fake_plugin)
+    monkeypatch.setattr(benchmark_insights, "_as_run_evidence", lambda run: run)
+
+    written = benchmark_insights.persist_quality_summary(tmp_path, {})
+    assert written == {}
+    persisted = json_module.loads((tmp_path / "quality_summary.json").read_text(encoding="utf-8"))
+    assert persisted["structure_score_by_run"] == by_run_scores
+    assert "structure_score" not in persisted
+
+
 def test_why_embeds_agent_rca_report():
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
     from benchmark.harness.reports.insights._why import why_section

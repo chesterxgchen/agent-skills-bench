@@ -532,16 +532,51 @@ def _executive_summary_section(
     return "\n".join(summary_lines)
 
 
+def _structure_score_value(plugin: Any, run: RunEvidence | dict[str, Any]) -> float | None:
+    try:
+        score = plugin.score_structure(_as_run_evidence(run)).score
+    except Exception:
+        score = None
+    return float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else None
+
+
+def _plan_entry_run_bundle(root: Path, entry: dict[str, Any]) -> dict[str, Any] | None:
+    """A minimal per-run bundle from one ``run_plan.json`` entry's record dir."""
+
+    from ..common import load_json
+
+    record_dir = entry.get("record_dir")
+    mode = str(entry.get("mode") or "")
+    if not record_dir or not mode:
+        return None
+    run_dir = root / str(record_dir)
+    record = load_json(run_dir / "benchmark_record.json", None)
+    if not isinstance(record, dict):
+        record = load_json(run_dir / "records" / f"{mode}_record.json", {}) or {}
+    return {
+        "available": run_dir.exists(),
+        "mode": mode,
+        "mode_dir": run_dir,
+        "run": load_json(run_dir / "run_summary.json", {}) or {},
+        "record": record if isinstance(record, dict) else {},
+        "workspace_delta": load_json(run_dir / "workspace_delta_manifest.json", {}) or {},
+    }
+
+
 def persist_quality_summary(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) -> dict[str, float]:
     """Write per-mode SDK quality scores to a host-owned root sidecar.
 
     Structure scoring is SDK-specific, but downstream SDK-agnostic tooling (the
     RCA loop, which never imports SDK plugins) needs the number to gate on a
     regression. This persists it once, at report time, from the resolved plugin
-    — outside the container-writable mode dirs. Returns the ``structure_score``
-    map written ({} when the plugin supplies none, e.g. the null plugin)."""
+    — outside the container-writable mode dirs. Besides the per-mode
+    ``structure_score`` map, it writes ``structure_score_by_run`` keyed by
+    ``run_plan.json`` run_id, so the RCA gate stays correct in result roots
+    holding several runs per mode (where the per-mode map only reflects the
+    default run). Returns the ``structure_score`` map written ({} when the
+    plugin supplies none, e.g. the null plugin)."""
 
-    from ..common import write_json
+    from ..common import load_json, write_json
     from ..sdks.report_registry import resolve_from_result_root
 
     plugin = resolve_from_result_root(root)
@@ -550,14 +585,26 @@ def persist_quality_summary(root: Path, runs: dict[str, RunEvidence | dict[str, 
         run = runs.get(mode)
         if run is None:
             continue
-        try:
-            score = plugin.score_structure(_as_run_evidence(run)).score
-        except Exception:
-            score = None
-        if isinstance(score, (int, float)) and not isinstance(score, bool):
-            scores[mode] = float(score)
+        score = _structure_score_value(plugin, run)
+        if score is not None:
+            scores[mode] = score
+    run_plan = load_json(root / "run_plan.json", {}) or {}
+    entries = run_plan.get("entries") if isinstance(run_plan, dict) else None
+    scores_by_run: dict[str, float] = {}
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict) or not entry.get("run_id"):
+            continue
+        bundle = _plan_entry_run_bundle(root, entry)
+        score = _structure_score_value(plugin, bundle) if bundle is not None else None
+        if score is not None:
+            scores_by_run[str(entry["run_id"])] = score
+    payload: dict[str, Any] = {}
     if scores:
-        write_json(root / "quality_summary.json", {"structure_score": scores})
+        payload["structure_score"] = scores
+    if scores_by_run:
+        payload["structure_score_by_run"] = scores_by_run
+    if payload:
+        write_json(root / "quality_summary.json", payload)
     return scores
 
 

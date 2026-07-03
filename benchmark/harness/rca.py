@@ -740,21 +740,44 @@ _TOPIC_SEEDERS: dict[str, Callable[..., dict[str, Any] | None]] = {
 _AUTO_TOPICS = ("failure", "slowdown", "tokens")
 
 
-def _structure_regressed(result_root: Path, mode: str) -> bool:
-    """True when ``mode``'s persisted structure score is below its peer's.
+def _score_number(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _structure_regressed(result_root: Path, mode: str, run_id: str | None = None) -> bool:
+    """True when the selected run's persisted structure score is below its peer's.
 
     Reads the host-written ``quality_summary.json`` (see
     ``benchmark_insights.persist_quality_summary``) so the SDK-agnostic auto
-    loop can gate a structure investigation without importing SDK scoring."""
+    loop can gate a structure investigation without importing SDK scoring.
+    Prefers the run-specific ``structure_score_by_run`` map, compared against
+    the selected run's comparison-group peer; the per-mode ``structure_score``
+    map is trusted only when both modes map to a single run, so in multi-run
+    roots the gate never fires (or skips) based on a different run's score."""
 
     summary = load_json(result_root / "quality_summary.json", {}) or {}
-    scores = summary.get("structure_score") if isinstance(summary, dict) else None
+    if not isinstance(summary, dict):
+        return False
+    _mode_dir, entry = _resolve_run_selection(result_root, mode, run_id)
+    peer = _peer_entry(result_root, entry, mode)
+    by_run = summary.get("structure_score_by_run")
+    if isinstance(by_run, dict) and entry is not None and peer is not None:
+        mode_score = _score_number(by_run.get(str(entry.get("run_id"))))
+        peer_score = _score_number(by_run.get(str(peer.get("run_id"))))
+        if mode_score is not None and peer_score is not None:
+            return mode_score < peer_score
+    peer_mode = str(peer.get("mode")) if peer and peer.get("mode") else _other_mode(result_root, mode)
+    if not peer_mode:
+        return False
+    entry_modes = [str(item.get("mode")) for item in _plan_entries(result_root) if item.get("mode")]
+    if entry_modes.count(mode) > 1 or entry_modes.count(peer_mode) > 1:
+        return False
+    scores = summary.get("structure_score")
     if not isinstance(scores, dict):
         return False
-    peer = _other_mode(result_root, mode)
-    mode_score = scores.get(mode)
-    peer_score = scores.get(peer) if peer else None
-    if not isinstance(mode_score, (int, float)) or not isinstance(peer_score, (int, float)):
+    mode_score = _score_number(scores.get(mode))
+    peer_score = _score_number(scores.get(peer_mode))
+    if mode_score is None or peer_score is None:
         return False
     return mode_score < peer_score
 
@@ -770,8 +793,9 @@ def resolve_seed(
             if seed is not None:
                 return seed
         # Structure has no cheap numeric gate inside this SDK-agnostic loop, so
-        # auto fires it only when the persisted score shows a real regression.
-        if _structure_regressed(result_root, mode):
+        # auto fires it only when the persisted score shows a real regression
+        # for the selected run (not just for the mode's default run).
+        if _structure_regressed(result_root, mode, run_id):
             return seed_structure_context(result_root, mode, run_id)
         return None
     seeder = _TOPIC_SEEDERS.get(topic)
