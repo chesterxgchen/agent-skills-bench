@@ -234,18 +234,24 @@ def _checked_agent_run(
 _CONTAINER_EVIDENCE_DIR = "/evidence"
 
 
-def _claude_cli_args(cwd: str) -> list[str]:
-    # Read-only investigator over untrusted evidence (see
-    # _UNTRUSTED_DATA_PREAMBLE): no execution, no mutation, and — because the
-    # prompt embeds attacker-influenced captured output — no network tools
-    # (WebFetch/WebSearch are exfiltration channels) and no host-configured
-    # MCP servers (--strict-mcp-config). Claude Code permission rules cannot
-    # whitelist reads by location (deny rules are the only read restriction,
-    # and Read(//**) denies the cwd too); on the HOST path reads are therefore
-    # open except the home tree, which is why the container sandbox is
-    # preferred. Read deny rules gate Grep/Glob only best-effort. The prompt
-    # goes via stdin: the tool flags are variadic and would swallow a
-    # positional prompt. ``cwd`` is unused — claude uses its process/-w dir.
+def _claude_cli_args(cwd: str, *, sandboxed: bool) -> list[str]:
+    # ``sandboxed`` (container): the container IS the boundary — only the
+    # read-only evidence tree and the vendor API key are inside it — so the
+    # investigator runs with the SAME full permissions as the benchmarked agent
+    # (bypassPermissions / --dangerously-skip-permissions). Restricting tools
+    # here would only cripple the analysis without adding safety. Residual: the
+    # container keeps network egress for the model API, so an injected
+    # WebFetch could still exfil the mounted evidence / API key — the same
+    # posture the benchmark run itself accepts.
+    #
+    # HOST path (not sandboxed): reads are NOT confined (Claude deny rules can't
+    # whitelist a cwd — Read(//**) denies the cwd too, and Grep/Glob aren't
+    # path-gated), so lock the investigator down to read-only analysis with no
+    # network/exec/MCP. The prompt goes via stdin either way (the tool flags are
+    # variadic and would swallow a positional prompt). ``cwd`` is unused —
+    # claude uses its process/-w working dir.
+    if sandboxed:
+        return ["claude", "-p", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions"]
     return [
         "claude",
         "-p",
@@ -257,34 +263,26 @@ def _claude_cli_args(cwd: str) -> list[str]:
     ]
 
 
-def _codex_cli_args(cwd: str) -> list[str]:
-    # codex's read-only seatbelt still allows full-disk reads and gives
-    # model-run commands the CLI's own environment by default;
-    # shell_environment_policy.inherit=core keeps the API keys this process
-    # must hold out of every command the model spawns. On the HOST path
-    # injected instructions can still quote non-home host files into the
-    # answer — the container sandbox closes that. --ignore-rules/--ephemeral
-    # keep instruction files captured into the evidence copy (AGENTS.md and
-    # friends) from steering the investigator, and --cd pins the session to the
-    # evidence root.
-    return [
-        "codex",
-        "exec",
-        "--skip-git-repo-check",
-        "--ignore-rules",
-        "--ephemeral",
-        "--cd",
-        cwd,
-        "--sandbox",
-        "read-only",
-        "-c",
-        "shell_environment_policy.inherit=core",
-        "-",
-    ]
+def _codex_cli_args(cwd: str, *, sandboxed: bool) -> list[str]:
+    # ``sandboxed`` (container): full permissions like the benchmark run
+    # (--dangerously-bypass-approvals-and-sandbox) — the container confines the
+    # filesystem, so an in-container seatbelt is redundant. HOST path: keep
+    # codex's read-only sandbox and shell_environment_policy.inherit=core (which
+    # keeps the API keys out of model-spawned commands), since a host process
+    # is otherwise unconfined. Either way --ignore-rules/--ephemeral keep
+    # instruction files captured into the evidence (AGENTS.md and friends) from
+    # steering the investigator, and --cd pins the session to the evidence root.
+    args = ["codex", "exec", "--skip-git-repo-check", "--ignore-rules", "--ephemeral", "--cd", cwd]
+    if sandboxed:
+        args.append("--dangerously-bypass-approvals-and-sandbox")
+    else:
+        args += ["--sandbox", "read-only", "-c", "shell_environment_policy.inherit=core"]
+    args.append("-")
+    return args
 
 
 # agent name -> (argv builder, env-prefix allowlist for the invoker process).
-_AGENT_CLI: dict[str, tuple[Callable[[str], list[str]], tuple[str, ...]]] = {
+_AGENT_CLI: dict[str, tuple[Callable[..., list[str]], tuple[str, ...]]] = {
     "claude": (_claude_cli_args, _CLAUDE_ENV_PREFIXES),
     "codex": (_codex_cli_args, _CODEX_ENV_PREFIXES),
 }
@@ -324,7 +322,9 @@ def _make_host_invoker(agent: str) -> AgentInvoker:
     args_builder, env_prefixes = _AGENT_CLI[agent]
 
     def invoke(prompt: str, cwd: Path) -> str:
-        return _checked_agent_run(args_builder(str(cwd)), cwd, input_text=prompt, env_prefixes=env_prefixes)
+        return _checked_agent_run(
+            args_builder(str(cwd), sandboxed=False), cwd, input_text=prompt, env_prefixes=env_prefixes
+        )
 
     return invoke
 
@@ -362,7 +362,7 @@ def _make_container_invoker(agent: str, adapter: Any, image: str) -> AgentInvoke
         for key in passthrough:
             docker_args += ["--env", key]
         docker_args.append(image)
-        docker_args += args_builder(_CONTAINER_EVIDENCE_DIR)
+        docker_args += args_builder(_CONTAINER_EVIDENCE_DIR, sandboxed=True)
         try:
             return _checked_agent_run(docker_args, evidence, input_text=prompt, env_prefixes=env_prefixes)
         finally:

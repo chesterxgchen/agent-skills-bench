@@ -8881,6 +8881,26 @@ def test_rca_codex_invoker_isolates_session_from_instruction_files(monkeypatch, 
     assert ["--cd", str(tmp_path)] == codex_args[codex_args.index("--cd") : codex_args.index("--cd") + 2]
 
 
+def test_rca_cli_permissions_are_full_in_sandbox_locked_on_host():
+    from benchmark.harness import rca
+
+    # HOST: reads are unconfined, so the investigator is locked to read-only
+    # analysis (no exec/network/MCP).
+    host_claude = rca._claude_cli_args("/x", sandboxed=False)
+    assert "--disallowedTools" in host_claude and "--dangerously-skip-permissions" not in host_claude
+    host_codex = rca._codex_cli_args("/x", sandboxed=False)
+    assert "read-only" in host_codex and "--dangerously-bypass-approvals-and-sandbox" not in host_codex
+
+    # CONTAINER: the container is the boundary, so the investigator runs with
+    # the SAME full permissions as the benchmarked agent — not crippled.
+    box_claude = rca._claude_cli_args("/evidence", sandboxed=True)
+    assert "--dangerously-skip-permissions" in box_claude and "--disallowedTools" not in box_claude
+    box_codex = rca._codex_cli_args("/evidence", sandboxed=True)
+    assert "--dangerously-bypass-approvals-and-sandbox" in box_codex and "read-only" not in box_codex
+    # Captured instruction files (AGENTS.md) still must not steer the investigator.
+    assert "--ignore-rules" in box_codex and "--ephemeral" in box_codex
+
+
 def test_rca_container_invoker_confines_reads_to_mounted_evidence(monkeypatch, tmp_path):
     from benchmark.harness import rca
     from benchmark.harness.agents.registry import load_agent_adapter
