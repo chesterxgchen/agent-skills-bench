@@ -7379,6 +7379,86 @@ def test_why_renders_generic_failure_root_cause_chain():
     assert _failure_root_cause_chain(base_run, with_run) == []
 
 
+def test_why_suppresses_root_cause_chain_when_run_recovers():
+    from benchmark.harness.reports.insights._why import _failure_root_cause_chain
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    # The import probe fails, but the run recovers: it installs the missing
+    # dependency and the job completes. There is no terminal failure to chain.
+    with_events = "\n".join(
+        [
+            command(
+                "python3 -c 'import torch'",
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            command("python3 -m pip install -r requirements-train.txt", output="Successfully installed torch"),
+            command("python3 job.py --num-clients 3", output="workflow Finished", exit_code=0),
+        ]
+    )
+    base_events = command("python3 job.py", output="workflow Finished", exit_code=0)
+    with_run = _ev({"available": True, "label": "With skills", "agent_events_text": with_events})
+    base_run = _ev({"available": True, "label": "No skills baseline", "agent_events_text": base_events})
+
+    assert _failure_root_cause_chain(with_run, base_run) == []
+
+
+def test_why_root_cause_chain_from_claude_tool_result_events():
+    from benchmark.harness.reports._events import event_timeline_from_text
+    from benchmark.harness.reports.insights._why import _failure_root_cause_chain
+
+    def assistant(*content):
+        return {"event_type": "assistant", "message": {"content": list(content)}}
+
+    def tool_result(tool_use_id, content, is_error=False):
+        return {
+            "event_type": "user",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error}
+                ]
+            },
+        }
+
+    events = [
+        assistant(
+            {"type": "text", "text": "Checking whether torch is available before the job."},
+            {"type": "tool_use", "name": "Bash", "id": "toolu_probe", "input": {"command": "python3 -c 'import torch, sys'"}},
+        ),
+        tool_result("toolu_probe", "torch 2.4.0"),
+        assistant({"type": "tool_use", "name": "Bash", "id": "toolu_job", "input": {"command": "python3 job.py --num-clients 3"}}),
+        tool_result("toolu_job", "Traceback...\nModuleNotFoundError: No module named 'torch'", is_error=True),
+    ]
+    events_text = "\n".join(json.dumps(event) for event in events)
+
+    # tool_result content carried only in message.content is matched by
+    # tool_use_id and yields output plus a derived exit status.
+    commands = [item for item in event_timeline_from_text(events_text) if item["kind"] == "command"]
+    assert commands[0]["exit_code"] == 0
+    assert commands[0]["output"] == "torch 2.4.0"
+    assert commands[1]["exit_code"] == 1
+    assert "ModuleNotFoundError: No module named 'torch'" in commands[1]["output"]
+
+    with_run = _ev({"available": True, "label": "With skills", "agent_events_text": events_text})
+    base_run = _ev({"available": True, "label": "No skills baseline", "agent_events_text": ""})
+    chain = "\n".join(_failure_root_cause_chain(with_run, base_run))
+    assert "Root-cause chain (auto-extracted from With skills events)" in chain
+    assert "ModuleNotFoundError: No module named 'torch'" in chain
+    assert "Checking whether torch is available" in chain
+
+
 def test_rca_investigation_loop_follows_agent_questions(tmp_path):
     from benchmark.harness.rca import run_investigation, seed_failure_context
 
@@ -7521,3 +7601,41 @@ def test_rca_slowdown_topic_seeds_comparative_question(tmp_path):
     assert "+300s" in prompts[0]
     assert "what did this run spend time doing that without_skills did not" in prompts[0]
     assert "records/mode=without_skills" in prompts[0]
+
+
+def test_rca_resynthesize_rewrites_report_from_saved_trail(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resynthesize_report
+
+    mode_dir = tmp_path / "records" / "mode=with_skills"
+    rca_dir = mode_dir / "rca"
+    rca_dir.mkdir(parents=True)
+    write_json(tmp_path / "run_plan.json", {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]})
+    # Legacy single-file trail and report names (pre per-topic naming).
+    trail = [
+        {"seed": {"failed_command": "python3 job.py", "error": "ModuleNotFoundError: No module named 'torch'"}, "agent": "claude"},
+        {
+            "question": "What caused the failure?",
+            "answer": "torch was never installed.",
+            "evidence": [{"file": "agent_events.jsonl", "quote": "No module named 'torch'"}],
+            "next_question": None,
+            "conclusion": "Instruction present but not followed.",
+        },
+    ]
+    (rca_dir / "investigation.jsonl").write_text("\n".join(json.dumps(r) for r in trail) + "\n", encoding="utf-8")
+    (rca_dir / "rca_report.md").write_text("old dense report", encoding="utf-8")
+
+    def fake_invoker(prompt, cwd):
+        assert "### Verdict" in prompt
+        assert "### Causal chain" in prompt
+        assert "Instruction present but not followed." in prompt
+        return "### Verdict\n\nAgent skipped the install.\n\n### Causal chain\n\n1. **Agent** — chose not to install."
+
+    report_path = resynthesize_report(tmp_path, "with_skills", fake_invoker, topic="failure", agent_name="fake")
+    assert report_path is not None
+    assert report_path.name == "rca_report_failure.md"
+    report = report_path.read_text(encoding="utf-8")
+    assert "### Verdict" in report
+    assert "**command `python3 job.py` failed with `ModuleNotFoundError: No module named 'torch'`**" in report
+    # The legacy report file is removed so it cannot double-embed.
+    assert not (rca_dir / "rca_report.md").exists()

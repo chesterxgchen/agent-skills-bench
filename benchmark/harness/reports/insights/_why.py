@@ -25,13 +25,13 @@ from .._events import (
     _format_command_span,
     _span_total_seconds,
     as_number,
-    error_signature_from_output,
     event_timeline_from_text,
     fmt_seconds,
     fmt_seconds_with_unit,
     inline_code_text,
     is_dependency_install_command,
     predicted_failure_message,
+    terminal_failure_anchor,
     truncate,
     run_activity,
 )
@@ -881,10 +881,6 @@ _REMEDIAL_COMMAND_CHECKS = {
 }
 
 
-def _error_signature(output: str) -> dict[str, str] | None:
-    return error_signature_from_output(output)
-
-
 def _rca_terms(signature: dict[str, str], anchor_command: str) -> set[str]:
     """Search terms derived from the failure itself — nothing situation-specific."""
 
@@ -910,20 +906,16 @@ def _failure_root_cause_chain(with_run: RunEvidence, base_run: RunEvidence) -> l
     Fully evidence-derived: the failure signature is read from the failed
     command's own output, the search terms come from that signature, and every
     chain entry is a verbatim command or agent statement that mentions those
-    terms. No situation-specific narrative is encoded here.
+    terms. No situation-specific narrative is encoded here. The chain is only
+    built for a genuinely terminal failure — a failure the run recovered from
+    (a later command succeeded) produces no chain.
     """
 
     timeline = _run_event_timeline(with_run)
-    anchor_index: int | None = None
-    signature: dict[str, str] | None = None
-    for index, item in enumerate(timeline):
-        if item["kind"] != "command":
-            continue
-        candidate = _error_signature(str(item.get("output") or ""))
-        if candidate and item.get("exit_code") not in (0,):
-            anchor_index, signature = index, candidate
-    if anchor_index is None or signature is None:
+    anchored = terminal_failure_anchor(timeline)
+    if anchored is None:
         return []
+    anchor_index, signature = anchored
     anchor = timeline[anchor_index]
     terms = _rca_terms(signature, str(anchor.get("command") or ""))
     chain: list[dict[str, Any]] = []

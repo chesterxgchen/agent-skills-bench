@@ -621,11 +621,13 @@ def event_timeline_from_text(events_text: str) -> list[dict[str, Any]]:
     """Ordered command/message items from a captured agent event stream.
 
     Understands both stream shapes: Claude (message.content text/tool_use items,
-    tool_use_result outputs) and codex (item.completed command_execution /
+    with outputs from tool_result content items matched by tool_use_id or a
+    top-level tool_use_result) and codex (item.completed command_execution /
     agent_message / reasoning items).
     """
 
     items: list[dict[str, Any]] = []
+    pending_commands_by_tool_id: dict[str, dict[str, Any]] = {}
     for line in str(events_text or "").splitlines():
         try:
             payload = json.loads(line)
@@ -649,20 +651,28 @@ def event_timeline_from_text(events_text: str) -> list[dict[str, Any]]:
                 if text:
                     items.append({"kind": "message", "text": text})
             continue
-        message = payload.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, list):
-            for entry in content:
-                if not isinstance(entry, dict):
+        resolved_tool_result = False
+        for entry in message_content_items(payload):
+            if entry.get("type") == "text" and str(entry.get("text") or "").strip():
+                items.append({"kind": "message", "text": str(entry["text"]).strip()})
+            elif entry.get("type") == "tool_use" and isinstance(entry.get("input"), dict):
+                command = str(entry["input"].get("command") or "")
+                if command:
+                    command_item = {"kind": "command", "command": command, "output": "", "exit_code": None}
+                    items.append(command_item)
+                    tool_id = str(entry.get("id") or "")
+                    if tool_id:
+                        pending_commands_by_tool_id[tool_id] = command_item
+            elif entry.get("type") == "tool_result":
+                command_item = pending_commands_by_tool_id.pop(str(entry.get("tool_use_id") or ""), None)
+                if command_item is None:
                     continue
-                if entry.get("type") == "text" and str(entry.get("text") or "").strip():
-                    items.append({"kind": "message", "text": str(entry["text"]).strip()})
-                elif entry.get("type") == "tool_use" and isinstance(entry.get("input"), dict):
-                    command = str(entry["input"].get("command") or "")
-                    if command:
-                        items.append({"kind": "command", "command": command, "output": "", "exit_code": None})
+                output = tool_result_output(payload, entry)
+                command_item["output"] = output
+                command_item["exit_code"], _status = tool_result_exit(payload, entry, output)
+                resolved_tool_result = True
         result = payload.get("tool_use_result")
-        if isinstance(result, dict) and items and items[-1]["kind"] == "command":
+        if not resolved_tool_result and isinstance(result, dict) and items and items[-1]["kind"] == "command":
             items[-1]["output"] = "\n".join(
                 str(result.get(key) or "") for key in ("stdout", "stderr") if result.get(key)
             )
@@ -687,6 +697,31 @@ def error_signature_from_output(output: str) -> dict[str, str] | None:
     return None
 
 
+def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[str, str]] | None:
+    """Last failed command with a recognized error signature, if the run never recovered.
+
+    Returns None when any command after that failure completed successfully:
+    the agent recovered mid-run (e.g. a failed import probe followed by an
+    install and a passing job), so the failure is not the run's terminal state
+    and must not be presented as a terminal root cause.
+    """
+
+    anchor_index: int | None = None
+    signature: dict[str, str] | None = None
+    for index, item in enumerate(timeline):
+        if item.get("kind") != "command":
+            continue
+        candidate = error_signature_from_output(str(item.get("output") or ""))
+        if candidate and item.get("exit_code") not in (0,):
+            anchor_index, signature = index, candidate
+    if anchor_index is None or signature is None:
+        return None
+    for item in timeline[anchor_index + 1 :]:
+        if item.get("kind") == "command" and item.get("exit_code") == 0:
+            return None
+    return anchor_index, signature
+
+
 _FAILURE_PREDICTION_CUES = (
     "expect",
     "will fail",
@@ -709,16 +744,10 @@ def predicted_failure_message(events_text: str) -> dict[str, str] | None:
     """
 
     timeline = event_timeline_from_text(events_text)
-    anchor_index: int | None = None
-    signature: dict[str, str] | None = None
-    for index, item in enumerate(timeline):
-        if item["kind"] != "command":
-            continue
-        candidate = error_signature_from_output(str(item.get("output") or ""))
-        if candidate and item.get("exit_code") not in (0,):
-            anchor_index, signature = index, candidate
-    if anchor_index is None or signature is None:
+    anchored = terminal_failure_anchor(timeline)
+    if anchored is None:
         return None
+    anchor_index, signature = anchored
     subject = signature["subject"].split(".")[0].lower()
     for item in timeline[:anchor_index]:
         if item["kind"] != "message":

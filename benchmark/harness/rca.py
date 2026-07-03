@@ -56,7 +56,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .common import load_json, write_json
-from .reports._events import error_signature_from_output, event_timeline_from_text
+from .reports._events import event_timeline_from_text, terminal_failure_anchor
 from .reports._loader import mode_dir_for_benchmark
 
 MAX_INVESTIGATION_STEPS = 8
@@ -180,16 +180,11 @@ def seed_failure_context(result_root: Path, mode: str) -> dict[str, Any] | None:
     if not events_path.is_file():
         return None
     timeline = event_timeline_from_text(events_path.read_text(encoding="utf-8", errors="replace"))
-    anchor = None
-    signature = None
-    for item in timeline:
-        if item["kind"] != "command":
-            continue
-        candidate = error_signature_from_output(str(item.get("output") or ""))
-        if candidate and item.get("exit_code") not in (0,):
-            anchor, signature = item, candidate
-    if anchor is None or signature is None:
+    anchored = terminal_failure_anchor(timeline)
+    if anchored is None:
         return None
+    anchor_index, signature = anchored
+    anchor = timeline[anchor_index]
     seed = _base_seed(result_root, mode, "failure")
     seed.update(
         {
@@ -314,12 +309,103 @@ def _synthesis_prompt(seed: dict[str, Any], steps: list[InvestigationStep]) -> s
     return (
         "Write the final root-cause analysis report for this benchmark observation as markdown. "
         "Base it ONLY on the investigation findings below; keep every quoted evidence reference. "
-        "Structure: `### Root cause` (one paragraph naming the causal chain), `### Evidence` "
-        "(bullet list, each with its file reference), `### Recommendation` (what change prevents this "
-        "class of issue). Do not add headers above ###.\n\n"
+        "It must be scannable, never a wall of prose. Structure exactly:\n"
+        "- `### Verdict` — ONE sentence naming the root cause in plain words.\n"
+        "- `### Causal chain` — a numbered list, one step per line, from first trigger to terminal "
+        "failure. Each step is one short sentence in the form '**<actor/what>** — <what happened>'.\n"
+        "- `### What did NOT cause it` — short bullets ruling out the alternatives the evidence "
+        "excludes (omit the section if none were ruled out).\n"
+        "- `### Evidence` — bullets, each ONE finding with its file reference in backticks and a "
+        "SHORT quote (trim quotes to the decisive fragment, under ~25 words).\n"
+        "- `### Recommendation` — bullets, one per actionable change, each starting with the owner "
+        "in bold (e.g. **Prompt:**, **Skill:**, **Harness:**).\n"
+        "Keep every sentence short. Do not add headers above ###.\n\n"
         f"Observation investigated: {seed['headline']}.\n\n"
         f"Investigation trail:\n{qa}\n"
     )
+
+
+def load_investigation_trail(mode_dir: Path, topic: str) -> tuple[dict[str, Any], list[InvestigationStep]] | None:
+    """Load a saved Q/A trail (current per-topic naming or the legacy single file)."""
+
+    for name in (f"investigation_{topic}.jsonl", "investigation.jsonl"):
+        path = mode_dir / "rca" / name
+        if not path.is_file():
+            continue
+        records = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        if not records:
+            continue
+        seed = records[0].get("seed") if isinstance(records[0], dict) else None
+        seed = dict(seed) if isinstance(seed, dict) else {}
+        seed.setdefault("topic", topic)
+        seed.setdefault(
+            "headline",
+            (
+                f"command `{seed.get('failed_command')}` failed with `{seed.get('error')}`"
+                if seed.get("failed_command")
+                else "benchmark observation"
+            ),
+        )
+        steps = [
+            InvestigationStep(
+                question=str(record.get("question") or ""),
+                answer=str(record.get("answer") or ""),
+                evidence=[item for item in record.get("evidence") or [] if isinstance(item, dict)],
+                next_question=record.get("next_question"),
+                conclusion=record.get("conclusion"),
+            )
+            for record in records[1:]
+            if isinstance(record, dict) and record.get("question")
+        ]
+        if steps:
+            return seed, steps
+    return None
+
+
+def _write_rca_report(
+    mode_dir: Path, seed: dict[str, Any], steps: list[InvestigationStep], report_markdown: str, agent_name: str
+) -> Path:
+    rca_dir = mode_dir / "rca"
+    rca_dir.mkdir(parents=True, exist_ok=True)
+    topic_slug = str(seed["topic"])
+    report_path = rca_dir / f"rca_report_{topic_slug}.md"
+    conclusion = next((step.conclusion for step in reversed(steps) if step.conclusion), "")
+    header = (
+        f"**{seed['headline']}** — investigated by `{agent_name}` over {len(steps)} question(s); "
+        f"trail: `rca/investigation_{topic_slug}.jsonl`."
+    )
+    body = report_markdown if report_markdown else f"### Verdict\n\n{conclusion or 'not established'}"
+    report_path.write_text(f"{header}\n\n{body}\n", encoding="utf-8")
+    # The legacy single-file name would double-embed next to the per-topic file.
+    legacy = rca_dir / "rca_report.md"
+    if legacy.is_file() and legacy != report_path:
+        legacy.unlink()
+    return report_path
+
+
+def resynthesize_report(
+    result_root: Path,
+    mode: str,
+    invoker: AgentInvoker,
+    *,
+    topic: str = "failure",
+    agent_name: str = "agent",
+) -> Path | None:
+    """Rewrite the RCA report from the saved trail without re-running the investigation."""
+
+    mode_dir = mode_dir_for_benchmark(result_root, mode)
+    loaded = load_investigation_trail(mode_dir, topic)
+    if loaded is None:
+        print(f"No saved investigation trail for mode={mode} topic={topic}.")
+        return None
+    seed, steps = loaded
+    report_markdown = invoker(_synthesis_prompt(seed, steps), result_root).strip()
+    return _write_rca_report(mode_dir, seed, steps, report_markdown, agent_name)
 
 
 def run_investigation(
@@ -373,15 +459,7 @@ def run_investigation(
                 )
                 + "\n"
             )
-    report_path = rca_dir / f"rca_report_{topic_slug}.md"
-    conclusion = next((step.conclusion for step in reversed(steps) if step.conclusion), "")
-    header = (
-        f"**{seed['headline']}** — investigated by `{agent_name}` over {len(steps)} question(s); "
-        f"trail: `rca/investigation_{topic_slug}.jsonl`."
-    )
-    body = report_markdown if report_markdown else f"### Root cause\n\n{conclusion or 'not established'}"
-    report_path.write_text(f"{header}\n\n{body}\n", encoding="utf-8")
-    return report_path
+    return _write_rca_report(mode_dir, seed, steps, report_markdown, agent_name)
 
 
 def _regenerate_reports(result_root: Path) -> None:
@@ -406,21 +484,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent", help="Investigator agent CLI: claude or codex (default: first found on PATH)")
     parser.add_argument("--max-steps", type=int, default=MAX_INVESTIGATION_STEPS)
     parser.add_argument(
+        "--resynthesize",
+        action="store_true",
+        help="Rewrite the report from the saved rca/investigation trail (one agent call, no re-investigation).",
+    )
+    parser.add_argument(
         "--no-report-refresh",
         action="store_true",
         help="Skip regenerating benchmark_insights.md after the investigation.",
     )
     args = parser.parse_args(argv)
     agent_name, invoker = resolve_invoker(args.agent)
-    report_path = run_investigation(
-        args.result_root,
-        args.mode,
-        invoker,
-        topic=args.topic,
-        question=args.question,
-        max_steps=args.max_steps,
-        agent_name=agent_name,
-    )
+    if args.resynthesize:
+        report_path = resynthesize_report(
+            args.result_root,
+            args.mode,
+            invoker,
+            topic=args.topic if args.topic != "auto" else "failure",
+            agent_name=agent_name,
+        )
+    else:
+        report_path = run_investigation(
+            args.result_root,
+            args.mode,
+            invoker,
+            topic=args.topic,
+            question=args.question,
+            max_steps=args.max_steps,
+            agent_name=agent_name,
+        )
     if report_path is None:
         return 1
     print(report_path)
