@@ -29,12 +29,14 @@ The loop is topic- and SDK-independent: it reads only generic captured
 artifacts (``run_summary.json``, ``agent_events.jsonl``, ``prompt.txt``,
 ``workspace_delta/``) and never imports SDK plugins. Built-in topics seed the
 common questions — a terminal failure, "why is this run slower", "why did it
-use more tokens" — and ``--question`` seeds any other investigation.
+use more tokens", and "why is this mode's converted-file structure worse than
+its peer (and was the skill's layout instruction followed)" — and
+``--question`` seeds any other investigation.
 
 Standalone usage (after a benchmark run)::
 
     python -m benchmark.harness.rca <result_root> [--mode with_skills] \
-        [--topic auto|failure|slowdown|tokens] [--question "..."] \
+        [--topic auto|failure|slowdown|tokens|structure] [--question "..."] \
         [--agent claude|codex] [--max-steps 8]
 
 The investigator agent runs read-only over a staged, symlink-free copy of the
@@ -628,6 +630,40 @@ def seed_failure_context(result_root: Path, mode: str, run_id: str | None = None
     return seed
 
 
+def seed_structure_context(result_root: Path, mode: str, run_id: str | None = None) -> dict[str, Any] | None:
+    """Seed a 'why did the converted-file structure regress' investigation.
+
+    Structure scoring is SDK-specific, so this seeds no numeric threshold from
+    here (that would leak SDK knowledge into the SDK-independent RCA loop).
+    Instead it points the investigator at BOTH modes' captured structure and
+    asks it to find required files the peer places where the checks expect them
+    that this mode is missing or put elsewhere (e.g. nested in a job subfolder),
+    then explain the cause from the captured skill files, prompt, and
+    transcript — including whether a layout instruction was present but not
+    followed, or followed in a way that produced a structure the checks score
+    as missing. Needs a peer mode to compare against."""
+
+    seed = _base_seed(result_root, mode, "structure", run_id)
+    base_mode = seed.get("base_mode")
+    if not base_mode:
+        return None
+    seed.update(
+        {
+            "headline": f"why {mode}'s converted-file structure is worse than {base_mode}'s",
+            "seed_question": (
+                f"The {mode} run's converted-file structure scored worse than {base_mode}. From the captured "
+                f"evidence, compare the two runs' generated files: which required converted files does {base_mode} "
+                f"place where the structure check expects them that {mode} is missing or put somewhere else (for "
+                f"example nested inside a job subfolder rather than at the top level)? Then explain the cause — "
+                f"check the captured skill files, prompt, and agent transcript: was the layout instruction "
+                f"present, and was it followed, ignored, or followed in a way that produced a structure the check "
+                f"scores as missing?"
+            ),
+        }
+    )
+    return seed
+
+
 def _summary_delta_seed(
     result_root: Path,
     mode: str,
@@ -693,7 +729,14 @@ _TOPIC_SEEDERS: dict[str, Callable[..., dict[str, Any] | None]] = {
     "failure": seed_failure_context,
     "slowdown": seed_slowdown_context,
     "tokens": seed_token_context,
+    "structure": seed_structure_context,
 }
+
+# ``auto`` scans these in order — a deterministic delta gates each. ``structure``
+# is intentionally excluded: it has no cheap numeric gate here (structure
+# scoring is SDK-specific), so it is an explicit ``--topic structure`` choice
+# rather than something ``auto`` fires on every run.
+_AUTO_TOPICS = ("failure", "slowdown", "tokens")
 
 
 def resolve_seed(
@@ -702,7 +745,7 @@ def resolve_seed(
     if question:
         return seed_custom_context(result_root, mode, question, run_id)
     if topic == "auto":
-        for name in ("failure", "slowdown", "tokens"):
+        for name in _AUTO_TOPICS:
             seed = _TOPIC_SEEDERS[name](result_root, mode, run_id)
             if seed is not None:
                 return seed
@@ -985,10 +1028,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--topic",
         default="auto",
-        choices=["auto", "failure", "slowdown", "tokens", "custom"],
-        help="What to investigate: a terminal failure, the elapsed-time delta, or the token-usage delta "
-        "(auto picks the first that applies). 'custom' pairs with --question, or with --resynthesize "
-        "to rewrite a saved custom-question trail.",
+        choices=["auto", "failure", "slowdown", "tokens", "structure", "custom"],
+        help="What to investigate: a terminal failure, the elapsed-time delta, the token-usage delta, or a "
+        "'structure' regression (why this mode's converted-file structure is worse than its peer, and whether "
+        "the skill's layout instruction was followed). 'auto' picks the first failure/slowdown/tokens that "
+        "applies; 'structure' and 'custom' are explicit (custom pairs with --question).",
     )
     parser.add_argument("--question", help="Free-form investigation question (overrides --topic).")
     parser.add_argument("--agent", help="Investigator agent CLI: claude or codex (default: first found on PATH)")

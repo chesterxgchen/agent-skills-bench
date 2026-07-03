@@ -8541,6 +8541,73 @@ def test_rca_investigation_loop_follows_agent_questions(tmp_path):
     assert report.startswith("**command `python3 job.py` failed")
 
 
+def test_rca_structure_topic_seeds_regression_investigation(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resolve_seed, seed_structure_context
+
+    for mode in ("with_skills", "without_skills"):
+        d = tmp_path / "records" / f"mode={mode}"
+        d.mkdir(parents=True)
+        write_json(d / "run_summary.json", {"mode": mode})
+    write_json(
+        tmp_path / "run_plan.json",
+        {
+            "entries": [
+                {"mode": "with_skills", "record_dir": "records/mode=with_skills"},
+                {"mode": "without_skills", "record_dir": "records/mode=without_skills"},
+            ]
+        },
+    )
+
+    seed = seed_structure_context(tmp_path, "with_skills")
+    assert seed is not None
+    assert seed["topic"] == "structure"
+    assert seed["base_mode"] == "without_skills"
+    # The seed asks both "what regressed" (nesting vs top level) and "why"
+    # (was the skill's layout instruction followed).
+    q = seed["seed_question"]
+    assert "nested" in q and "instruction" in q and "without_skills" in q
+    # Explicit topic dispatch resolves to the structure seeder.
+    assert resolve_seed(tmp_path, "with_skills", "structure", None)["topic"] == "structure"
+
+
+def test_rca_structure_topic_needs_a_peer_mode(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import seed_structure_context
+
+    d = tmp_path / "records" / "mode=with_skills"
+    d.mkdir(parents=True)
+    write_json(d / "run_summary.json", {"mode": "with_skills"})
+    write_json(
+        tmp_path / "run_plan.json", {"entries": [{"mode": "with_skills", "record_dir": "records/mode=with_skills"}]}
+    )
+
+    # No baseline to compare against -> no structure seed.
+    assert seed_structure_context(tmp_path, "with_skills") is None
+
+
+def test_rca_auto_does_not_fire_structure(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resolve_seed
+
+    for mode in ("with_skills", "without_skills"):
+        d = tmp_path / "records" / f"mode={mode}"
+        d.mkdir(parents=True)
+        write_json(d / "run_summary.json", {"mode": mode})
+    write_json(
+        tmp_path / "run_plan.json",
+        {
+            "entries": [
+                {"mode": "with_skills", "record_dir": "records/mode=with_skills"},
+                {"mode": "without_skills", "record_dir": "records/mode=without_skills"},
+            ]
+        },
+    )
+    # No failure/slowdown/tokens delta and structure is excluded from auto, so
+    # auto finds nothing to investigate rather than always running structure.
+    assert resolve_seed(tmp_path, "with_skills", "auto", None) is None
+
+
 def test_why_embeds_agent_rca_report():
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
     from benchmark.harness.reports.insights._why import why_section
