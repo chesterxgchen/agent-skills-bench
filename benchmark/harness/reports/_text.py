@@ -77,14 +77,19 @@ def sanitize_agent_markdown(text: str) -> str:
     """
 
     lines: list[str] = []
-    in_fence = False
+    fence_marker = ""  # e.g. "```" or "~~~~": only the SAME marker (>= length) closes a fence
     for line in str(text or "").splitlines():
         stripped = line.lstrip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            in_fence = not in_fence
+        marker_match = re.match(r"(`{3,}|~{3,})", stripped)
+        if marker_match:
+            marker = marker_match.group(1)
+            if not fence_marker:
+                fence_marker = marker
+            elif marker[0] == fence_marker[0] and len(marker) >= len(fence_marker):
+                fence_marker = ""
             lines.append(line)
             continue
-        if in_fence:
+        if fence_marker:
             lines.append(line)
             continue
         line = _SHALLOW_HEADING_RE.sub("###", line)

@@ -32,6 +32,7 @@ from ..metric_artifacts import metric_is_runtime_result_artifact
 from ._runs import combined_text
 from ._text import (
     FILE_INSPECTION_COMMANDS,
+    _command_tokens,
     _first_command_name,
     _shell_command_segments,
     fmt_number,
@@ -615,12 +616,29 @@ def commands_for_run(run: dict[str, Any]) -> list[str]:
     return [str(command) for command in commands] if isinstance(commands, list) else []
 
 
+_INSTALL_EXECUTABLES = {"pip", "pip3", "uv"}
+_INSTALL_SEGMENT_RE = re.compile(r"^(?:uv\s+)?pip3?\s+install\b|^python3?\s+-m\s+pip\s+install\b", re.IGNORECASE)
+
+
 def is_dependency_install_command(command: str) -> bool:
-    lowered = str(command).lower()
-    install_pattern = r"\b(?:uv\s+)?pip\s+install\b|\bpython3?\s+-m\s+pip\s+install\b"
-    if re.search(r"\b(?:grep|rg|sed|awk)\b", lowered) and re.search(install_pattern, lowered):
-        return False
-    return bool(re.search(install_pattern, lowered))
+    """True when some shell segment EXECUTES an installer (executable position).
+
+    Segment-based: ``echo 'pip install torch'`` is not an install (echo is the
+    executable), while ``pip install torch | grep Successfully`` is (the first
+    pipeline segment executes pip).
+    """
+
+    text = re.sub(r"^\s*(?:/bin/)?(?:ba|z)?sh\s+-l?c\s+", "", str(command or "")).strip()
+    if text[:1] in {"'", '"'} and text[-1:] == text[:1]:
+        text = text[1:-1]
+    for segment in _shell_command_segments(text):
+        stripped = segment.strip()
+        name = _first_command_name(stripped)
+        if name in _INSTALL_EXECUTABLES and re.search(r"\bpip3?\s+install\b", stripped, re.IGNORECASE):
+            return True
+        if name.startswith("python") and re.search(r"-m\s+pip3?\s+install\b", stripped, re.IGNORECASE):
+            return True
+    return False
 
 
 def event_timeline_from_text(events_text: str) -> list[dict[str, Any]]:
@@ -723,6 +741,44 @@ def _command_is_inspection_only(command: str) -> bool:
     return all(_first_command_name(segment) in FILE_INSPECTION_COMMANDS for segment in segments)
 
 
+# Interpreter tooling run via ``python -m``: environment plumbing, not a job run.
+_PYTHON_TOOLING_MODULES = frozenset({"pip", "venv", "ensurepip"})
+
+_PYTHON_EXECUTABLE_RE = re.compile(r"python[\d.]*")
+
+
+def _segment_is_python_job_run(segment: str) -> bool:
+    tokens = _command_tokens(segment)
+    if not tokens or not _PYTHON_EXECUTABLE_RE.fullmatch(Path(tokens[0]).name.lower()):
+        return False
+    for index, token in enumerate(tokens[1:], start=1):
+        if token == "-m":
+            module = tokens[index + 1] if index + 1 < len(tokens) else ""
+            return bool(module) and module.split(".")[0].lower() not in _PYTHON_TOOLING_MODULES
+        if token == "-c":
+            return False
+        if token.startswith("-"):
+            continue
+        return token.endswith(".py")
+    return False
+
+
+def _command_is_python_job_run(command: str) -> bool:
+    """True when any shell segment executes a Python script or module (a job run).
+
+    Covers ``python foo.py``, module invocations like ``python3 -m
+    nvflare.cli simulator ...``, and the same commands wrapped in
+    ``sh -c '...'``. Interpreter tooling (``-m pip``, ``-m venv``,
+    ``-m ensurepip``) and inline ``-c`` snippets are not job runs, so a
+    dependency install can still recover a failed import probe.
+    """
+
+    text = _SHELL_WRAPPER_RE.sub("", str(command or "")).strip()
+    if text[:1] in {"'", '"'} and text[-1:] == text[:1]:
+        text = text[1:-1]
+    return any(_segment_is_python_job_run(segment) for segment in _shell_command_segments(text) if segment.strip())
+
+
 def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[str, str]] | None:
     """Last failed command with a recognized error signature, if the run never recovered.
 
@@ -756,7 +812,7 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     missing_module = (
         signature["subject"].split(".")[0] if signature["kind"] in ("missing_python_module", "import_error") else ""
     )
-    failed_command_was_script_run = failed_key.startswith("python ")
+    failed_command_was_job_run = _command_is_python_job_run(str(timeline[anchor_index].get("command") or ""))
     for item in timeline[anchor_index + 1 :]:
         if item.get("kind") != "command":
             continue
@@ -774,7 +830,7 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
             return None
         if (
             missing_module
-            and not failed_command_was_script_run
+            and not failed_command_was_job_run
             and is_dependency_install_command(command)
             and re.search(
                 rf"\bSuccessfully installed\b[^\n]*\b{re.escape(missing_module)}\b", output, flags=re.IGNORECASE

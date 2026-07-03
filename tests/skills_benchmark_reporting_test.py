@@ -7586,6 +7586,81 @@ def test_why_keeps_root_cause_chain_when_failed_job_is_never_rerun_after_install
     assert "ModuleNotFoundError: No module named 'torch'" in chain
 
 
+def test_why_keeps_root_cause_chain_when_module_job_is_never_rerun_after_install():
+    from benchmark.harness.reports.insights._why import _failure_root_cause_chain
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    # A `python -m ...` job invocation (not a `.py` script) fails and the
+    # missing module is then installed, but the job is never rerun — the
+    # rerun requirement must apply to module-style job runs too.
+    with_events = "\n".join(
+        [
+            command(
+                "python3 -m nvflare.cli simulator jobs/train -n 2 -t 2",
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            command("python3 -m pip install torch", output="Collecting torch\nSuccessfully installed torch-2.12.0"),
+        ]
+    )
+    base_events = command("python3 job.py", output="workflow Finished", exit_code=0)
+    with_run = _ev({"available": True, "label": "With skills", "agent_events_text": with_events})
+    base_run = _ev({"available": True, "label": "No skills baseline", "agent_events_text": base_events})
+
+    chain = "\n".join(_failure_root_cause_chain(with_run, base_run))
+    assert "Root-cause chain (auto-extracted from With skills events)" in chain
+    assert "ModuleNotFoundError: No module named 'torch'" in chain
+
+
+def test_why_keeps_root_cause_chain_when_shell_wrapped_job_is_never_rerun_after_install():
+    from benchmark.harness.reports.insights._why import _failure_root_cause_chain
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    # The failed job run is wrapped in `bash -c "..."`; installing the missing
+    # module without rerunning the job still is not recovery.
+    with_events = "\n".join(
+        [
+            command(
+                'bash -lc "cd /workspace && python3 -m nvflare.cli simulator jobs/train -n 2"',
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            command("python3 -m pip install torch", output="Collecting torch\nSuccessfully installed torch-2.12.0"),
+        ]
+    )
+    base_events = command("python3 job.py", output="workflow Finished", exit_code=0)
+    with_run = _ev({"available": True, "label": "With skills", "agent_events_text": with_events})
+    base_run = _ev({"available": True, "label": "No skills baseline", "agent_events_text": base_events})
+
+    chain = "\n".join(_failure_root_cause_chain(with_run, base_run))
+    assert "Root-cause chain (auto-extracted from With skills events)" in chain
+    assert "ModuleNotFoundError: No module named 'torch'" in chain
+
+
 def test_why_root_cause_chain_from_claude_tool_result_events():
     from benchmark.harness.reports._events import event_timeline_from_text
     from benchmark.harness.reports.insights._why import _failure_root_cause_chain
@@ -7793,12 +7868,20 @@ def test_rca_invoker_raises_on_nonzero_agent_exit(monkeypatch):
 
     from benchmark.harness import rca
 
-    def fake_run(*args, **kwargs):
-        return subprocess.CompletedProcess(args=args[0], returncode=1, stdout="", stderr="not logged in")
+    class FakeProcess:
+        returncode = 1
+        pid = 12345
 
-    monkeypatch.setattr(rca.subprocess, "run", fake_run)
+        def communicate(self, input=None, timeout=None):
+            return "", "not logged in"
+
+        def wait(self):
+            return self.returncode
+
+    monkeypatch.setattr(rca.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
     with pytest.raises(rca.AgentInvocationError, match="status 1.*not logged in"):
         rca._claude_invoker("question", Path("."))
+    assert subprocess  # keep the import referenced
 
 
 def test_rca_slowdown_topic_seeds_comparative_question(tmp_path):
