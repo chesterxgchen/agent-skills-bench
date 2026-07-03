@@ -8184,10 +8184,16 @@ def test_failed_bare_module_with_chained_real_work_not_cleared_by_bare_rerun():
     # accept a chained command whose other segments carry real work: the
     # traceback may have come from that other segment, so rerunning only the
     # bare module proves nothing and must not clear the terminal failure.
+    # A segment that merely STARTS with a status command is not a harmless
+    # guard: `true | bash run_job.sh` pipes into real work, and that work can
+    # be the traceback's source just as much as an unguarded segment.
     for failed in (
         "python3 -m nvflare.cli ; bash run_job.sh",
         "bash run_job.sh ; python3 -m nvflare.cli",
         "python3 -m nvflare.cli || bash run_job.sh",
+        "python3 -m nvflare.cli ; true | bash run_job.sh",
+        "false | python3 train.py ; python3 -m nvflare.cli",
+        "python3 -m nvflare.cli || true && bash run_job.sh",
     ):
         events = command(failed, output=traceback, exit_code=1) + "\n" + command(
             "python3 -m nvflare.cli", output="done"

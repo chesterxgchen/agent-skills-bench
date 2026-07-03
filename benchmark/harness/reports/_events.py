@@ -978,6 +978,25 @@ def _segment_success_implied_by_zero_exit(parts: list[tuple[str, str]], index: i
     return all(operator == "&&" for _segment, operator in parts[index:-1])
 
 
+def _segment_is_harmless_status_guard(segment: str) -> bool:
+    """True when the segment is ONLY a status command: ``true``, ``false``,
+    ``:``, or ``exit [code]`` — nothing else.
+
+    Segments split on ``&&``/``||``/``;`` but not on ``|``, so a first-command
+    check alone would bless ``true | bash run_job.sh``, whose pipeline executes
+    real work behind the status command. Requiring the status command to be the
+    segment's only token (plus a numeric exit code) also rejects redirections,
+    backgrounding, and substitutions hiding extra work.
+    """
+
+    tokens = _command_tokens(segment)
+    if not tokens or Path(tokens[0]).name.lower() not in _HARMLESS_STATUS_COMMANDS:
+        return False
+    if len(tokens) == 1:
+        return True
+    return Path(tokens[0]).name.lower() == "exit" and len(tokens) == 2 and tokens[1].isdigit()
+
+
 def _is_bare_module_invocation(command: str, module: str, *, require_success_implied_by_zero_exit: bool = True) -> bool:
     """True when a shell segment runs exactly ``python -m <module>`` and nothing more.
 
@@ -997,10 +1016,12 @@ def _is_bare_module_invocation(command: str, module: str, *, require_success_imp
     which exited nonzero): there a status guard like ``python -m mod || exit
     1`` must not disqualify it from later recovery — but the module segment
     must still be the command's ONLY real work. Every other segment has to be
-    a harmless status guard (``exit``/``true``/``false``/``:``); otherwise a
-    chained command like ``python -m mod ; bash run_job.sh`` whose failure
-    came from the OTHER segment would read as a bare module run, and a later
-    clean bare rerun would wrongly clear that unrelated failure.
+    a pure status guard (``true``/``false``/``:``/``exit [code]`` alone — a
+    pipeline like ``true | bash run_job.sh`` executes real work and does not
+    count); otherwise a chained command like ``python -m mod ; bash
+    run_job.sh`` whose failure came from the OTHER segment would read as a
+    bare module run, and a later clean bare rerun would wrongly clear that
+    unrelated failure.
     """
 
     parts = _shell_command_parts(_unwrap_shell_command(command))
@@ -1012,7 +1033,7 @@ def _is_bare_module_invocation(command: str, module: str, *, require_success_imp
             segment_qualifies = _segment_success_implied_by_zero_exit(parts, segment_index)
         else:
             segment_qualifies = all(
-                _first_command_name(other_segment) in _HARMLESS_STATUS_COMMANDS
+                _segment_is_harmless_status_guard(other_segment)
                 for other_index, (other_segment, _other_operator) in enumerate(parts)
                 if other_index != segment_index
             )
