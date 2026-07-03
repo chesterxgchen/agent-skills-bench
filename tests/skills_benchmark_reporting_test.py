@@ -7744,6 +7744,63 @@ def test_why_keeps_root_cause_chain_when_shell_wrapped_job_is_never_rerun_after_
     assert "ModuleNotFoundError: No module named 'torch'" in chain
 
 
+def test_module_job_recovery_key_is_module_specific():
+    from benchmark.harness.reports._events import command_recovery_key
+
+    # Module job runs key on the module — not the bare interpreter — so an
+    # unrelated `python3 ...` success cannot pass for a rerun of the job.
+    assert command_recovery_key("python3 -m nvflare.cli simulator jobs/train -n 2") == "python -m nvflare.cli"
+    assert command_recovery_key("python3 -c 'import torch'") != command_recovery_key(
+        "python3 -m nvflare.cli simulator jobs/train -n 2"
+    )
+    # A shell-wrapped module run keys the same as the bare invocation, so a
+    # plain rerun of the same module still counts as recovery.
+    assert command_recovery_key(
+        'bash -lc "cd /workspace && python3 -m nvflare.cli simulator jobs/train -n 2"'
+    ) == command_recovery_key("python3 -m nvflare.cli simulator jobs/train -n 2")
+    # Interpreter tooling keeps its existing keys.
+    assert command_recovery_key("python3 -m pip install -r requirements.txt") == "pip install requirements.txt"
+
+
+def test_terminal_failure_anchor_survives_import_probe_after_install():
+    from benchmark.harness.reports._events import event_timeline_from_text, terminal_failure_anchor
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    # After installing the missing module, a successful import probe
+    # (`python3 -c "import torch"`) is not a rerun of the failed module job —
+    # the terminal failure must still anchor.
+    events = "\n".join(
+        [
+            command(
+                "python3 -m nvflare.cli simulator jobs/train -n 2 -t 2",
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            command("python3 -m pip install torch", output="Collecting torch\nSuccessfully installed torch-2.12.0"),
+            command('python3 -c "import torch; print(torch.__version__)"', output="2.12.0", exit_code=0),
+        ]
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "torch" in anchored[1]["display"]
+
+    # A successful rerun of the same module job IS recovery.
+    recovered = events + "\n" + command("python3 -m nvflare.cli simulator jobs/train -n 2 -t 2", output="done")
+    assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
+
+
 def test_why_root_cause_chain_from_claude_tool_result_events():
     from benchmark.harness.reports._events import event_timeline_from_text
     from benchmark.harness.reports.insights._why import _failure_root_cause_chain

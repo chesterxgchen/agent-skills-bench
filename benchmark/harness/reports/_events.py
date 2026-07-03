@@ -420,7 +420,7 @@ def command_succeeded(event: dict[str, Any]) -> bool:
 
 
 def command_recovery_key(command: str) -> str:
-    command = str(command)
+    command = _unwrap_shell_command(command)
     if re.search(r"\bpip\s+install\b", command):
         requirements = re.search(r"-r\s+([A-Za-z0-9_./-]*requirements[A-Za-z0-9_.-]*\.txt)", command)
         return f"pip install {Path(requirements.group(1)).name}" if requirements else "pip install"
@@ -428,6 +428,12 @@ def command_recovery_key(command: str) -> str:
     if script:
         role = "export" if "--export" in command else "run"
         return f"python {Path(script.group(1)).name} {role}"
+    # `python -m <module>` runs key on the module, not the bare interpreter:
+    # otherwise any later successful `python3 ...` (e.g. an import probe)
+    # would look like a rerun of the failed module job.
+    module = re.search(r"\bpython[\d.]*\s+(?:-[^m]\S*\s+)*-m\s+([A-Za-z0-9_.]+)", command)
+    if module:
+        return f"python -m {module.group(1)}"
     first_word = re.search(r"(?:^|['\"])([A-Za-z0-9_./-]+)", command)
     return first_word.group(1) if first_word else command[:80]
 
@@ -723,6 +729,16 @@ def error_signature_from_output(output: str) -> dict[str, str] | None:
 
 _SHELL_WRAPPER_RE = re.compile(r"^\s*(?:/bin/)?(?:ba|z)?sh\s+-l?c\s+", re.IGNORECASE)
 
+
+def _unwrap_shell_command(command: str) -> str:
+    """Strip a `sh -c '...'` wrapper (and its quotes) to expose the real command."""
+
+    text = _SHELL_WRAPPER_RE.sub("", str(command or "")).strip()
+    if text[:1] in {"'", '"'} and text[-1:] == text[:1]:
+        text = text[1:-1]
+    return text
+
+
 # Shell status guards (`grep ... || true`) neither execute work nor produce
 # output of their own; they must not stop a read-only pipeline from
 # classifying as inspection-only.
@@ -739,9 +755,7 @@ def _command_is_inspection_only(command: str) -> bool:
     anything.
     """
 
-    text = _SHELL_WRAPPER_RE.sub("", str(command or "")).strip()
-    if text[:1] in {"'", '"'} and text[-1:] == text[:1]:
-        text = text[1:-1]
+    text = _unwrap_shell_command(command)
     segments = [segment for segment in _shell_command_segments(text) if segment.strip()]
     names = [_first_command_name(segment) for segment in segments]
     meaningful = [name for name in names if name not in _HARMLESS_STATUS_COMMANDS]
@@ -782,9 +796,7 @@ def _command_is_python_job_run(command: str) -> bool:
     dependency install can still recover a failed import probe.
     """
 
-    text = _SHELL_WRAPPER_RE.sub("", str(command or "")).strip()
-    if text[:1] in {"'", '"'} and text[-1:] == text[:1]:
-        text = text[1:-1]
+    text = _unwrap_shell_command(command)
     return any(_segment_is_python_job_run(segment) for segment in _shell_command_segments(text) if segment.strip())
 
 
@@ -835,7 +847,12 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
         if item.get("exit_code") != 0:
             continue
         command = str(item.get("command") or "")
-        if command_recovery_key(command) == failed_key:
+        # A failed job run only recovers via another job run: broad keys (bare
+        # interpreter/shell names) must not let an unrelated successful command
+        # (e.g. an import probe after an install) pass for a job rerun.
+        if command_recovery_key(command) == failed_key and (
+            not failed_command_was_job_run or _command_is_python_job_run(command)
+        ):
             return None
         if (
             missing_module
