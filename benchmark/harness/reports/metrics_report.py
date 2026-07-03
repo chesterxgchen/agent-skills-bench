@@ -29,35 +29,35 @@ from ..modes import BENCHMARK_RUNS, NO_SKILLS_MODE, WITH_SKILLS_MODE
 from ..quality_signals import canonical_metric_name, is_plausible_metric_value
 from ._context import ReportContext
 from ._loader import (
+    expected_validation_metric_name,
     filter_mode_console,
     final_record_path,
     first_non_empty,
     mode_dir_for_benchmark,
-    expected_validation_metric_name,
     validation_metric_from_record,
 )
 from ._runs import read_text
-from .insights._structure import run_host_os_display
 from .benchmark_insights import (
     _report_context,
-    _run_skill_available_display,
-    _run_skill_inspection_display,
     _run_shared_skill_display,
+    _run_skill_available_display,
     _run_skill_display,
+    _run_skill_inspection_display,
     activity_insights_table,
-    embedded_bar_chart,
     comparable_metric_name,
+    embedded_bar_chart,
     human_readable_status,
     interpretation_section,
-    metric_value,
     markdown_cell,
     metric_name_for_runs,
+    metric_value,
     outcome_metrics_table,
     run_analysis,
     status_summary,
     why_section,
 )
 from .evidence import RunEvidence, _run_evidence_from_bundle
+from .insights._structure import run_host_os_display
 
 
 def _insights_context(root: Path, insight_runs: dict[str, Any]) -> ReportContext:
@@ -113,9 +113,7 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
         if not isinstance(skills_list, dict):
             skills_list = {}
         run_host_environment = (
-            summary.get("host_environment")
-            if isinstance(summary.get("host_environment"), dict)
-            else host_environment
+            summary.get("host_environment") if isinstance(summary.get("host_environment"), dict) else host_environment
         )
         run_host_os = first_non_empty(summary.get("host_os"), run_plan_entry.get("host_os"), root_host_os)
         if run_host_os:
@@ -233,11 +231,11 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
         run_host_environment = (
             summary.get("host_environment")
             if isinstance(summary.get("host_environment"), dict)
-            else row.get("host_environment")
-            if isinstance(row.get("host_environment"), dict)
-            else host_environment
+            else row.get("host_environment") if isinstance(row.get("host_environment"), dict) else host_environment
         )
-        run_host_os = first_non_empty(summary.get("host_os"), row.get("host_os"), run_plan_entry.get("host_os"), root_host_os)
+        run_host_os = first_non_empty(
+            summary.get("host_os"), row.get("host_os"), run_plan_entry.get("host_os"), root_host_os
+        )
         if run_host_os:
             summary = {**summary, "host_os": run_host_os}
         if run_host_environment:

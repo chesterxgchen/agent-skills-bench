@@ -370,7 +370,8 @@ silent fallthrough.
 **Agent-driven RCA (`benchmark/harness/rca.py`).** An OPTIONAL post-run tool:
 a deterministic seed names an observation (terminal failure signature,
 elapsed/token delta, or a custom question), then an investigator agent CLI
-(read-only tools, cwd = result root) answers iterative questions from the
+(read-only tools, allowlisted env, cwd = a staged symlink-free evidence
+copy) answers iterative questions from the
 captured evidence until it declares a conclusion. The Q/A trail
 (`rca/investigation_<topic>.jsonl`) is written incrementally; the synthesized
 report lands in `rca/rca_report_<topic>.md`. These artifacts are

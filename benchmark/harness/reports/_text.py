@@ -94,9 +94,7 @@ def sanitize_agent_markdown(text: str) -> str:
             continue
         line = _SHALLOW_HEADING_RE.sub("###", line)
         parts = _INLINE_CODE_SPLIT_RE.split(line)
-        lines.append(
-            "".join(part if part.startswith("`") else _HTML_TAG_OPEN_RE.sub("&lt;", part) for part in parts)
-        )
+        lines.append("".join(part if part.startswith("`") else _HTML_TAG_OPEN_RE.sub("&lt;", part) for part in parts))
     return "\n".join(lines)
 
 

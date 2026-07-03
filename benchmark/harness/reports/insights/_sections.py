@@ -24,11 +24,11 @@ from .._events import (
     _job_rerun_reason,
     _span_total_seconds,
     agent_failure_category,
+    artifact_validation_metric_evidence,
     bash_permission_denial_count,
     exit_code,
     failure_evidence,
     fmt_seconds_with_unit,
-    artifact_validation_metric_evidence,
 )
 from .._text import fmt_number, markdown_cell
 from ..evidence import RunEvidence

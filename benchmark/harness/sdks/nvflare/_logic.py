@@ -1322,9 +1322,7 @@ def _detect_partitioning(text: str) -> str:
 def _detect_class_weighting(text: str) -> str:
     if "positive_class_weight(train_frame" in text:
         return "per-site loss weight from local training partition"
-    if "datamodule.pos_weight" in text or re.search(
-        r"self\.pos_weight\s*=\s*neg_count\s*/\s*max\(pos_count", text
-    ):
+    if "datamodule.pos_weight" in text or re.search(r"self\.pos_weight\s*=\s*neg_count\s*/\s*max\(pos_count", text):
         return "per-site loss weight from local training partition"
     if "neg_count / max(pos_count" in text:
         return "loss weight computed from loaded training data"
@@ -1349,7 +1347,12 @@ def _detect_metric_reporting(text: str) -> str:
 
 
 _RUN_WORKSPACE_PATH_MARKERS = ("/tmp/nvflare", "simulate_job", "simulator_workspace")
-_DATA_PATH_HINT_RE = re.compile(r"data|dataset|\.csv|\.parquet|\.npz|\.jsonl?", re.IGNORECASE)
+# Token-ish "data"/"dataset(s)" (underscores/slashes/dots count as separators,
+# letters do not: `train_data` and `data_dir` match, `database` does not) or a
+# data-file extension.
+_DATA_PATH_HINT_RE = re.compile(
+    r"(?<![a-z0-9])data(?:sets?)?(?![a-z])|\.csv\b|\.parquet\b|\.npz\b|\.jsonl?\b", re.IGNORECASE
+)
 _DATA_IDENTIFIER_PARTS = {"data", "dataset", "datasets"}
 _DATA_PATH_IDENTIFIER_PARTS = {"dir", "directory", "root", "path"}
 _IDENTIFIER_PART_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+")
@@ -1391,8 +1394,7 @@ def _source_identifiers_point_at_data_path(source: str) -> bool:
     except (IndentationError, SyntaxError, tokenize.TokenError):
         pass
     return any(
-        _identifier_points_at_data_path(match.group(0))
-        for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source)
+        _identifier_points_at_data_path(match.group(0)) for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source)
     )
 
 
@@ -1465,6 +1467,9 @@ def _hardcoded_absolute_data_path(text: str) -> str:
     return ""
 
 
+_MAX_CALL_SOURCE_CHARS = 20_000
+
+
 def _iter_call_sources(text: str, function_name: str) -> list[str]:
     calls: list[str] = []
     pattern = re.compile(rf"(?<!\w){re.escape(function_name)}\s*\(")
@@ -1475,7 +1480,10 @@ def _iter_call_sources(text: str, function_name: str) -> list[str]:
         triple = False
         escaped = False
         index = start
-        while index < len(text):
+        # Bounded scan: a real call fits well inside this window; malformed
+        # input (an unclosed paren) must not turn the scan quadratic.
+        scan_limit = min(len(text), start + _MAX_CALL_SOURCE_CHARS)
+        while index < scan_limit:
             char = text[index]
             if quote:
                 if escaped:
@@ -1555,9 +1563,31 @@ def _call_arg_points_at_data(call: str, node: ast.AST, *, inspect_literals: bool
     return False
 
 
+_NON_DATA_SOURCE_LITERAL_RE = re.compile(
+    r"(?:requirements[^/'\"]*\.txt|\.py|\.md|\.toml|\.cfg|\.ini|\.yaml|\.yml|readme|license)$",
+    re.IGNORECASE,
+)
+
+
+def _add_file_source_is_non_data(expression: ast.Call, call: str) -> bool:
+    """True when the copied SOURCE is clearly not a dataset (requirements file,
+    module, docs/config) — shipping it to a `data/` dest dir is not dataset
+    packaging."""
+
+    if not expression.args:
+        return False
+    source = ast.get_source_segment(call, expression.args[0]) or ""
+    literals = _source_string_literals(source)
+    return bool(literals) and all(
+        _NON_DATA_SOURCE_LITERAL_RE.search(literal.strip().rstrip("'\"")) for literal in literals
+    )
+
+
 def _add_file_to_clients_copies_data(text: str) -> bool:
     for call in _iter_call_sources(text, "add_file_to_clients"):
         expression = _parsed_call_source(call)
+        if expression is not None and _add_file_source_is_non_data(expression, call):
+            continue
         if expression is None:
             if _source_identifiers_point_at_data_path(call):
                 return True
@@ -1634,7 +1664,9 @@ def _expected_metric_name(run: dict[str, Any]) -> str:
     if name:
         return name
     record = run_record(run)
-    metric = record.get("reported_validation_metric") if isinstance(record.get("reported_validation_metric"), dict) else {}
+    metric = (
+        record.get("reported_validation_metric") if isinstance(record.get("reported_validation_metric"), dict) else {}
+    )
     return canonical_metric_name(metric.get("name")) if isinstance(metric, dict) else ""
 
 
@@ -1690,9 +1722,7 @@ def conversion_quality_profile(run: dict[str, Any]) -> dict[str, str]:
 def _target_framework(run: dict[str, Any] | None) -> str:
     if not isinstance(run, dict):
         return ""
-    text = " ".join(
-        str(run.get(key) or "") for key in ("framework", "job_name", "job_slug", "scenario_name")
-    ).lower()
+    text = " ".join(str(run.get(key) or "") for key in ("framework", "job_name", "job_slug", "scenario_name")).lower()
     if "lightning" in text:
         return "lightning"
     if "pytorch" in text or "torch" in text:
@@ -1817,10 +1847,11 @@ def result_failure_root_cause_block(run: dict[str, Any]) -> str:
     if not run.get("available") or _has_runtime_scalar_result_metric(run):
         return ""
     status = job_run_status(run)
-    if (
-        status not in {"started_failed", "background_task_killed", "agent_left_simulation_running"}
-        and not _runtime_started_but_incomplete(run)
-    ):
+    if status not in {
+        "started_failed",
+        "background_task_killed",
+        "agent_left_simulation_running",
+    } and not _runtime_started_but_incomplete(run):
         return ""
     rows = [
         ("Interruption cause", _background_task_interruption_cause(run)),
@@ -2312,6 +2343,7 @@ CODE_QUALITY_ROWS = (
 
 CODE_QUALITY_CONTEXT_ROWS = (("API pattern", _api_pattern_signal),)
 
+
 def _conversion_quality_rows_from_rules() -> tuple[tuple[str, str], ...]:
     """One report row per evaluation criterion in benchmark/config/evaluation/nvflare.yaml.
 
@@ -2328,6 +2360,7 @@ def _conversion_quality_rows_from_rules() -> tuple[tuple[str, str], ...]:
 
 
 CONVERSION_QUALITY_ROWS = _conversion_quality_rows_from_rules()
+
 
 def _code_quality_points() -> dict[str, float]:
     return verdict_points(load_evaluation_rules("nvflare"))
@@ -2418,9 +2451,7 @@ def _round_durations_from_output(output: str) -> list[tuple[int, float]]:
     return durations
 
 
-def _runtime_artifact_texts(
-    run: dict[str, Any], pattern: str, *, max_bytes: int = 128_000
-) -> list[tuple[str, str]]:
+def _runtime_artifact_texts(run: dict[str, Any], pattern: str, *, max_bytes: int = 128_000) -> list[tuple[str, str]]:
     delta = run_workspace_delta(run)
     texts: list[tuple[str, str]] = []
     seen: set[str] = set()

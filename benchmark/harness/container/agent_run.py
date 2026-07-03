@@ -36,9 +36,9 @@ from ..agent_identity import (
     OBSERVED_SESSION_MODEL_SOURCE,
     UNSPECIFIED_AGENT_MODEL,
     agent_session_file_snapshot,
+    captured_session_thread_id,
     observed_agent_session_evidence_from_files,
 )
-
 from ..agents.base import (
     AgentAdapter,
     AgentLaunchContext,
@@ -1019,10 +1019,10 @@ def post_process(
             agent_exit=agent_exit,
             skills_enabled=config.use_preinstalled_skills,
             skill_run_mode=config.skill_run_mode,
-        agent=config.agent,
-        agent_model=config.agent_model,
-        agent_model_source=config.agent_model_source,
-        run_start_time_ns=run_start_time_ns,
+            agent=config.agent,
+            agent_model=config.agent_model,
+            agent_model_source=config.agent_model_source,
+            run_start_time_ns=run_start_time_ns,
             workspace_delta_manifest_path=workspace_delta_manifest,
             input_delta_manifest_path=input_delta_manifest,
             prompt_path=config.prompt_file_path,
@@ -1301,6 +1301,7 @@ def resolve_model_from_session_evidence(
     evidence, evidence_path = observed_agent_session_evidence_from_files(
         sessions_dir,
         previous_snapshot=previous_snapshot,
+        preferred_session_id=captured_session_thread_id(config.agent_events_path),
     )
     model = str(evidence.get("model") or "").strip()
     if not model:

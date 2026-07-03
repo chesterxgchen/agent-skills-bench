@@ -54,7 +54,13 @@ import yaml
 EVALUATION_RULES_PACKAGE = "benchmark"
 EVALUATION_RULES_SCHEMA_VERSION = 1
 
-_NUMBER_RE = re.compile(r"\b([0-9]+\.[0-9]+)\b")
+# Numeric series in evidence strings: signed values, leading-dot decimals and
+# scientific notation count. Bare integers deliberately do NOT: digits inside
+# metric names/labels (top5_accuracy, site-1) would otherwise pollute the series.
+_NUMBER_RE = re.compile(r"(?<![\w.])([-+]?(?:\d+\.\d+|\.\d+)(?:[eE][-+]?\d+)?|[-+]?\d+[eE][-+]?\d+)(?![\w.])")
+
+_RULE_MATCHER_KEYS = {"contains", "contains_any", "trend"}
+_RULE_ALLOWED_KEYS = _RULE_MATCHER_KEYS | {"when_context", "verdict"}
 
 
 SHARED_RULES_PREFIX = "shared:"
@@ -92,7 +98,32 @@ def _parse_document(text: str, source: str) -> dict[str, Any]:
             f"unsupported evaluation rules schema_version {version!r} in {source} "
             f"(expected {EVALUATION_RULES_SCHEMA_VERSION})"
         )
+    _validate_signal_rules(document, source)
     return document
+
+
+def _validate_signal_rules(document: Mapping[str, Any], source: str) -> None:
+    """Fail closed on rule typos: a misspelled matcher key would otherwise never
+    match and silently fall through to the default verdict."""
+
+    signals = document.get("signals")
+    if not isinstance(signals, Mapping):
+        return
+    for signal, entry in signals.items():
+        rules = entry.get("rules") if isinstance(entry, Mapping) else None
+        for rule in rules or []:
+            if not isinstance(rule, Mapping):
+                raise ValueError(f"rule under signal {signal!r} must be a mapping in {source}")
+            unknown = set(map(str, rule)) - _RULE_ALLOWED_KEYS
+            if unknown:
+                raise ValueError(f"unknown rule key(s) {sorted(unknown)} under signal {signal!r} in {source}")
+            if not rule.get("verdict"):
+                raise ValueError(f"rule under signal {signal!r} in {source} is missing a verdict")
+            matchers = _RULE_MATCHER_KEYS & set(map(str, rule))
+            if len(matchers) > 1:
+                raise ValueError(f"rule under signal {signal!r} in {source} has multiple matchers: {sorted(matchers)}")
+            if not matchers and "when_context" not in rule:
+                raise ValueError(f"rule under signal {signal!r} in {source} has no matcher")
 
 
 def _parse_manifest(text: str, source: str) -> dict[str, Any]:
@@ -122,7 +153,11 @@ def _merge_document(composed: dict[str, Any], document: Mapping[str, Any]) -> No
 
 @lru_cache(maxsize=64)
 def _load_rules_cached(
-    sdk: str, task: str | None, selector_items: tuple[tuple[str, str], ...], path_text: str | None
+    sdk: str,
+    task: str | None,
+    selector_items: tuple[tuple[str, str], ...],
+    path_text: str | None,
+    strict_selectors: bool,
 ) -> Mapping[str, Any]:
     if path_text is not None:
         # Explicit rules file: a single self-contained document (no composition).
@@ -161,14 +196,24 @@ def _load_rules_cached(
     for dimension, values in overlays.items():
         if not isinstance(values, Mapping):
             continue
-        selected = selectors.get(str(dimension))
-        if not selected or selected not in values:
+        selected = selectors.pop(str(dimension), None)
+        if not selected:
             continue
-        overlay_resource = sdk_dir / str(values[selected])
-        _merge_document(
-            composed, _parse_document(overlay_resource.read_text(encoding="utf-8"), str(overlay_resource))
-        )
+        if selected not in values:
+            if strict_selectors:
+                raise ValueError(
+                    f"unknown {dimension} {selected!r} for task {task_name!r} (sdk {sdk!r}); "
+                    f"registered values: {sorted(map(str, values))}"
+                )
+            continue
+        overlay_resource = _resolve_document_ref(sdk_dir, str(values[selected]))
+        _merge_document(composed, _parse_document(overlay_resource.read_text(encoding="utf-8"), str(overlay_resource)))
         applied[str(dimension)] = selected
+    if strict_selectors and selectors:
+        raise ValueError(
+            f"unknown selector dimension(s) {sorted(selectors)} for task {task_name!r} (sdk {sdk!r}); "
+            f"declared dimensions: {sorted(map(str, overlays))}"
+        )
     if applied:
         composed["selectors"] = applied
     return composed
@@ -181,16 +226,23 @@ def load_evaluation_rules(
     task: str | None = None,
     selectors: Mapping[str, str] | None = None,
     framework: str | None = None,
+    strict_selectors: bool = False,
 ) -> Mapping[str, Any]:
     """Composed rules for (sdk, task, selectors).
 
     Composition: manifest defaults -> the task group's common document -> one
     overlay per task-declared dimension whose selector carries a registered
     value (in manifest declaration order). ``task`` falls back to the
-    manifest's ``default_task``; a selector with no registered overlay simply
-    applies nothing. ``framework=`` is sugar for ``selectors={"framework":
-    ...}``. ``path`` bypasses composition and loads one self-contained rules
-    document.
+    manifest's ``default_task``. ``framework=`` is sugar for
+    ``selectors={"framework": ...}``. ``path`` bypasses composition and loads
+    one self-contained rules document.
+
+    Selector strictness: with ``strict_selectors=True`` (user-supplied
+    selectors, e.g. the CLI) an unregistered dimension or value raises so a
+    typo like ``framework=lightining`` cannot silently score against generic
+    rules. The lenient default is for detection-driven callers: a genuinely
+    unregistered detected framework (e.g. a jax target before a jax overlay
+    exists) intentionally falls back to the task's common rules.
     """
 
     combined = dict(selectors or {})
@@ -200,7 +252,7 @@ def load_evaluation_rules(
     # Absolute cache key for explicit files (cwd-independent), and a deep copy
     # on the way out so no caller can mutate the cached composition.
     path_text = str(Path(path).resolve()) if path else None
-    return copy.deepcopy(_load_rules_cached(sdk, task, selector_items, path_text))
+    return copy.deepcopy(_load_rules_cached(sdk, task, selector_items, path_text, strict_selectors))
 
 
 def available_tasks(sdk: str) -> list[str]:
@@ -308,7 +360,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--rules", help="Explicit self-contained rules file path (overrides composition)")
     parser.add_argument("--profile", required=True, help="JSON file of {signal: evidence string}")
-    parser.add_argument("--context", help="JSON object of context values (e.g. {\"target_framework\": \"lightning\"})")
+    parser.add_argument("--context", help='JSON object of context values (e.g. {"target_framework": "lightning"})')
     args = parser.parse_args(argv)
     selectors = {}
     for item in args.select:
@@ -316,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         if not dimension or not value:
             raise SystemExit(f"--select expects DIM=VALUE, got {item!r}")
         selectors[dimension] = value
-    rules = load_evaluation_rules(args.sdk, args.rules, task=args.task, selectors=selectors)
+    rules = load_evaluation_rules(args.sdk, args.rules, task=args.task, selectors=selectors, strict_selectors=True)
     profile = json.loads(Path(args.profile).read_text(encoding="utf-8"))
     context = json.loads(args.context) if args.context else {}
     verdicts = score_profile(rules, profile, context)

@@ -20,17 +20,20 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ...metric_artifacts import (
+    metric_is_runtime_result_artifact,
+    observed_metric_payloads_from_workspace_delta_manifest,
+)
 from ...modes import BENCHMARK_RUNS, mode_names
-from ...metric_artifacts import metric_is_runtime_result_artifact, observed_metric_payloads_from_workspace_delta_manifest
 from ...quality_signals import (
     canonical_metric_name,
     is_numeric_metric_value,
     is_plausible_metric_value,
     metric_names_match,
-    metric_value_label as payload_metric_value_label,
     metric_value_entries,
-    reported_metric_payload,
 )
+from ...quality_signals import metric_value_label as payload_metric_value_label
+from ...quality_signals import reported_metric_payload
 from .._context import AlgorithmSignal, JobExecutionSignal, ReportContext
 from .._events import exit_code
 from .._loader import sanitized_validation_metric

@@ -723,22 +723,31 @@ def error_signature_from_output(output: str) -> dict[str, str] | None:
 
 _SHELL_WRAPPER_RE = re.compile(r"^\s*(?:/bin/)?(?:ba|z)?sh\s+-l?c\s+", re.IGNORECASE)
 
+# Shell status guards (`grep ... || true`) neither execute work nor produce
+# output of their own; they must not stop a read-only pipeline from
+# classifying as inspection-only.
+_HARMLESS_STATUS_COMMANDS = frozenset({"true", "false", ":", "exit"})
+
 
 def _command_is_inspection_only(command: str) -> bool:
     """True when every shell segment only reads/inspects files (cat/grep/sed/...).
 
     Inspection commands echo file contents, so their output can quote an old
     traceback or an old success marker — they are neither failure anchors nor
-    recovery evidence for `terminal_failure_anchor`.
+    recovery evidence for `terminal_failure_anchor`. Status guards like
+    ``|| true`` are ignored: they cannot make an inspection pipeline execute
+    anything.
     """
 
     text = _SHELL_WRAPPER_RE.sub("", str(command or "")).strip()
     if text[:1] in {"'", '"'} and text[-1:] == text[:1]:
         text = text[1:-1]
     segments = [segment for segment in _shell_command_segments(text) if segment.strip()]
-    if not segments:
+    names = [_first_command_name(segment) for segment in segments]
+    meaningful = [name for name in names if name not in _HARMLESS_STATUS_COMMANDS]
+    if not meaningful:
         return False
-    return all(_first_command_name(segment) in FILE_INSPECTION_COMMANDS for segment in segments)
+    return all(name in FILE_INSPECTION_COMMANDS for name in meaningful)
 
 
 # Interpreter tooling run via ``python -m``: environment plumbing, not a job run.

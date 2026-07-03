@@ -249,8 +249,21 @@ class AgentConfig:
             exit_config=exit_config,
             exit_classifier=exit_classifier,
             availability_probe=[str(item) for item in data.get("availability_probe") or []],
-            session_evidence_dir=(str(data["session_evidence_dir"]) if data.get("session_evidence_dir") else None),
+            session_evidence_dir=session_evidence_dir(data, config_path),
         )
+
+
+def session_evidence_dir(data: Mapping[str, Any], config_path: Path) -> str | None:
+    """Validated relative session-evidence dir: it is joined under the agent home,
+    so absolute paths and parent traversal are configuration errors."""
+
+    value = data.get("session_evidence_dir")
+    if not value:
+        return None
+    text = str(value)
+    if text.startswith(("/", "\\")) or ".." in Path(text).parts:
+        raise ValueError(f"{config_path}: session_evidence_dir must be a relative path inside the agent home")
+    return text
 
 
 def required_mapping(data: Mapping[str, Any], key: str, config_path: Path) -> dict[str, Any]:

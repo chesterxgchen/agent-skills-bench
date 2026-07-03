@@ -249,7 +249,10 @@ def _run_skills_enabled(run: RunEvidence) -> bool:
     summary = run.summary if isinstance(run.summary, dict) else {}
     record = run.record if isinstance(run.record, dict) else {}
     raw = run.raw if isinstance(run.raw, dict) else {}
-    return any(bool(source.get("skills_enabled")) for source in (summary, record, raw)) or raw.get("skills") == "with skills"
+    return (
+        any(bool(source.get("skills_enabled")) for source in (summary, record, raw))
+        or raw.get("skills") == "with skills"
+    )
 
 
 def _run_skill_available_display(run: RunEvidence) -> str:

@@ -35,7 +35,6 @@ from ..modes import BENCHMARK_RUNS
 from ..quality_signals import canonical_metric_name, is_numeric_metric_value, reported_metric_payload
 from ._runs import read_text
 
-
 # The verbatim agent input prompt captured by the container run (prompt.txt).
 # Generic for all SDKs; capped so a pathological prompt cannot bloat the report.
 MAX_PROMPT_TEXT_BYTES = 64_000
@@ -220,9 +219,7 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
         if not isinstance(skills_list, dict):
             skills_list = {}
         run_host_environment = (
-            summary.get("host_environment")
-            if isinstance(summary.get("host_environment"), dict)
-            else host_environment
+            summary.get("host_environment") if isinstance(summary.get("host_environment"), dict) else host_environment
         )
         run_host_os = first_non_empty(summary.get("host_os"), run_plan_entry.get("host_os"), root_host_os)
         if run_host_os:
@@ -240,7 +237,9 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             if mode_dir.exists()
             else ""
         )
-        agent_stderr_text = read_text(mode_dir / "agent_stderr.txt", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES) if mode_dir.exists() else ""
+        agent_stderr_text = (
+            read_text(mode_dir / "agent_stderr.txt", max_bytes=MAX_AGENT_EVENTS_TEXT_BYTES) if mode_dir.exists() else ""
+        )
         agent_model, model_source = resolve_agent_model(
             configured_agent_model,
             configured_model_source,
@@ -275,7 +274,9 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "activity": load_json(mode_dir / "agent_activity.json", {}) if mode_dir.exists() else {},
             "workspace_delta": workspace_delta,
             "skills_list": skills_list,
-            "prompt_text": read_text(mode_dir / "prompt.txt", max_bytes=MAX_PROMPT_TEXT_BYTES) if mode_dir.exists() else "",
+            "prompt_text": (
+                read_text(mode_dir / "prompt.txt", max_bytes=MAX_PROMPT_TEXT_BYTES) if mode_dir.exists() else ""
+            ),
             "prompt_metadata": load_json(mode_dir / "prompt_metadata.json", {}) if mode_dir.exists() else {},
             "rca_report": _combined_rca_reports(mode_dir),
             "runtime_image": load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {},

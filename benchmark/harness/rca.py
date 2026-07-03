@@ -37,30 +37,38 @@ Standalone usage (after a benchmark run)::
         [--topic auto|failure|slowdown|tokens] [--question "..."] \
         [--agent claude|codex] [--max-steps 8]
 
-The investigator agent runs with its working directory set to the result
-root, so every answer can be grounded by reading the captured artifacts
-(``agent_events.jsonl``, ``prompt.txt``, skill references quoted in event
-output, workspace deltas, ...).
+The investigator agent runs read-only inside a staged, symlink-free copy of
+the result root with an allowlisted environment: every answer is grounded by
+reading the captured artifacts (``agent_events.jsonl``, ``prompt.txt``,
+workspace deltas, ...), while host files, credentials, and incidental env
+secrets stay out of reach. Captured text embedded in prompts is delimited as
+untrusted data.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from .agent_identity import MAX_AGENT_EVENTS_TEXT_BYTES
-from .common import load_json, write_json
+from .common import load_json
 from .reports._events import event_timeline_from_text, terminal_failure_anchor
 from .reports._loader import mode_dir_for_benchmark
+from .reports._text import sanitize_agent_markdown
 
 MAX_INVESTIGATION_STEPS = 8
+MAX_INVESTIGATION_STEPS_CAP = 24
 AGENT_STEP_TIMEOUT_SECONDS = 300
 
 _UNTRUSTED_DATA_PREAMBLE = (
@@ -102,36 +110,70 @@ class AgentInvocationError(RuntimeError):
     """The investigator agent CLI exited nonzero (auth/config/CLI failure, not an answer)."""
 
 
+# The investigator subprocess gets an allowlisted environment, not the full
+# host environment: incidental secrets (cloud keys, tokens) must not be
+# reachable from a process whose prompt embeds untrusted captured output.
+_INVOKER_ENV_ALLOWLIST = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM")
+_INVOKER_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_", "CODEX_", "OPENAI_", "XDG_")
+MAX_AGENT_OUTPUT_BYTES = 2_000_000
+
+
+def _investigator_env() -> dict[str, str]:
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key in _INVOKER_ENV_ALLOWLIST or key.startswith(_INVOKER_ENV_PREFIXES):
+            env[key] = value
+    return env
+
+
 def _checked_agent_run(args: list[str], cwd: Path, input_text: str | None = None) -> str:
+    # start_new_session so a timeout kills the whole process group, not just
+    # the CLI wrapper (agent CLIs spawn helpers).
+    process = subprocess.Popen(
+        args,
+        cwd=cwd,
+        env=_investigator_env(),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            args,
-            cwd=cwd,
-            input=input_text,
-            capture_output=True,
-            text=True,
-            timeout=AGENT_STEP_TIMEOUT_SECONDS,
-        )
+        stdout, stderr = process.communicate(input=input_text, timeout=AGENT_STEP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
+        with suppress(OSError):
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        process.wait()
         raise AgentInvocationError(
             f"Investigator agent `{args[0]}` timed out after {AGENT_STEP_TIMEOUT_SECONDS}s"
         ) from exc
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
+    if process.returncode != 0:
+        stderr = (stderr or "").strip()
         raise AgentInvocationError(
-            f"Investigator agent `{args[0]}` exited with status {result.returncode}"
+            f"Investigator agent `{args[0]}` exited with status {process.returncode}"
             + (f": {stderr}" if stderr else " (no stderr)")
         )
-    return result.stdout
+    return (stdout or "")[:MAX_AGENT_OUTPUT_BYTES]
 
 
 def _claude_invoker(prompt: str, cwd: Path) -> str:
-    # Read-only tool allowlist: the investigator analyzes captured evidence and
-    # must not execute commands or write files (its prompt embeds untrusted
-    # captured output — see _UNTRUSTED_DATA_PREAMBLE).
+    # Read-only tool allowlist scoped to the evidence root: the investigator
+    # analyzes captured evidence and must not execute commands, write files,
+    # or read outside its working directory (its prompt embeds untrusted
+    # captured output — see _UNTRUSTED_DATA_PREAMBLE). The prompt goes via
+    # stdin: the tool flags are variadic and would swallow a positional prompt.
     return _checked_agent_run(
-        ["claude", "-p", "--allowedTools", "Read,Grep,Glob", "--disallowedTools", "Bash,Write,Edit", prompt],
+        [
+            "claude",
+            "-p",
+            "--allowedTools",
+            "Read(./**),Grep,Glob",
+            "--disallowedTools",
+            "Bash,Write,Edit,Read(//**),Read(~/**)",
+        ],
         cwd,
+        input_text=prompt,
     )
 
 
@@ -173,7 +215,7 @@ def parse_agent_answer(raw: str) -> dict[str, Any]:
     while index != -1:
         try:
             payload, end = decoder.raw_decode(raw, index)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             index = raw.find("{", index + 1)
             continue
         if isinstance(payload, dict) and "answer" in payload:
@@ -184,38 +226,144 @@ def parse_agent_answer(raw: str) -> dict[str, Any]:
     return {"answer": raw.strip(), "evidence": [], "next_question": None, "conclusion": None}
 
 
-def _other_mode(result_root: Path, mode: str) -> str | None:
+def _contained_mode_dir(result_root: Path, mode_dir: Path) -> Path:
+    """Enforce that a plan-derived directory stays inside the result root.
+
+    ``run_plan.record_dir`` values are read from disk; a crafted ``../outside``
+    entry must never steer RCA reads or writes out of the result root."""
+
+    resolved_root = result_root.resolve()
+    resolved = mode_dir.resolve()
+    if resolved != resolved_root and resolved_root not in resolved.parents:
+        raise ValueError(f"run directory escapes the result root: {mode_dir}")
+    return mode_dir
+
+
+def _stage_evidence_copy(result_root: Path) -> Path:
+    """Symlink-free copy of the result root for the investigator to work in.
+
+    The investigator's cwd is this staged copy: relative evidence paths resolve
+    identically, but no symlink inside the captured tree can alias a host file
+    into what the agent reads.
+    """
+
+    staged_root = Path(tempfile.mkdtemp(prefix="rca_evidence_"))
+    resolved_root = result_root.resolve()
+    for source in resolved_root.rglob("*"):
+        if source.is_symlink():
+            continue
+        target = staged_root / source.relative_to(resolved_root)
+        if source.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        elif source.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+    return staged_root
+
+
+def _plan_entries(result_root: Path) -> list[dict[str, Any]]:
     run_plan = load_json(result_root / "run_plan.json", {}) or {}
     entries = run_plan.get("entries") if isinstance(run_plan, dict) else None
-    modes = [str(entry.get("mode")) for entry in entries or [] if isinstance(entry, dict) and entry.get("mode")]
+    return [entry for entry in entries or [] if isinstance(entry, dict)]
+
+
+def _entry_mode_dir(result_root: Path, entry: dict[str, Any]) -> Path | None:
+    record_dir = entry.get("record_dir")
+    if not record_dir:
+        return None
+    candidate = result_root / str(record_dir)
+    return candidate if candidate.exists() else None
+
+
+def _resolve_run_selection(result_root: Path, mode: str, run_id: str | None) -> tuple[Path, dict[str, Any] | None]:
+    """The investigated run's directory + plan entry, with ambiguity rejected.
+
+    Result roots can hold several runs per mode (repeats, scenario groups);
+    mode-only selection is only allowed when it is unambiguous — otherwise the
+    caller must pass ``--run-id``.
+    """
+
+    entries = _plan_entries(result_root)
+    if run_id:
+        entry = next((item for item in entries if str(item.get("run_id")) == run_id), None)
+        if entry is None:
+            known = sorted(str(item.get("run_id")) for item in entries if item.get("run_id"))
+            raise SystemExit(f"run_id {run_id!r} not found in run_plan.json; known run ids: {known}")
+        mode_dir = _entry_mode_dir(result_root, entry)
+        if mode_dir is None:
+            raise SystemExit(f"run_id {run_id!r} has no existing record directory")
+        return _contained_mode_dir(result_root, mode_dir), entry
+    mode_entries = [item for item in entries if str(item.get("mode")) == mode]
+    if len(mode_entries) > 1:
+        run_ids = sorted(str(item.get("run_id")) for item in mode_entries if item.get("run_id"))
+        raise SystemExit(
+            f"mode {mode!r} matches {len(mode_entries)} runs in this result root; pass --run-id " f"(one of: {run_ids})"
+        )
+    entry = mode_entries[0] if mode_entries else None
+    return _contained_mode_dir(result_root, mode_dir_for_benchmark(result_root, mode)), entry
+
+
+def _peer_entry(result_root: Path, entry: dict[str, Any] | None, mode: str) -> dict[str, Any] | None:
+    """The comparison peer: same comparison_group_id when present, else the other mode."""
+
+    entries = _plan_entries(result_root)
+    if entry is not None and entry.get("comparison_group_id"):
+        group = entry.get("comparison_group_id")
+        peer = next(
+            (
+                item
+                for item in entries
+                if item is not entry
+                and item.get("comparison_group_id") == group
+                and str(item.get("mode")) != str(entry.get("mode"))
+            ),
+            None,
+        )
+        if peer is not None:
+            return peer
+    return next((item for item in entries if str(item.get("mode")) != mode), None)
+
+
+def _other_mode(result_root: Path, mode: str) -> str | None:
+    entries = _plan_entries(result_root)
+    modes = [str(entry.get("mode")) for entry in entries if entry.get("mode")]
     return next((candidate for candidate in modes if candidate != mode), None)
 
 
-def _mode_summary_number(result_root: Path, mode: str, key: str) -> float | None:
-    summary = load_json(mode_dir_for_benchmark(result_root, mode) / "run_summary.json", {}) or {}
+def _summary_number(mode_dir: Path | None, key: str) -> float | None:
+    if mode_dir is None:
+        return None
+    summary = load_json(mode_dir / "run_summary.json", {}) or {}
     value = summary.get(key) if isinstance(summary, dict) else None
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
-def _base_seed(result_root: Path, mode: str, topic: str) -> dict[str, Any]:
-    mode_dir = mode_dir_for_benchmark(result_root, mode)
+def _base_seed(result_root: Path, mode: str, topic: str, run_id: str | None = None) -> dict[str, Any]:
+    mode_dir, entry = _resolve_run_selection(result_root, mode, run_id)
     seed: dict[str, Any] = {
         "topic": topic,
         "mode": mode,
         "mode_dir": str(mode_dir),
         "events_file": str((mode_dir / "agent_events.jsonl").relative_to(result_root)),
     }
-    base_mode = _other_mode(result_root, mode)
-    if base_mode:
-        seed["base_mode"] = base_mode
-        seed["base_mode_dir"] = str(mode_dir_for_benchmark(result_root, base_mode))
+    if run_id:
+        seed["run_id"] = run_id
+    peer = _peer_entry(result_root, entry, mode)
+    peer_mode = str(peer.get("mode")) if peer and peer.get("mode") else _other_mode(result_root, mode)
+    if peer_mode:
+        peer_dir = _entry_mode_dir(result_root, peer) if peer else None
+        if peer_dir is None:
+            peer_dir = mode_dir_for_benchmark(result_root, peer_mode)
+        seed["base_mode"] = peer_mode
+        seed["base_mode_dir"] = str(_contained_mode_dir(result_root, peer_dir))
     return seed
 
 
-def seed_failure_context(result_root: Path, mode: str) -> dict[str, Any] | None:
+def seed_failure_context(result_root: Path, mode: str, run_id: str | None = None) -> dict[str, Any] | None:
     """Deterministic seed only: the terminal failure the agent will investigate."""
 
-    mode_dir = mode_dir_for_benchmark(result_root, mode)
+    seed = _base_seed(result_root, mode, "failure", run_id)
+    mode_dir = Path(seed["mode_dir"])
     events_path = mode_dir / "agent_events.jsonl"
     if not events_path.is_file():
         return None
@@ -227,7 +375,6 @@ def seed_failure_context(result_root: Path, mode: str) -> dict[str, Any] | None:
         return None
     anchor_index, signature = anchored
     anchor = timeline[anchor_index]
-    seed = _base_seed(result_root, mode, "failure")
     seed.update(
         {
             "headline": f"command `{anchor.get('command')}` failed with `{signature['display']}`",
@@ -244,13 +391,13 @@ def seed_failure_context(result_root: Path, mode: str) -> dict[str, Any] | None:
     return seed
 
 
-def seed_slowdown_context(result_root: Path, mode: str) -> dict[str, Any] | None:
+def seed_slowdown_context(result_root: Path, mode: str, run_id: str | None = None) -> dict[str, Any] | None:
     """Seed a 'why did this run take longer' investigation from the elapsed delta."""
 
-    seed = _base_seed(result_root, mode, "slowdown")
+    seed = _base_seed(result_root, mode, "slowdown", run_id)
     base_mode = seed.get("base_mode")
-    elapsed = _mode_summary_number(result_root, mode, "elapsed_seconds")
-    base_elapsed = _mode_summary_number(result_root, base_mode, "elapsed_seconds") if base_mode else None
+    elapsed = _summary_number(Path(seed["mode_dir"]), "elapsed_seconds")
+    base_elapsed = _summary_number(Path(seed["base_mode_dir"]) if base_mode else None, "elapsed_seconds")
     if elapsed is None or base_elapsed is None or elapsed <= base_elapsed:
         return None
     delta = elapsed - base_elapsed
@@ -267,13 +414,13 @@ def seed_slowdown_context(result_root: Path, mode: str) -> dict[str, Any] | None
     return seed
 
 
-def seed_token_context(result_root: Path, mode: str) -> dict[str, Any] | None:
+def seed_token_context(result_root: Path, mode: str, run_id: str | None = None) -> dict[str, Any] | None:
     """Seed a 'why did this run use more tokens' investigation from the usage delta."""
 
-    seed = _base_seed(result_root, mode, "tokens")
+    seed = _base_seed(result_root, mode, "tokens", run_id)
     base_mode = seed.get("base_mode")
-    tokens = _mode_summary_number(result_root, mode, "token_count")
-    base_tokens = _mode_summary_number(result_root, base_mode, "token_count") if base_mode else None
+    tokens = _summary_number(Path(seed["mode_dir"]), "token_count")
+    base_tokens = _summary_number(Path(seed["base_mode_dir"]) if base_mode else None, "token_count")
     if tokens is None or base_tokens is None or tokens <= base_tokens:
         return None
     delta = tokens - base_tokens
@@ -290,30 +437,32 @@ def seed_token_context(result_root: Path, mode: str) -> dict[str, Any] | None:
     return seed
 
 
-def seed_custom_context(result_root: Path, mode: str, question: str) -> dict[str, Any]:
-    seed = _base_seed(result_root, mode, "custom")
+def seed_custom_context(result_root: Path, mode: str, question: str, run_id: str | None = None) -> dict[str, Any]:
+    seed = _base_seed(result_root, mode, "custom", run_id)
     seed.update({"headline": question, "seed_question": question})
     return seed
 
 
-_TOPIC_SEEDERS: dict[str, Callable[[Path, str], dict[str, Any] | None]] = {
+_TOPIC_SEEDERS: dict[str, Callable[..., dict[str, Any] | None]] = {
     "failure": seed_failure_context,
     "slowdown": seed_slowdown_context,
     "tokens": seed_token_context,
 }
 
 
-def resolve_seed(result_root: Path, mode: str, topic: str, question: str | None) -> dict[str, Any] | None:
+def resolve_seed(
+    result_root: Path, mode: str, topic: str, question: str | None, run_id: str | None = None
+) -> dict[str, Any] | None:
     if question:
-        return seed_custom_context(result_root, mode, question)
+        return seed_custom_context(result_root, mode, question, run_id)
     if topic == "auto":
         for name in ("failure", "slowdown", "tokens"):
-            seed = _TOPIC_SEEDERS[name](result_root, mode)
+            seed = _TOPIC_SEEDERS[name](result_root, mode, run_id)
             if seed is not None:
                 return seed
         return None
     seeder = _TOPIC_SEEDERS.get(topic)
-    return seeder(result_root, mode) if seeder else None
+    return seeder(result_root, mode, run_id) if seeder else None
 
 
 def _step_prompt(seed: dict[str, Any], steps: list[InvestigationStep], question: str, result_root: Path) -> str:
@@ -322,7 +471,8 @@ def _step_prompt(seed: dict[str, Any], steps: list[InvestigationStep], question:
         history_lines = []
         for index, step in enumerate(steps, start=1):
             history_lines.append(f"Q{index}: {step.question}\nA{index}: {step.answer}")
-        history = "Findings so far:\n" + "\n".join(history_lines) + "\n\n"
+        # Prior answers are derived from untrusted captured output — same boundary.
+        history = "Findings so far:\n[BEGIN CAPTURED DATA]\n" + "\n".join(history_lines) + "\n[END CAPTURED DATA]\n\n"
     base_pointer = ""
     if seed.get("base_mode_dir"):
         base_pointer = (
@@ -364,8 +514,9 @@ def _synthesis_prompt(seed: dict[str, Any], steps: list[InvestigationStep]) -> s
         "- `### Recommendation` — bullets, one per actionable change, each starting with the owner "
         "in bold (e.g. **Prompt:**, **Skill:**, **Harness:**).\n"
         "Keep every sentence short. Do not add headers above ###.\n\n"
-        f"Observation investigated: {seed['headline']}.\n\n"
-        f"Investigation trail:\n{qa}\n"
+        f"{_UNTRUSTED_DATA_PREAMBLE}\n\n"
+        f"Observation investigated:\n[BEGIN CAPTURED DATA]\n{seed['headline']}\n[END CAPTURED DATA]\n\n"
+        f"Investigation trail:\n[BEGIN CAPTURED DATA]\n{qa}\n[END CAPTURED DATA]\n"
     )
 
 
@@ -431,7 +582,9 @@ def _write_rca_report(
         f"trail: `rca/investigation_{topic_slug}.jsonl`."
     )
     body = report_markdown if report_markdown else f"### Verdict\n\n{conclusion or 'not established'}"
-    report_path.write_text(f"{header}\n\n{body}\n", encoding="utf-8")
+    # The on-disk file is sanitized too: it may be read directly, not only
+    # through the report engine's render-time sanitization.
+    report_path.write_text(sanitize_agent_markdown(f"{header}\n\n{body}\n"), encoding="utf-8")
     # The legacy single-file name would double-embed next to the per-topic file.
     legacy = rca_dir / "rca_report.md"
     if legacy.is_file() and legacy != report_path:
@@ -446,6 +599,7 @@ def resynthesize_report(
     *,
     topic: str = "auto",
     agent_name: str = "agent",
+    run_id: str | None = None,
 ) -> Path | None:
     """Rewrite the RCA report from the saved trail without re-running the investigation.
 
@@ -453,14 +607,18 @@ def resynthesize_report(
     in the same failure/slowdown/tokens order.
     """
 
-    mode_dir = mode_dir_for_benchmark(result_root, mode)
+    mode_dir, _entry = _resolve_run_selection(result_root, mode, run_id)
     topics = (*_TOPIC_SEEDERS, "custom") if topic == "auto" else (topic,)
     loaded = next((trail for name in topics if (trail := load_investigation_trail(mode_dir, name)) is not None), None)
     if loaded is None:
         print(f"No saved investigation trail for mode={mode} topic={topic}.")
         return None
     seed, steps = loaded
-    report_markdown = invoker(_synthesis_prompt(seed, steps), result_root).strip()
+    staged_root = _stage_evidence_copy(result_root)
+    try:
+        report_markdown = invoker(_synthesis_prompt(seed, steps), staged_root).strip()
+    finally:
+        shutil.rmtree(staged_root, ignore_errors=True)
     return _write_rca_report(mode_dir, seed, steps, report_markdown, agent_name)
 
 
@@ -473,55 +631,65 @@ def run_investigation(
     question: str | None = None,
     max_steps: int = MAX_INVESTIGATION_STEPS,
     agent_name: str = "agent",
+    run_id: str | None = None,
 ) -> Path | None:
-    seed = resolve_seed(result_root, mode, topic, question)
+    seed = resolve_seed(result_root, mode, topic, question, run_id)
     if seed is None:
         print(f"No investigable observation for mode={mode} topic={topic} (no failure/slowdown/token delta found).")
         return None
-    mode_dir = Path(seed["mode_dir"])
+    max_steps = max(1, min(int(max_steps), MAX_INVESTIGATION_STEPS_CAP))
+    mode_dir = _contained_mode_dir(result_root, Path(seed["mode_dir"]))
     rca_dir = mode_dir / "rca"
     rca_dir.mkdir(parents=True, exist_ok=True)
     trail_path = rca_dir / f"investigation_{_topic_slug(seed['topic'])}.jsonl"
+    # A rerun replaces the trail, so a report synthesized from the OLD trail
+    # must not linger next to it: remove it now, rewrite it on success.
+    with suppress(OSError):
+        (rca_dir / f"rca_report_{_topic_slug(seed['topic'])}.md").unlink()
     steps: list[InvestigationStep] = []
     question = str(seed["seed_question"])
     asked = {question}
+    staged_root = _stage_evidence_copy(result_root)
     # The trail is written incrementally so a hung/failed step or synthesis call
     # never discards completed Q/A work — --resynthesize can resume from it.
-    with trail_path.open("w", encoding="utf-8") as stream:
-        stream.write(json.dumps({"seed": seed, "agent": agent_name}) + "\n")
-        stream.flush()
-        for _ in range(max_steps):
-            raw = invoker(_step_prompt(seed, steps, question, result_root), result_root)
-            payload = parse_agent_answer(raw)
-            step = InvestigationStep(
-                question=question,
-                answer=str(payload.get("answer") or "").strip(),
-                evidence=[item for item in payload.get("evidence") or [] if isinstance(item, dict)],
-                next_question=(str(payload["next_question"]).strip() if payload.get("next_question") else None),
-                conclusion=(str(payload["conclusion"]).strip() if payload.get("conclusion") else None),
-            )
-            steps.append(step)
-            stream.write(
-                json.dumps(
-                    {
-                        "question": step.question,
-                        "answer": step.answer,
-                        "evidence": step.evidence,
-                        "next_question": step.next_question,
-                        "conclusion": step.conclusion,
-                    }
-                )
-                + "\n"
-            )
+    try:
+        with trail_path.open("w", encoding="utf-8") as stream:
+            stream.write(json.dumps({"seed": seed, "agent": agent_name}) + "\n")
             stream.flush()
-            if step.conclusion or not step.next_question:
-                break
-            if step.next_question in asked:
-                # Degenerate loop guard: the agent re-asked a question it already asked.
-                break
-            asked.add(step.next_question)
-            question = step.next_question
-    report_markdown = invoker(_synthesis_prompt(seed, steps), result_root).strip()
+            for _ in range(max_steps):
+                raw = invoker(_step_prompt(seed, steps, question, result_root), staged_root)
+                payload = parse_agent_answer(raw)
+                step = InvestigationStep(
+                    question=question,
+                    answer=str(payload.get("answer") or "").strip(),
+                    evidence=[item for item in payload.get("evidence") or [] if isinstance(item, dict)],
+                    next_question=(str(payload["next_question"]).strip() if payload.get("next_question") else None),
+                    conclusion=(str(payload["conclusion"]).strip() if payload.get("conclusion") else None),
+                )
+                steps.append(step)
+                stream.write(
+                    json.dumps(
+                        {
+                            "question": step.question,
+                            "answer": step.answer,
+                            "evidence": step.evidence,
+                            "next_question": step.next_question,
+                            "conclusion": step.conclusion,
+                        }
+                    )
+                    + "\n"
+                )
+                stream.flush()
+                if step.conclusion or not step.next_question:
+                    break
+                if step.next_question in asked:
+                    # Degenerate loop guard: the agent re-asked a question it already asked.
+                    break
+                asked.add(step.next_question)
+                question = step.next_question
+        report_markdown = invoker(_synthesis_prompt(seed, steps), staged_root).strip()
+    finally:
+        shutil.rmtree(staged_root, ignore_errors=True)
     return _write_rca_report(mode_dir, seed, steps, report_markdown, agent_name)
 
 
@@ -536,6 +704,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("result_root", type=Path)
     parser.add_argument("--mode", default="with_skills", help="Run mode to investigate (default: with_skills)")
+    parser.add_argument(
+        "--run-id",
+        help="run_plan.json run_id to investigate; required when the result root has several runs per mode.",
+    )
     parser.add_argument(
         "--topic",
         default="auto",
@@ -567,6 +739,7 @@ def main(argv: list[str] | None = None) -> int:
                 invoker,
                 topic=args.topic,
                 agent_name=agent_name,
+                run_id=args.run_id,
             )
         else:
             report_path = run_investigation(
@@ -577,6 +750,7 @@ def main(argv: list[str] | None = None) -> int:
                 question=args.question,
                 max_steps=args.max_steps,
                 agent_name=agent_name,
+                run_id=args.run_id,
             )
     except AgentInvocationError as error:
         print(error, file=sys.stderr)

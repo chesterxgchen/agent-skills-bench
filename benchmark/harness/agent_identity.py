@@ -199,13 +199,39 @@ def observed_agent_session_evidence_from_path(path: Path) -> dict[str, Any]:
     return latest_evidence
 
 
+def captured_session_thread_id(events_path: Path) -> str:
+    """The run's own session/thread id from the captured event stream.
+
+    Codex emits ``thread.started`` with ``thread_id`` matching the uuid in its
+    rollout filename — the strongest correlator between an invocation and its
+    rollout (child/subagent sessions write their own files)."""
+
+    try:
+        with events_path.open("rb") as stream:
+            for raw_line in stream:
+                try:
+                    event = json.loads(raw_line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if isinstance(event, dict) and event.get("type") == "thread.started":
+                    return str(event.get("thread_id") or "")
+    except OSError:
+        return ""
+    return ""
+
+
 def observed_agent_session_evidence_from_files(
     sessions_dir: Path,
     *,
     previous_snapshot: dict[str, tuple[int, int]] | None = None,
     max_files: int = 8,
+    preferred_session_id: str = "",
 ) -> tuple[dict[str, Any], Path | None]:
-    """Return minimal model evidence from a rollout changed by this invocation."""
+    """Return minimal model evidence from a rollout changed by this invocation.
+
+    Rollouts whose filename carries the run's own thread/session id rank first,
+    so a child/subagent session written in the same window cannot win over the
+    invocation's rollout; recency is the tiebreaker."""
 
     candidates: list[tuple[Path, tuple[int, int]]] = []
     try:
@@ -218,7 +244,13 @@ def observed_agent_session_evidence_from_files(
             if previous_snapshot is not None and previous_snapshot.get(str(path)) == state:
                 continue
             candidates.append((path, state))
-        candidates.sort(key=lambda item: item[1][0], reverse=True)
+        candidates.sort(
+            key=lambda item: (
+                1 if preferred_session_id and preferred_session_id in item[0].name else 0,
+                item[1][0],
+            ),
+            reverse=True,
+        )
     except OSError:
         return {}, None
     for path, _state in candidates[:max_files]:

@@ -833,6 +833,7 @@ def test_adapter_auth_mounts_reject_path_components(tmp_path):
     from types import SimpleNamespace
 
     import yaml
+
     from benchmark.harness.agents.config import ConfigurableAgentAdapter
 
     config_path = tmp_path / "bad-agent.yaml"
@@ -870,6 +871,7 @@ def test_adapter_auth_mounts_reject_path_components(tmp_path):
 
 def test_agent_config_rejects_unknown_skill_exposure_mechanism(tmp_path):
     import yaml
+
     from benchmark.harness.agents.config import AgentConfig
 
     config_path = tmp_path / "bad-agent.yaml"
@@ -907,6 +909,7 @@ def test_agent_config_rejects_unknown_skill_exposure_mechanism(tmp_path):
 
 def test_agent_config_rejects_unsafe_legacy_artifact_prefix(tmp_path):
     import yaml
+
     from benchmark.harness.agents.config import AgentConfig
 
     config_path = tmp_path / "bad-agent.yaml"

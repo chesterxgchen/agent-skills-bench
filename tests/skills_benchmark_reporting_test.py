@@ -111,8 +111,7 @@ def test_skill_usage_keeps_explicit_skills_and_shared_refs_separate():
     assert skill_inspection_display(events_text) == "none"
     assert skill_usage_display(events_text=events_text, skills_enabled=True) == "nvflare-convert-lightning"
     assert (
-        shared_skill_usage_display(events_text)
-        == "_shared/dependency-install.md; _shared/runtime-output-guidance.md"
+        shared_skill_usage_display(events_text) == "_shared/dependency-install.md; _shared/runtime-output-guidance.md"
     )
 
 
@@ -144,7 +143,7 @@ def test_skill_usage_separates_availability_from_codex_instruction_reads():
                         "type": "command_execution",
                         "command": (
                             "/bin/bash -lc \"sed -n '1,260p' "
-                            "/workspace/.codex/skills/nvflare-convert-lightning/SKILL.md\""
+                            '/workspace/.codex/skills/nvflare-convert-lightning/SKILL.md"'
                         ),
                     }
                 }
@@ -154,8 +153,7 @@ def test_skill_usage_separates_availability_from_codex_instruction_reads():
                     "item": {
                         "type": "command_execution",
                         "command": (
-                            "/bin/bash -lc \"sed -n '1,220p' "
-                            "/workspace/.codex/skills/_shared/dependency-install.md\""
+                            "/bin/bash -lc \"sed -n '1,220p' " '/workspace/.codex/skills/_shared/dependency-install.md"'
                         ),
                     }
                 }
@@ -188,7 +186,7 @@ def test_skill_usage_counts_deeper_codex_references_as_applied_usage():
                         "type": "command_execution",
                         "command": (
                             "/bin/bash -lc \"sed -n '1,260p' "
-                            "/workspace/.codex/skills/nvflare-convert-lightning/SKILL.md\""
+                            '/workspace/.codex/skills/nvflare-convert-lightning/SKILL.md"'
                         ),
                     }
                 }
@@ -199,7 +197,7 @@ def test_skill_usage_counts_deeper_codex_references_as_applied_usage():
                         "type": "command_execution",
                         "command": (
                             "/bin/bash -lc \"sed -n '1,220p' "
-                            "/workspace/.codex/skills/nvflare-convert-pytorch/SKILL.md\""
+                            '/workspace/.codex/skills/nvflare-convert-pytorch/SKILL.md"'
                         ),
                     }
                 }
@@ -236,10 +234,7 @@ def test_skill_usage_counts_deeper_codex_references_as_applied_usage():
 def test_skill_usage_ignores_shared_observed_skill_name_fallback():
     from benchmark.harness.reports._skill_usage import skill_usage_display
 
-    assert (
-        skill_usage_display(events_text="", observed_skill_name="_shared", skills_enabled=True)
-        == "none recorded"
-    )
+    assert skill_usage_display(events_text="", observed_skill_name="_shared", skills_enabled=True) == "none recorded"
 
 
 def test_benchmark_insights_explains_docker_image_failures(tmp_path):
@@ -584,7 +579,10 @@ def test_reports_surface_captured_host_os(tmp_path):
     assert "| No skills baseline | codex | default | scenario | without_skills | Ubuntu 24.04 LTS |" in insights
     assert "| No skills baseline | codex | default | Ubuntu 24.04 LTS |" in metrics_markdown
     assert "Host OS: `Ubuntu 24.04 LTS`" in scenario_markdown
-    assert "| run_00001 | without_skills | codex | default | scenario | without_skills | Ubuntu 24.04 LTS |" in scenario_markdown
+    assert (
+        "| run_00001 | without_skills | codex | default | scenario | without_skills | Ubuntu 24.04 LTS |"
+        in scenario_markdown
+    )
 
 
 def test_benchmark_report_surfaces_captured_prompt(tmp_path):
@@ -714,11 +712,11 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     assert "### Benchmark Target" in insights
     assert "| ames-lightning | Lightning target | pair codex ames-lightning | /tmp/jobs/ames-lightning |" in insights
     assert "| Run | Job | Framework | Agent/model | Host OS | Algorithm/workflow |" in insights
-    assert "| No skills baseline | ames-lightning | Lightning target | agent=codex, model=default | not captured |" in insights
     assert (
-        "| With skills | ames-lightning | Lightning target | agent=codex, model=default | not captured |"
+        "| No skills baseline | ames-lightning | Lightning target | agent=codex, model=default | not captured |"
         in insights
     )
+    assert "| With skills | ames-lightning | Lightning target | agent=codex, model=default | not captured |" in insights
     assert "### Skill Evidence" in insights
     assert "| Run | Skills available | Skills inspected | Skills applied/used | Shared refs read |" in insights
     assert "| No skills baseline | not enabled | none | none | none |" in insights
@@ -885,7 +883,7 @@ def test_framework_inference_ignores_skill_usage_names(tmp_path):
                                     "type": "command_execution",
                                     "command": (
                                         "/bin/bash -lc \"sed -n '1,260p' "
-                                        "/workspace/.codex/skills/nvflare-convert-lightning/SKILL.md\""
+                                        '/workspace/.codex/skills/nvflare-convert-lightning/SKILL.md"'
                                     ),
                                 }
                             }
@@ -896,7 +894,7 @@ def test_framework_inference_ignores_skill_usage_names(tmp_path):
                                     "type": "command_execution",
                                     "command": (
                                         "/bin/bash -lc \"sed -n '1,260p' "
-                                        "/workspace/.codex/skills/nvflare-convert-pytorch/SKILL.md\""
+                                        '/workspace/.codex/skills/nvflare-convert-pytorch/SKILL.md"'
                                     ),
                                 }
                             }
@@ -1832,13 +1830,7 @@ def test_metrics_report_recovers_validation_metric_from_runtime_artifacts(tmp_pa
     entries = []
     for index, (mode, value) in enumerate(((NO_SKILLS_MODE, 0.72), (WITH_SKILLS_MODE, 0.77)), start=1):
         record_dir = (
-            tmp_path
-            / "records"
-            / "agent=codex"
-            / "model=default"
-            / "workflow=default"
-            / "job=ames"
-            / f"mode={mode}"
+            tmp_path / "records" / "agent=codex" / "model=default" / "workflow=default" / "job=ames" / f"mode={mode}"
         )
         record_dir.mkdir(parents=True)
         entries.append(
@@ -1900,13 +1892,7 @@ def test_metrics_report_renders_validation_metric_recovered_from_runtime_logs(tm
     entries = []
     for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
         record_dir = (
-            tmp_path
-            / "records"
-            / "agent=codex"
-            / "model=default"
-            / "workflow=default"
-            / "job=ames"
-            / f"mode={mode}"
+            tmp_path / "records" / "agent=codex" / "model=default" / "workflow=default" / "job=ames" / f"mode={mode}"
         )
         record_dir.mkdir(parents=True)
         entries.append(
@@ -2202,7 +2188,10 @@ def test_cost_comparison_separates_dependency_install_time():
 
     section = cost_comparison_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
 
-    assert "`Runtime seconds` is total elapsed time minus captured dependency-install command/background-task time" in section
+    assert (
+        "`Runtime seconds` is total elapsed time minus captured dependency-install command/background-task time"
+        in section
+    )
     assert "`Dependency install seconds` is captured dependency-install command/background-task time" in section
     assert "Command span timing is operation-level evidence, not a strict wall-clock partition" in section
     assert "| Total time seconds | 100 | 300 | 200 |" in section
@@ -3629,14 +3618,13 @@ def test_metric_mismatch_reports_actual_metric_without_marking_missing():
 
 def test_reported_expected_metric_earns_partial_credit():
     from benchmark.harness.modes import NO_SKILLS_MODE
+    from benchmark.harness.quality_signals import metric_value_entry, reported_metric_payload
     from benchmark.harness.reports.benchmark_insights import (
         benchmark_outcome,
         missing_result_metrics_section,
         run_quality_issues,
         run_status_kind,
     )
-
-    from benchmark.harness.quality_signals import metric_value_entry, reported_metric_payload
 
     payload = reported_metric_payload(
         "AUROC",
@@ -3757,7 +3745,11 @@ def test_artifact_metric_satisfies_result_gate_when_final_response_metric_is_inc
 
 
 def test_not_started_job_cannot_pass_result_gate_with_reported_scalar():
-    from benchmark.harness.reports.benchmark_insights import benchmark_outcome, human_readable_status, run_quality_issues
+    from benchmark.harness.reports.benchmark_insights import (
+        benchmark_outcome,
+        human_readable_status,
+        run_quality_issues,
+    )
     from benchmark.harness.reports.evidence import _run_evidence_from_bundle
     from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
 
@@ -3892,11 +3884,11 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
             "record": {},
             "validation_metric": {
                 "name": "AUROC",
-                    "source": "metrics_artifact",
-                    "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
-                    "reported_values": [0.725],
-                    "value": 0.725,
-                },
+                "source": "metrics_artifact",
+                "source_path": "workspace_delta/runtime_artifacts/server/simulate_job/metrics/metrics_summary.json",
+                "reported_values": [0.725],
+                "value": 0.725,
+            },
         },
         WITH_SKILLS_MODE: {
             "available": True,
@@ -3924,9 +3916,7 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
     ctx = _nv_ctx(runs, modes)
 
     assert run_quality_issues(typed[NO_SKILLS_MODE], ctx.evidence[NO_SKILLS_MODE]) == []
-    with_issues = "; ".join(
-        run_quality_issues(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE])
-    )
+    with_issues = "; ".join(run_quality_issues(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]))
     assert "job_execution" in with_issues
     assert "background_task_killed" in with_issues
     assert "metrics_summary.json" in with_issues
@@ -5651,9 +5641,7 @@ while flare.is_running():
                     "executors": [
                         {
                             "executor": {
-                                "args": {
-                                    "task_script_args": "--data-path /workspace/input --epochs 1 --device cpu"
-                                }
+                                "args": {"task_script_args": "--data-path /workspace/input --epochs 1 --device cpu"}
                             }
                         }
                     ]
@@ -5998,14 +5986,17 @@ def test_job_run_status_does_not_count_py_compile_as_job_completion():
         "agent_events_text": "\n".join(json.dumps(event) for event in (compile_event, failed_sim_event)),
     }
 
-    assert job_command_succeeded(
-        {
-            "command": "python3 -m py_compile nvflare/job.py nvflare/train_fl.py",
-            "exit_code": 0,
-            "output": "",
-            "status": "completed",
-        }
-    ) is False
+    assert (
+        job_command_succeeded(
+            {
+                "command": "python3 -m py_compile nvflare/job.py nvflare/train_fl.py",
+                "exit_code": 0,
+                "output": "",
+                "status": "completed",
+            }
+        )
+        is False
+    )
     assert job_run_status(run) == "started_failed"
     assert "Missing required dependency 'torch'" in job_run_status_reason(run)
 
@@ -6361,9 +6352,7 @@ def test_job_output_config_error_vetoes_finished_marker():
     from benchmark.harness.reports._events import job_output_succeeded
 
     assert not job_output_succeeded(
-        "ConfigError: executors are not specified\n"
-        "Abort signal triggered. Finishing FedAvg.\n"
-        "Finished FedAvg.\n"
+        "ConfigError: executors are not specified\n" "Abort signal triggered. Finishing FedAvg.\n" "Finished FedAvg.\n"
     )
 
 
@@ -6668,7 +6657,7 @@ def test_failure_analysis_explains_missing_module_during_background_dependency_i
                 "content": [
                     {
                         "id": "toolu_verify",
-                        "input": {"command": 'python3 -c "import torch; print(\'torch\', torch.__version__)"'},
+                        "input": {"command": "python3 -c \"import torch; print('torch', torch.__version__)\""},
                         "name": "Bash",
                         "type": "tool_use",
                     }
@@ -6824,8 +6813,7 @@ def test_dependency_install_evidence_reports_killed_background_install():
                         "id": "toolu_probe",
                         "input": {
                             "command": (
-                                "/workspace/venv/bin/python3 -c \"import numpy, pandas, torch; "
-                                "print('ready')\""
+                                '/workspace/venv/bin/python3 -c "import numpy, pandas, torch; ' "print('ready')\""
                             )
                         },
                         "name": "Bash",
@@ -6915,7 +6903,11 @@ Final round metrics:
 
 def test_metrics_chart_names_metric_once_in_panel_title():
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
-    from benchmark.harness.reports.benchmark_insights import comparison_scorecard, embedded_bar_chart, outcome_metrics_table
+    from benchmark.harness.reports.benchmark_insights import (
+        comparison_scorecard,
+        embedded_bar_chart,
+        outcome_metrics_table,
+    )
 
     def run(label: str, value: float) -> dict:
         return {
@@ -6969,7 +6961,11 @@ def test_metrics_chart_names_metric_once_in_panel_title():
 
 def test_metrics_chart_uses_labeled_aggregated_metric_from_legacy_record():
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
-    from benchmark.harness.reports.benchmark_insights import comparison_scorecard, embedded_bar_chart, outcome_metrics_table
+    from benchmark.harness.reports.benchmark_insights import (
+        comparison_scorecard,
+        embedded_bar_chart,
+        outcome_metrics_table,
+    )
 
     def run(label: str, metric: dict) -> dict:
         return {
@@ -7015,7 +7011,11 @@ def test_metrics_chart_uses_labeled_aggregated_metric_from_legacy_record():
 
 def test_metrics_chart_marks_mixed_metric_names_non_comparable():
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
-    from benchmark.harness.reports.benchmark_insights import comparison_scorecard, embedded_bar_chart, outcome_metrics_table
+    from benchmark.harness.reports.benchmark_insights import (
+        comparison_scorecard,
+        embedded_bar_chart,
+        outcome_metrics_table,
+    )
 
     def run(label: str, metric_name: str, value: float) -> dict:
         return {
@@ -7681,10 +7681,22 @@ def test_why_root_cause_chain_from_claude_tool_result_events():
     events = [
         assistant(
             {"type": "text", "text": "Checking whether torch is available before the job."},
-            {"type": "tool_use", "name": "Bash", "id": "toolu_probe", "input": {"command": "python3 -c 'import torch, sys'"}},
+            {
+                "type": "tool_use",
+                "name": "Bash",
+                "id": "toolu_probe",
+                "input": {"command": "python3 -c 'import torch, sys'"},
+            },
         ),
         tool_result("toolu_probe", "torch 2.4.0"),
-        assistant({"type": "tool_use", "name": "Bash", "id": "toolu_job", "input": {"command": "python3 job.py --num-clients 3"}}),
+        assistant(
+            {
+                "type": "tool_use",
+                "name": "Bash",
+                "id": "toolu_job",
+                "input": {"command": "python3 job.py --num-clients 3"},
+            }
+        ),
         tool_result("toolu_job", "Traceback...\nModuleNotFoundError: No module named 'torch'", is_error=True),
     ]
     events_text = "\n".join(json.dumps(event) for event in events)
@@ -7711,7 +7723,10 @@ def test_rca_investigation_loop_follows_agent_questions(tmp_path):
     mode_dir = tmp_path / "records" / "agent=codex" / "model=x" / "mode=with_skills"
     mode_dir.mkdir(parents=True)
     events = [
-        {"type": "item.completed", "item": {"type": "command_execution", "command": "pip check", "exit_code": 0, "aggregated_output": "ok"}},
+        {
+            "type": "item.completed",
+            "item": {"type": "command_execution", "command": "pip check", "exit_code": 0, "aggregated_output": "ok"},
+        },
         {
             "type": "item.completed",
             "item": {
@@ -7724,7 +7739,10 @@ def test_rca_investigation_loop_follows_agent_questions(tmp_path):
     ]
     (mode_dir / "agent_events.jsonl").write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
     write_json = __import__("benchmark.harness.common", fromlist=["write_json"]).write_json
-    write_json(tmp_path / "run_plan.json", {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]})
+    write_json(
+        tmp_path / "run_plan.json",
+        {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]},
+    )
 
     seed = seed_failure_context(tmp_path, "with_skills")
     assert seed is not None
@@ -7764,7 +7782,10 @@ def test_rca_investigation_loop_follows_agent_questions(tmp_path):
     # The synthesis prompt carries the full Q/A trail.
     assert "Instruction present but not followed" in prompts[2]
 
-    trail = [json.loads(line) for line in (mode_dir / "rca" / "investigation_failure.jsonl").read_text(encoding="utf-8").splitlines()]
+    trail = [
+        json.loads(line)
+        for line in (mode_dir / "rca" / "investigation_failure.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     assert trail[0]["agent"] == "fake"
     assert trail[2]["conclusion"].startswith("Instruction present but not followed")
     report = report_path.read_text(encoding="utf-8")
@@ -7932,10 +7953,16 @@ def test_rca_resynthesize_rewrites_report_from_saved_trail(tmp_path):
     mode_dir = tmp_path / "records" / "mode=with_skills"
     rca_dir = mode_dir / "rca"
     rca_dir.mkdir(parents=True)
-    write_json(tmp_path / "run_plan.json", {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]})
+    write_json(
+        tmp_path / "run_plan.json",
+        {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]},
+    )
     # Legacy single-file trail and report names (pre per-topic naming).
     trail = [
-        {"seed": {"failed_command": "python3 job.py", "error": "ModuleNotFoundError: No module named 'torch'"}, "agent": "claude"},
+        {
+            "seed": {"failed_command": "python3 job.py", "error": "ModuleNotFoundError: No module named 'torch'"},
+            "agent": "claude",
+        },
         {
             "question": "What caused the failure?",
             "answer": "torch was never installed.",
@@ -7970,7 +7997,10 @@ def test_rca_resynthesize_auto_topic_scans_saved_trails(tmp_path):
     mode_dir = tmp_path / "records" / "mode=with_skills"
     rca_dir = mode_dir / "rca"
     rca_dir.mkdir(parents=True)
-    write_json(tmp_path / "run_plan.json", {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]})
+    write_json(
+        tmp_path / "run_plan.json",
+        {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]},
+    )
     # Only a slowdown trail exists; auto must find it instead of assuming failure.
     trail = [
         {"seed": {"topic": "slowdown", "headline": "with_skills was +300s slower"}, "agent": "claude"},
@@ -7982,7 +8012,9 @@ def test_rca_resynthesize_auto_topic_scans_saved_trails(tmp_path):
             "conclusion": "The agent reran the job three times.",
         },
     ]
-    (rca_dir / "investigation_slowdown.jsonl").write_text("\n".join(json.dumps(r) for r in trail) + "\n", encoding="utf-8")
+    (rca_dir / "investigation_slowdown.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in trail) + "\n", encoding="utf-8"
+    )
 
     def fake_invoker(prompt, cwd):
         assert "The agent reran the job three times." in prompt
@@ -8038,8 +8070,8 @@ def test_evaluation_rules_compose_task_and_overlay_dimensions():
 def test_agent_markdown_is_sanitized_and_prompt_fence_is_dynamic(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
-    from benchmark.harness.reports.benchmark_insights import benchmark_report, collect_benchmark_runs
     from benchmark.harness.reports._text import sanitize_agent_markdown
+    from benchmark.harness.reports.benchmark_insights import benchmark_report, collect_benchmark_runs
 
     sanitized = sanitize_agent_markdown(
         "# Big heading\n<script>alert(1)</script>\nkeep `cmd <<'PY'` code spans\n```\n<pre>fenced</pre>\n```"
@@ -8056,7 +8088,12 @@ def test_agent_markdown_is_sanitized_and_prompt_fence_is_dynamic(tmp_path):
         record_dir = tmp_path / "records" / f"mode={mode}"
         record_dir.mkdir(parents=True)
         entries.append(
-            {"run_id": f"run_{index:05d}", "mode": mode, "agent": "codex", "record_dir": str(record_dir.relative_to(tmp_path))}
+            {
+                "run_id": f"run_{index:05d}",
+                "mode": mode,
+                "agent": "codex",
+                "record_dir": str(record_dir.relative_to(tmp_path)),
+            }
         )
         write_json(record_dir / "run_summary.json", {"mode": mode})
         write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
@@ -8083,7 +8120,12 @@ def test_terminal_failure_anchor_ignores_inspection_command_quotes():
         return json.dumps(
             {
                 "type": "item.completed",
-                "item": {"type": "command_execution", "command": cmd, "aggregated_output": output, "exit_code": exit_code},
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
             }
         )
 
@@ -8095,7 +8137,7 @@ def test_terminal_failure_anchor_ignores_inspection_command_quotes():
     events = "\n".join(
         [
             command("python3 job.py", output="ModuleNotFoundError: No module named 'torch'", exit_code=1),
-            command("/bin/bash -lc \"cat /tmp/old_run/log.txt\"", output="Result can be found in /tmp/old", exit_code=0),
+            command('/bin/bash -lc "cat /tmp/old_run/log.txt"', output="Result can be found in /tmp/old", exit_code=0),
             command("grep -n Error notes.txt", output="KeyError: 'accuracy'", exit_code=1),
         ]
     )
@@ -8125,3 +8167,122 @@ def test_terminal_failure_anchor_ignores_inspection_command_quotes():
     prediction = predicted_failure_message(prediction_events)
     assert prediction is not None
     assert "expect the simulation to fail" in prediction["quote"]
+
+
+def test_terminal_failure_anchor_ignores_status_guarded_inspection_command():
+    from benchmark.harness.reports._events import (
+        _command_is_inspection_only,
+        event_timeline_from_text,
+        terminal_failure_anchor,
+    )
+
+    # `|| true` / `&& exit 0` guards do not execute anything of their own, so a
+    # guarded grep/cat stays inspection-only...
+    assert _command_is_inspection_only("grep -n 'Result can be found' server.log || true")
+    assert _command_is_inspection_only('/bin/bash -lc "grep -c epoch server.log || true"')
+    assert _command_is_inspection_only("grep Error log.txt && exit 0")
+    # ...while the guard alone, or a guarded execution, is still not inspection.
+    assert not _command_is_inspection_only("true")
+    assert not _command_is_inspection_only("python3 job.py || true")
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    # A guarded grep that quotes an OLD success marker must not suppress the
+    # real terminal failure.
+    events = "\n".join(
+        [
+            command("python3 job.py", output="ModuleNotFoundError: No module named 'torch'", exit_code=1),
+            command(
+                "grep -n 'Result can be found' /tmp/old_run/log.txt || true",
+                output="Result can be found in /tmp/old",
+                exit_code=0,
+            ),
+        ]
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "torch" in anchored[1]["display"]
+
+
+def test_second_review_round_fixes(tmp_path):
+    import pytest
+
+    from benchmark.harness.common import write_json
+    from benchmark.harness.evaluation import load_evaluation_rules
+    from benchmark.harness.rca import _contained_mode_dir, _resolve_run_selection, parse_agent_answer
+    from benchmark.harness.reports._events import is_dependency_install_command
+    from benchmark.harness.reports._text import sanitize_agent_markdown
+
+    # Path containment: a crafted record_dir cannot escape the result root.
+    root = tmp_path / "root"
+    (root / "records").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(ValueError, match="escapes the result root"):
+        _contained_mode_dir(root, outside)
+
+    # Ambiguous mode-only selection is rejected with run ids listed.
+    for index in (1, 2):
+        (root / "records" / f"r{index}").mkdir()
+    write_json(
+        root / "run_plan.json",
+        {
+            "entries": [
+                {"run_id": f"run_{index}", "mode": "with_skills", "record_dir": f"records/r{index}"} for index in (1, 2)
+            ]
+        },
+    )
+    with pytest.raises(SystemExit, match="pass --run-id"):
+        _resolve_run_selection(root, "with_skills", None)
+    mode_dir, entry = _resolve_run_selection(root, "with_skills", "run_2")
+    assert mode_dir == root / "records" / "r2"
+    assert entry["run_id"] == "run_2"
+
+    # Balanced-JSON answer parsing survives multiple objects / schema echoes.
+    raw = (
+        '{"answer": "<schema echo>"} prose {brace} {"answer": "real one", "next_question": null, "conclusion": "done"}'
+    )
+    assert parse_agent_answer(raw)["answer"] == "real one"
+
+    # Mixed fence delimiters cannot smuggle raw HTML past the sanitizer.
+    mixed = "~~~\ncode\n```\n~~~\n<script>x</script>"
+    assert "<script>" not in sanitize_agent_markdown(mixed)
+
+    # Executable-position install detection.
+    assert not is_dependency_install_command("echo 'pip install torch'")
+    assert is_dependency_install_command("pip install torch | grep Successfully")
+    assert is_dependency_install_command("/bin/bash -lc 'uv pip install -r requirements.txt'")
+    assert is_dependency_install_command("python3 -m pip install pandas")
+    assert not is_dependency_install_command("grep 'pip install' notes.txt")
+
+    # Strict selectors fail closed on typos; lenient default falls back.
+    with pytest.raises(ValueError, match="unknown framework 'lightining'"):
+        load_evaluation_rules("nvflare", selectors={"framework": "lightining"}, strict_selectors=True)
+    lenient = load_evaluation_rules("nvflare", selectors={"framework": "lightining"})
+    assert "selectors" not in lenient
+
+
+def test_data_packaging_detector_precision():
+    from benchmark.harness.sdks.nvflare._logic import _detect_data_packaging
+
+    # A config path containing "database" is not a data path.
+    config_toml = _detect_data_packaging('settings = load("/srv/database/config.toml")\n')
+    assert not config_toml.startswith("hardcoded absolute data path")
+
+    # Shipping requirements.txt to a data/ dest dir is not dataset packaging.
+    requirements = _detect_data_packaging(
+        'recipe.job.add_file_to_clients("requirements.txt", dest_dir="data")\n'
+        'parser.add_argument("--data-root", type=Path, default=Path("/workspace/data/ames"))\n'
+    )
+    assert requirements.startswith("configurable data_root argument")

@@ -31,14 +31,15 @@ from .._events import (
     inline_code_text,
     is_dependency_install_command,
     predicted_failure_message,
+    run_activity,
     terminal_failure_anchor,
     truncate,
-    run_activity,
 )
 from .._runs import run_workspace_delta
 from .._text import _command_count_display, fmt_number, markdown_cell, sanitize_agent_markdown
 from ..evidence import RunEvidence
 from ._code_quality import _code_quality_assessment_map
+from ._metrics import run_quality_issues, run_result_metric_status
 from ._plugin_view import (
     _as_run_evidence,
     _execution_atom,
@@ -51,7 +52,6 @@ from ._plugin_view import (
     run_summary,
 )
 from ._sections import repeated_dependency_install_section, repeated_job_runs_section
-from ._metrics import run_quality_issues, run_result_metric_status
 from ._spans import (
     _assistant_turns,
     _command_span_total_seconds,
@@ -920,9 +920,7 @@ def _failure_root_cause_chain(with_run: RunEvidence, base_run: RunEvidence) -> l
     terms = _rca_terms(signature, str(anchor.get("command") or ""))
     chain: list[dict[str, Any]] = []
     for item in timeline[:anchor_index]:
-        haystack = " ".join(
-            str(item.get(key) or "") for key in ("command", "text", "output")
-        ).lower()
+        haystack = " ".join(str(item.get(key) or "") for key in ("command", "text", "output")).lower()
         if any(term in haystack for term in terms):
             chain.append(item)
     with_label = with_run.label or "With skills"
@@ -939,9 +937,7 @@ def _failure_root_cause_chain(with_run: RunEvidence, base_run: RunEvidence) -> l
     remedial_check = _REMEDIAL_COMMAND_CHECKS.get(signature["kind"])
     if remedial_check is not None:
         ran = [
-            item
-            for item in timeline
-            if item["kind"] == "command" and remedial_check(str(item.get("command") or ""))
+            item for item in timeline if item["kind"] == "command" and remedial_check(str(item.get("command") or ""))
         ]
         if ran:
             lines.append(
