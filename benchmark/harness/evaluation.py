@@ -15,8 +15,9 @@
 """Rule-driven evaluation scoring over detected evidence signals.
 
 A neutral leaf: it never imports the report engine or any SDK plugin. The
-verdict rules live in standard YAML documents under ``config/evaluation/``
-(one per SDK), so evaluation and scoring can run outside the reporting engine
+verdict rules live in standard YAML documents shipped as package data under
+``benchmark/config/evaluation/`` (one per SDK), so evaluation and scoring can
+run outside the reporting engine and inside an installed wheel/sdist
 — the engine and any external tool apply the same rules file to the same
 signal profile and get the same verdicts.
 
@@ -43,39 +44,46 @@ import argparse
 import json
 import re
 from functools import lru_cache
+from importlib import resources
 from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
 
-BENCHMARK_ROOT = Path(__file__).resolve().parents[2]
-EVALUATION_CONFIG_DIR = BENCHMARK_ROOT / "config" / "evaluation"
+EVALUATION_RULES_PACKAGE = "benchmark"
 EVALUATION_RULES_SCHEMA_VERSION = 1
 
 _NUMBER_RE = re.compile(r"\b([0-9]+\.[0-9]+)\b")
 
 
-def evaluation_rules_path(sdk: str) -> Path:
-    return EVALUATION_CONFIG_DIR / f"{sdk}.yaml"
+def evaluation_rules_resource(sdk: str):
+    """Packaged rules document (package data works in wheels/sdists, not just checkouts)."""
+    return resources.files(EVALUATION_RULES_PACKAGE) / "config" / "evaluation" / f"{sdk}.yaml"
 
 
-@lru_cache(maxsize=8)
-def _load_rules_cached(path_text: str) -> Mapping[str, Any]:
-    path = Path(path_text)
-    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+def _parse_rules(text: str, source: str) -> Mapping[str, Any]:
+    document = yaml.safe_load(text) or {}
     if not isinstance(document, dict):
-        raise ValueError(f"evaluation rules must be a mapping: {path}")
+        raise ValueError(f"evaluation rules must be a mapping: {source}")
     version = document.get("schema_version")
     if version != EVALUATION_RULES_SCHEMA_VERSION:
         raise ValueError(
-            f"unsupported evaluation rules schema_version {version!r} in {path} "
+            f"unsupported evaluation rules schema_version {version!r} in {source} "
             f"(expected {EVALUATION_RULES_SCHEMA_VERSION})"
         )
     return document
 
 
+@lru_cache(maxsize=8)
+def _load_rules_cached(sdk: str, path_text: str | None) -> Mapping[str, Any]:
+    if path_text is not None:
+        return _parse_rules(Path(path_text).read_text(encoding="utf-8"), path_text)
+    resource = evaluation_rules_resource(sdk)
+    return _parse_rules(resource.read_text(encoding="utf-8"), str(resource))
+
+
 def load_evaluation_rules(sdk: str, path: str | Path | None = None) -> Mapping[str, Any]:
-    return _load_rules_cached(str(Path(path) if path else evaluation_rules_path(sdk)))
+    return _load_rules_cached(sdk, str(Path(path)) if path else None)
 
 
 def _evidence_numbers(evidence: str) -> list[float]:
@@ -157,7 +165,7 @@ def overall_thresholds(rules: Mapping[str, Any]) -> dict[str, float]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Score a signals profile against an SDK's evaluation rules.")
-    parser.add_argument("--sdk", required=True, help="SDK id, resolves config/evaluation/<sdk>.yaml")
+    parser.add_argument("--sdk", required=True, help="SDK id, resolves benchmark/config/evaluation/<sdk>.yaml")
     parser.add_argument("--rules", help="Explicit rules file path (overrides --sdk resolution)")
     parser.add_argument("--profile", required=True, help="JSON file of {signal: evidence string}")
     parser.add_argument("--context", help="JSON object of context values (e.g. {\"target_framework\": \"lightning\"})")

@@ -20,6 +20,11 @@ dev = ["pytest"]
 [tool.setuptools.packages.find]
 include = ["benchmark*"]
 
+# Evaluation rules ship inside the package so installed wheels/sdists can load
+# them via importlib.resources (see benchmark/harness/evaluation.py).
+[tool.setuptools.package-data]
+benchmark = ["config/evaluation/*.yaml"]
+
 [tool.black]
 line-length = 120
 

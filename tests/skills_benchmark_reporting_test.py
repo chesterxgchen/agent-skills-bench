@@ -3666,6 +3666,32 @@ def test_reported_expected_metric_earns_partial_credit():
     assert "Counted with partial credit" in section
 
 
+def test_reported_expected_metric_matches_multi_token_label():
+    from benchmark.harness.quality_signals import metric_value_entry, reported_metric_payload
+    from benchmark.harness.reports.insights._metrics import reported_expected_metric_value
+
+    # The whole label matches the expected metric after canonicalization even though
+    # no single word of it does ("balanced accuracy" -> balanced_accuracy).
+    payload = reported_metric_payload(
+        "balanced_accuracy",
+        [
+            metric_value_entry(0.81, "balanced accuracy"),
+            metric_value_entry(0.42, "loss"),
+        ],
+    )
+    signal = {
+        "status": "partial",
+        "expected_primary_metric": "balanced_accuracy",
+        "reported_validation_metric": payload,
+    }
+    run = {
+        "available": True,
+        "record": {"quality_signals": {"job_guidance_primary_validation_metric": signal}},
+        "validation_metric": payload,
+    }
+    assert reported_expected_metric_value(_ev(run)) == ("balanced_accuracy", 0.81)
+
+
 def test_artifact_metric_satisfies_result_gate_when_final_response_metric_is_incomplete():
     from benchmark.harness.modes import WITH_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import (

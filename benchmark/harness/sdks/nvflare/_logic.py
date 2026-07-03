@@ -1701,7 +1701,7 @@ def _target_framework(run: dict[str, Any] | None) -> str:
 
 
 def conversion_quality_score(signal: str, value: str, run: dict[str, Any] | None = None) -> str:
-    # The verdict rules are standard evaluation input (config/evaluation/nvflare.yaml)
+    # The verdict rules are standard evaluation input (benchmark/config/evaluation/nvflare.yaml)
     # applied through the SDK-neutral scorer, so external tools can score the same
     # signal profile outside the reporting engine and get identical verdicts.
     rules = load_evaluation_rules("nvflare")
@@ -2311,7 +2311,7 @@ CODE_QUALITY_ROWS = (
 CODE_QUALITY_CONTEXT_ROWS = (("API pattern", _api_pattern_signal),)
 
 def _conversion_quality_rows_from_rules() -> tuple[tuple[str, str], ...]:
-    """One report row per evaluation criterion in config/evaluation/nvflare.yaml.
+    """One report row per evaluation criterion in benchmark/config/evaluation/nvflare.yaml.
 
     The rules file is the single source of truth for the criteria list: a
     criterion added there appears in the Generated Code Quality table even

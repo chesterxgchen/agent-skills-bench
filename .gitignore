@@ -13,6 +13,8 @@ tmp/
 
 # generated packaging metadata
 *.egg-info/
+/build/
+/dist/
 
 # background run logs
 nohup.out

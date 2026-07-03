@@ -469,6 +469,8 @@ def reported_expected_metric_value(run: RunEvidence, ev: Any = None) -> tuple[st
         if not is_numeric_metric_value(value):
             continue
         label = labels[index] if isinstance(labels, list) and index < len(labels) else None
+        if label and metric_names_match(label, expected):
+            return expected, value
         words = [word for word in re.split(r"[^A-Za-z0-9]+", str(label or "")) if word]
         if any(metric_names_match(word, expected) for word in words):
             return expected, value
