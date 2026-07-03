@@ -949,13 +949,20 @@ def resynthesize_report(
     """Rewrite the RCA report from the saved trail without re-running the investigation.
 
     ``auto`` mirrors ``resolve_seed``: it picks the first topic with a saved trail,
-    in the same failure/slowdown/tokens order.
+    in the same failure/slowdown/tokens order, adding ``structure`` only when the
+    persisted quality score gate fires — so a trail that auto could have started
+    can always be resynthesized with the same ``--topic auto``.
     """
 
     mode_dir, _entry = _resolve_run_selection(result_root, mode, run_id)
-    # Mirror resolve_seed's auto behavior: structure is explicit-only, so a
-    # saved structure trail must not be picked up by auto resynthesis.
-    topics = (*_AUTO_TOPICS, "custom") if topic == "auto" else (topic,)
+    if topic == "auto":
+        # Mirror resolve_seed's auto behavior: structure joins the scan only
+        # when the persisted score shows a regression for the selected run —
+        # the same gate that lets auto start a structure investigation.
+        gated = ("structure",) if _structure_regressed(result_root, mode, run_id) else ()
+        topics = (*_AUTO_TOPICS, *gated, "custom")
+    else:
+        topics = (topic,)
     loaded = next((trail for name in topics if (trail := load_investigation_trail(mode_dir, name)) is not None), None)
     if loaded is None:
         print(f"No saved investigation trail for mode={mode} topic={topic}.")
@@ -1082,7 +1089,8 @@ def main(argv: list[str] | None = None) -> int:
         help="What to investigate: a terminal failure, the elapsed-time delta, the token-usage delta, or a "
         "'structure' regression (why this mode's converted-file structure is worse than its peer, and whether "
         "the skill's layout instruction was followed). 'auto' picks the first failure/slowdown/tokens that "
-        "applies; 'structure' and 'custom' are explicit (custom pairs with --question).",
+        "applies, then 'structure' when the persisted quality score shows a regression; 'custom' is explicit "
+        "(pairs with --question).",
     )
     parser.add_argument("--question", help="Free-form investigation question (overrides --topic).")
     parser.add_argument("--agent", help="Investigator agent CLI: claude or codex (default: first found on PATH)")

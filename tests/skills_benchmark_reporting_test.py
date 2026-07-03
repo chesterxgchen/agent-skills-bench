@@ -9122,7 +9122,7 @@ def test_rca_resynthesize_auto_topic_scans_saved_trails(tmp_path):
     assert "Repeated simulator runs." in report_path.read_text(encoding="utf-8")
 
 
-def test_rca_resynthesize_auto_topic_skips_structure_trail(tmp_path):
+def test_rca_resynthesize_auto_topic_skips_ungated_structure_trail(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.rca import resynthesize_report
 
@@ -9133,8 +9133,9 @@ def test_rca_resynthesize_auto_topic_skips_structure_trail(tmp_path):
         tmp_path / "run_plan.json",
         {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]},
     )
-    # Only a structure trail exists. Structure is explicit-only, so auto must
-    # not pick it up — same contract as resolve_seed's auto topic scan.
+    # Only a structure trail exists and no persisted quality score gates it.
+    # Auto must not pick it up — same contract as resolve_seed's auto scan,
+    # which only fires structure when quality_summary.json shows a regression.
     trail = [
         {"seed": {"topic": "structure", "headline": "converted file lost its class structure"}, "agent": "claude"},
         {
@@ -9160,6 +9161,41 @@ def test_rca_resynthesize_auto_topic_skips_structure_trail(tmp_path):
         return "### Verdict\n\nThe class wrapper was dropped."
 
     report_path = resynthesize_report(tmp_path, "with_skills", fake_invoker, topic="structure", agent_name="fake")
+    assert report_path is not None
+    assert report_path.name == "rca_report_structure.md"
+    assert "The class wrapper was dropped." in report_path.read_text(encoding="utf-8")
+
+
+def test_rca_resynthesize_auto_topic_picks_gated_structure_trail(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resynthesize_report
+
+    _two_mode_root(tmp_path)
+    rca_dir = tmp_path / "records" / "mode=with_skills" / "rca"
+    rca_dir.mkdir(parents=True)
+    # The persisted score shows a structure regression, so resolve_seed's auto
+    # could have started this investigation — auto resynthesis must find the
+    # saved trail under the same gate.
+    write_json(tmp_path / "quality_summary.json", {"structure_score": {"with_skills": 33.3, "without_skills": 100.0}})
+    trail = [
+        {"seed": {"topic": "structure", "headline": "converted file lost its class structure"}, "agent": "claude"},
+        {
+            "question": "Which sections were dropped?",
+            "answer": "The client class was flattened into module-level code.",
+            "evidence": [{"file": "converted.py", "quote": "def main():"}],
+            "next_question": None,
+            "conclusion": "Conversion discarded the class wrapper.",
+        },
+    ]
+    (rca_dir / "investigation_structure.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in trail) + "\n", encoding="utf-8"
+    )
+
+    def fake_invoker(prompt, cwd):
+        assert "Conversion discarded the class wrapper." in prompt
+        return "### Verdict\n\nThe class wrapper was dropped."
+
+    report_path = resynthesize_report(tmp_path, "with_skills", fake_invoker, topic="auto", agent_name="fake")
     assert report_path is not None
     assert report_path.name == "rca_report_structure.md"
     assert "The class wrapper was dropped." in report_path.read_text(encoding="utf-8")
