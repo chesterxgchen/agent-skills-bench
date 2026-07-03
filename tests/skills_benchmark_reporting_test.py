@@ -7769,6 +7769,21 @@ def test_module_job_recovery_key_is_module_specific():
     assert command_recovery_key(
         "python3 -m nvflare.cli simulator -w /tmp/ws /workspace/jobs/train -n 2"
     ) == command_recovery_key("python3 -m nvflare.cli simulator jobs/train -w ws2")
+    # A long option with a separate value (`--workspace /tmp/ws`) must not let
+    # the value occupy the job-target slot: a later success on a *different*
+    # job in the same workspace would then read as recovery. The inline
+    # `--flag=value` form keys the same way.
+    assert (
+        command_recovery_key("python3 -m nvflare.cli simulator --workspace /tmp/ws jobs/train")
+        == "python -m nvflare.cli simulator train"
+    )
+    assert (
+        command_recovery_key("python3 -m nvflare.cli simulator --workspace=/tmp/ws jobs/train")
+        == "python -m nvflare.cli simulator train"
+    )
+    assert command_recovery_key(
+        "python3 -m nvflare.cli simulator --workspace /tmp/ws jobs/train"
+    ) != command_recovery_key("python3 -m nvflare.cli simulator --workspace /tmp/ws jobs/other")
     # A shell-wrapped module run keys the same as the bare invocation, so a
     # plain rerun of the same module still counts as recovery.
     assert command_recovery_key(

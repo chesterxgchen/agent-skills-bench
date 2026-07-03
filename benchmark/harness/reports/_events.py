@@ -419,6 +419,14 @@ def command_succeeded(event: dict[str, Any]) -> bool:
     )
 
 
+#: Long options that never take a separate value; every other bare ``--flag``
+#: is assumed to consume the next token so an option value cannot occupy the
+#: subcommand/job-target slots of a module recovery key.
+_BOOLEAN_LONG_OPTIONS = frozenset(
+    {"--debug", "--force", "--help", "--no-color", "--quiet", "--verbose", "--version", "--yes"}
+)
+
+
 def _module_invocation_key_suffix(command: str, module: str) -> str:
     """Positional tokens (subcommand and job target) that narrow a module key.
 
@@ -448,10 +456,17 @@ def _module_invocation_key_suffix(command: str, module: str) -> str:
             if skip_value:
                 skip_value = False
                 continue
+            if token.startswith("--"):
+                # `--flag=value` carries its value inline. A bare long option
+                # is assumed to take the next token as its value (nvflare's
+                # long options all do) unless it is a known boolean flag —
+                # otherwise `--workspace /tmp/ws` would let `ws` steal the
+                # job-target slot from the actual positional.
+                skip_value = "=" not in token and token not in _BOOLEAN_LONG_OPTIONS
+                continue
             if token.startswith("-"):
                 # Short alphabetic options (`-w ws`, `-gpu 0`) consume the
-                # next token as their value; attached (`-n2`) and
-                # `--flag[=value]` forms do not.
+                # next token as their value; attached (`-n2`) forms do not.
                 skip_value = bool(re.fullmatch(r"-[A-Za-z]+", token))
                 continue
             positionals.append(Path(token).name)
