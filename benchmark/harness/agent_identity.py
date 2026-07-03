@@ -24,6 +24,7 @@ from typing import Any
 UNSPECIFIED_AGENT_MODEL = "unspecified_default"
 OBSERVED_AGENT_MODEL_SOURCE = "agent_events"
 OBSERVED_AGENT_LOG_MODEL_SOURCE = "agent_log"
+OBSERVED_SESSION_MODEL_SOURCE = "agent_session"
 MAX_AGENT_EVENTS_TEXT_BYTES = 20 * 1024 * 1024
 
 _MODEL_SUFFIX = re.compile(r"\[[^\]]+\]\s*$")
@@ -65,6 +66,12 @@ def observed_agent_model_from_events_text(events_text: str) -> str:
         message = event.get("message")
         if isinstance(message, dict):
             model = clean_agent_model_name(message.get("model"))
+            if model:
+                return model
+        # Codex session rollouts carry the per-turn model on turn_context.payload.model.
+        payload = event.get("payload")
+        if isinstance(payload, dict):
+            model = clean_agent_model_name(payload.get("model"))
             if model:
                 return model
         if not fallback:
@@ -134,6 +141,30 @@ def preferred_agent_model(*candidates: tuple[Any, Any]) -> tuple[Any, Any]:
     model = next((model for model, _ in candidates if model not in (None, "")), None)
     source = next((source for _, source in candidates if source not in (None, "")), None)
     return model, source
+
+
+def observed_agent_model_from_session_files(sessions_dir: Path, max_files: int = 8) -> tuple[str, Path | None]:
+    """Model evidence from agent-written session rollout files (newest first).
+
+    Codex names its model only in ``CODEX_HOME/sessions`` rollout JSONL
+    (``turn_context.payload.model``) — not in its ``exec --json`` event stream —
+    so these files are the runtime evidence when no model was configured.
+    Returns the model and the rollout file it came from.
+    """
+
+    try:
+        candidates = sorted(
+            sessions_dir.rglob("*.jsonl"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return "", None
+    for path in candidates[:max_files]:
+        model = observed_agent_model_from_events_path(path)
+        if model:
+            return model, path
+    return "", None
 
 
 def resolve_agent_model(

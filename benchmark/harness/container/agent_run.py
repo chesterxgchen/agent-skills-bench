@@ -28,9 +28,15 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
+
+from ..agent_identity import (
+    OBSERVED_SESSION_MODEL_SOURCE,
+    UNSPECIFIED_AGENT_MODEL,
+    observed_agent_model_from_session_files,
+)
 
 from ..agents.base import (
     AgentAdapter,
@@ -1264,6 +1270,27 @@ def write_configured_failure(
     )
 
 
+def resolve_model_from_session_evidence(config: AgentRunConfig) -> AgentRunConfig:
+    """Recover the run model from agent-written session rollouts when unresolved.
+
+    Runs after the agent finishes: some agents (codex) never name their model in
+    the captured event stream, only in session rollout files under the agent
+    home. The matched rollout is copied into the result dir so the resolution is
+    auditable from captured artifacts alone.
+    """
+
+    configured = str(config.agent_model or "").strip()
+    if configured and configured != UNSPECIFIED_AGENT_MODEL:
+        return config
+    model, evidence_path = observed_agent_model_from_session_files(config.agent_home / "sessions")
+    if not model:
+        return config
+    if evidence_path is not None:
+        with suppress(OSError):
+            shutil.copy2(evidence_path, config.result_dir / "agent_session_evidence.jsonl")
+    return replace(config, agent_model=model, agent_model_source=OBSERVED_SESSION_MODEL_SOURCE)
+
+
 def run_agent_benchmark() -> int:
     try:
         config = AgentRunConfig.from_env()
@@ -1312,6 +1339,7 @@ def run_agent_benchmark() -> int:
         agent_start, agent_end, agent_exit = run_agent(config, progress, skill_exposure, agent_launch)
         elapsed_seconds = agent_end - agent_start
         phase = "post_process"
+        config = resolve_model_from_session_evidence(config)
         post_start, post_end = post_process(config, elapsed_seconds, agent_exit, script_start_ns)
         normal_record_written = True
         phase = "report_outcome"

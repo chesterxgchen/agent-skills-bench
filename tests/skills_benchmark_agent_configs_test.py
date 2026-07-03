@@ -940,3 +940,71 @@ def test_agent_config_rejects_unsafe_legacy_artifact_prefix(tmp_path):
         assert "bare file prefixes" in str(exc)
     else:
         raise AssertionError("legacy artifact prefixes must not contain path separators")
+
+
+def test_codex_model_recovered_from_session_rollout_evidence(tmp_path):
+    import json as json_module
+
+    from benchmark.harness.agent_identity import (
+        OBSERVED_SESSION_MODEL_SOURCE,
+        observed_agent_model_from_events_text,
+        observed_agent_model_from_session_files,
+    )
+
+    agent_run = pytest.importorskip("benchmark.harness.container.agent_run")
+
+    rollout_lines = [
+        {"type": "session_meta", "payload": {"model_provider": "openai"}},
+        {"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-5.5"}},
+    ]
+    rollout_text = "\n".join(json_module.dumps(line) for line in rollout_lines) + "\n"
+    assert observed_agent_model_from_events_text(rollout_text) == "gpt-5.5"
+
+    agent_home = tmp_path / ".codex"
+    rollout_path = agent_home / "sessions" / "2026" / "07" / "03" / "rollout-2026-07-03.jsonl"
+    rollout_path.parent.mkdir(parents=True)
+    rollout_path.write_text(rollout_text, encoding="utf-8")
+    model, evidence = observed_agent_model_from_session_files(agent_home / "sessions")
+    assert model == "gpt-5.5"
+    assert evidence == rollout_path
+
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    config = agent_run.AgentRunConfig(
+        mode="without_skills",
+        use_preinstalled_skills=False,
+        job_input_dir=tmp_path / "job",
+        result_dir=result_dir,
+        records_dir=result_dir / "records",
+        run_root=tmp_path / "run",
+        prompt_source=tmp_path / "prompt.txt",
+        progress_interval_seconds=0,
+        sdk_image_kind="test",
+        agent="codex",
+        agent_model="unspecified_default",
+        agent_home=agent_home,
+        agent_model_was_explicit=False,
+    )
+    resolved = agent_run.resolve_model_from_session_evidence(config)
+    assert resolved.agent_model == "gpt-5.5"
+    assert resolved.agent_model_source == OBSERVED_SESSION_MODEL_SOURCE
+    assert (result_dir / "agent_session_evidence.jsonl").read_text(encoding="utf-8") == rollout_text
+
+    explicit = agent_run.resolve_model_from_session_evidence(
+        agent_run.AgentRunConfig(
+            mode="without_skills",
+            use_preinstalled_skills=False,
+            job_input_dir=tmp_path / "job",
+            result_dir=result_dir,
+            records_dir=result_dir / "records",
+            run_root=tmp_path / "run",
+            prompt_source=tmp_path / "prompt.txt",
+            progress_interval_seconds=0,
+            sdk_image_kind="test",
+            agent="codex",
+            agent_model="gpt-5.6",
+            agent_home=agent_home,
+            agent_model_was_explicit=True,
+        )
+    )
+    assert explicit.agent_model == "gpt-5.6"
