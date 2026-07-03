@@ -31,6 +31,7 @@ from .._events import (
     fmt_seconds_with_unit,
     inline_code_text,
     is_dependency_install_command,
+    predicted_failure_message,
     truncate,
     run_activity,
 )
@@ -967,6 +968,14 @@ def _failure_root_cause_chain(with_run: RunEvidence, base_run: RunEvidence) -> l
                 f"- {base_label} contrast: it ran `{inline_code_text(base_remedial[0].get('command'), 110)}` "
                 "before its job run."
             )
+    prediction = predicted_failure_message(str(with_run.agent_events_text or ""))
+    if prediction:
+        lines.append(
+            "- Lint `known_doomed_execution`: the agent predicted this failure before running the command "
+            f"anyway — {markdown_cell(truncate(prediction['quote'], 220))} An agent that expects a command to "
+            "fail should resolve the blocker or skip the command with an explicit blocker, not execute a "
+            "known-doomed run."
+        )
     return lines
 
 

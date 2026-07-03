@@ -7346,6 +7346,8 @@ def test_why_renders_generic_failure_root_cause_chain():
     assert "dependency gate" in chain
     assert "No command that would remediate" in chain
     assert "pip install -r requirements-train.txt" in chain
+    assert "Lint `known_doomed_execution`" in chain
+    assert "predicted this failure before running the command" in chain
 
     # A run whose commands all succeed produces no chain.
     assert _failure_root_cause_chain(base_run, with_run) == []

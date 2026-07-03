@@ -687,6 +687,48 @@ def error_signature_from_output(output: str) -> dict[str, str] | None:
     return None
 
 
+_FAILURE_PREDICTION_CUES = (
+    "expect",
+    "will fail",
+    "would fail",
+    "will stop",
+    "stop at",
+    "known to fail",
+    "going to fail",
+    "anticipate",
+)
+
+
+def predicted_failure_message(events_text: str) -> dict[str, str] | None:
+    """Detect a known-doomed execution in the captured event stream.
+
+    Returns the agent message that predicted the terminal failure (it names the
+    failure's subject alongside an expectation cue) yet preceded running the
+    failing command anyway — a lint signal that the agent should have either
+    resolved the blocker or skipped the command with an explicit blocker.
+    """
+
+    timeline = event_timeline_from_text(events_text)
+    anchor_index: int | None = None
+    signature: dict[str, str] | None = None
+    for index, item in enumerate(timeline):
+        if item["kind"] != "command":
+            continue
+        candidate = error_signature_from_output(str(item.get("output") or ""))
+        if candidate and item.get("exit_code") not in (0,):
+            anchor_index, signature = index, candidate
+    if anchor_index is None or signature is None:
+        return None
+    subject = signature["subject"].split(".")[0].lower()
+    for item in timeline[:anchor_index]:
+        if item["kind"] != "message":
+            continue
+        lowered = str(item.get("text") or "").lower()
+        if subject in lowered and any(cue in lowered for cue in _FAILURE_PREDICTION_CUES):
+            return {"quote": str(item["text"]), "error": signature["display"]}
+    return None
+
+
 def dependency_install_events(run: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         event for event in agent_command_events(run) if is_dependency_install_command(str(event.get("command") or ""))
