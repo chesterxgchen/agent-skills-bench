@@ -908,7 +908,8 @@ def test_resolve_host_agent_cli_version_parses_probe_output(monkeypatch):
 
     from benchmark.harness.host import build
 
-    adapter = SimpleNamespace(availability_probe=["codex", "--version"], name="codex")
+    # availability_probe is a METHOD on real adapters, not an attribute.
+    adapter = SimpleNamespace(availability_probe=lambda: ["codex", "--version"], name="codex")
     monkeypatch.setattr(
         build.subprocess,
         "run",
@@ -929,4 +930,19 @@ def test_resolve_host_agent_cli_version_no_probe_returns_empty():
 
     from benchmark.harness.host import build
 
-    assert build.resolve_host_agent_cli_version(SimpleNamespace(availability_probe=[], name="x")) == ""
+    assert build.resolve_host_agent_cli_version(SimpleNamespace(availability_probe=lambda: [], name="x")) == ""
+
+
+def test_resolve_host_agent_cli_version_uses_real_adapter_probe(monkeypatch):
+    from types import SimpleNamespace
+
+    from benchmark.harness.agents.registry import load_agent_adapter
+    from benchmark.harness.host import build
+
+    # Guard the method-vs-attribute contract against the real adapter, which
+    # exposes availability_probe as a bound method.
+    adapter = load_agent_adapter("codex")
+    monkeypatch.setattr(
+        build.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="codex-cli 0.142.5\n", stderr="")
+    )
+    assert build.resolve_host_agent_cli_version(adapter) == "0.142.5"

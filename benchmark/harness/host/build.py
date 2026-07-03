@@ -141,7 +141,9 @@ def resolve_host_agent_cli_version(adapter: AgentAdapter) -> str:
     settings a stale pinned CLI does not understand. Any failure — no CLI on
     PATH, unexpected output — yields "" and the profile default is used."""
 
-    probe = list(getattr(adapter, "availability_probe", []) or [])
+    probe_attr = getattr(adapter, "availability_probe", None)
+    probe_value = probe_attr() if callable(probe_attr) else probe_attr
+    probe = list(probe_value or [])
     if not probe:
         return ""
     try:
