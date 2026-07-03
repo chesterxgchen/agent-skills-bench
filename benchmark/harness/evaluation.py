@@ -56,9 +56,22 @@ EVALUATION_RULES_SCHEMA_VERSION = 1
 _NUMBER_RE = re.compile(r"\b([0-9]+\.[0-9]+)\b")
 
 
+SHARED_RULES_PREFIX = "shared:"
+
+
 def evaluation_sdk_dir(sdk: str):
     """Packaged per-SDK rules directory (package data works in wheels/sdists)."""
     return resources.files(EVALUATION_RULES_PACKAGE) / "config" / "evaluation" / sdk
+
+
+def _resolve_document_ref(sdk_dir, ref: str):
+    """A ``shared:`` ref resolves from the SDK-agnostic config/evaluation/common/
+    layer; a plain path resolves from the SDK's own directory."""
+
+    if ref.startswith(SHARED_RULES_PREFIX):
+        shared_dir = resources.files(EVALUATION_RULES_PACKAGE) / "config" / "evaluation" / "common"
+        return shared_dir / ref[len(SHARED_RULES_PREFIX) :]
+    return sdk_dir / ref
 
 
 def _parse_document(text: str, source: str) -> dict[str, Any]:
@@ -117,10 +130,14 @@ def _load_rules_cached(
         "scoring": {},
     }
     _merge_document(composed, manifest)
-    common_ref = task_entry.get("common")
-    if common_ref:
-        common_resource = sdk_dir / str(common_ref)
-        _merge_document(composed, _parse_document(common_resource.read_text(encoding="utf-8"), str(common_resource)))
+    compose_refs = task_entry.get("compose")
+    if not isinstance(compose_refs, list):
+        compose_refs = [task_entry.get("common")] if task_entry.get("common") else []
+    for ref in compose_refs:
+        document_resource = _resolve_document_ref(sdk_dir, str(ref))
+        _merge_document(
+            composed, _parse_document(document_resource.read_text(encoding="utf-8"), str(document_resource))
+        )
     # Overlay dimensions are task-defined (framework, algorithm, deployment, ...):
     # applied in manifest declaration order; a selector for an unregistered
     # dimension or value simply applies no overlay.

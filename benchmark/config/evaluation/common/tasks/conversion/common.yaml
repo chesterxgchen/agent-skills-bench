@@ -1,0 +1,53 @@
+# SDK-agnostic conversion-task evaluation criteria.
+#
+# Shared layer: criteria here apply to ANY SDK's job-conversion task — they
+# judge generic properties of the converted training code (data path
+# handling, partitioning, weighting, metric reporting/progression), not any
+# SDK's API vocabulary. SDK manifests compose this document first
+# (`shared:tasks/conversion/common.yaml`), then layer SDK-specific criteria
+# and framework overlays on top; an SDK document can override any signal here
+# by redefining it (whole-signal replacement).
+signals:
+  partitioning:
+    label: "Conversion: site data partitioning"
+    rules:
+      - contains_any: ["seeded shuffled", "stratified seeded"]
+        verdict: good
+      - contains: "deterministic stride"
+        verdict: bad
+      - contains: "site partition"
+        verdict: caution
+  class_weighting:
+    label: "Conversion: loss weighting (`pos_weight`)"
+    rules:
+      - contains_any: ["per-site", "computed from loaded training data"]
+        verdict: good
+      - contains: "fixed/global"
+        verdict: bad
+  metric_reporting:
+    label: "Conversion: metric implementation/reporting"
+    rules:
+      - contains_any: ["auroc", "torchmetrics"]
+        verdict: good
+      - contains: "metric dict"
+        verdict: caution
+  data_packaging:
+    label: "Conversion: data packaging/path"
+    rules:
+      - contains_any: ["configurable data_root argument", "original data path"]
+        verdict: good
+      - contains_any: ["ephemeral", "hardcoded absolute data path"]
+        verdict: bad
+      - contains: "data directory argument"
+        verdict: caution
+  metric_progression:
+    label: "Conversion: round metric progression"
+    rules:
+      - contains: "flat"
+        verdict: bad
+      - trend: improving
+        verdict: good
+      - trend: not_improving
+        verdict: bad
+      - trend: single_value
+        verdict: caution

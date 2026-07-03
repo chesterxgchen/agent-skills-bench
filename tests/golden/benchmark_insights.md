@@ -290,13 +290,13 @@ These are evidence signals for interpreting generated-code, runtime, maintenance
 | Runtime/export output location | unknown: not captured | unknown: not captured |
 | Runtime/output locality | good: runtime artifacts captured separately from temp/runtime paths | good: runtime artifacts captured separately from temp/runtime paths |
 | Dependency install strategy | good: requirements-file install, succeeded | good: requirements-file install, accelerator-capable dependency stack, succeeded |
-| Conversion: client training/control path | good: manual Client API loop | good: manual Client API loop |
 | Conversion: site data partitioning | unknown: not captured | unknown: not captured |
 | Conversion: loss weighting (`pos_weight`) | unknown: not captured | unknown: not captured |
 | Conversion: metric implementation/reporting | unknown: not captured | unknown: not captured |
 | Conversion: data packaging/path | unknown: not captured | unknown: not captured |
-| Conversion: client execution/model exchange | unknown: not captured | unknown: not captured |
 | Conversion: round metric progression | unknown: not captured | unknown: not captured |
+| Conversion: client training/control path | good: manual Client API loop | good: manual Client API loop |
+| Conversion: client execution/model exchange | unknown: not captured | unknown: not captured |
 | API pattern | context: Client API loop pattern | context: Client API loop pattern |
 
 Dependency policy note: accelerator-capable framework installs are valid for accelerator-backed training jobs but can dominate benchmark wall time when uncached. CPU-only framework installs are faster, but they should only be treated as comparable when the benchmark is intentionally CPU-only.

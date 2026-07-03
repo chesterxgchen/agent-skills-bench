@@ -12,7 +12,10 @@
 #
 # Composition order (later documents win, whole-signal replacement):
 #   1. this manifest's `scoring` / `default_verdict` defaults
-#   2. the task group's `common` document
+#   2. the task group's `compose` documents in order (a `shared:` prefix
+#      resolves from config/evaluation/common/ — the SDK-agnostic layer;
+#      plain paths resolve from this SDK's directory), or its single
+#      `common` document
 #   3. one overlay per declared dimension, in declaration order, when the
 #      caller's selectors carry a registered value — an overlay REPLACES each
 #      signal it names in full (label + rules), so each document stays
@@ -36,7 +39,9 @@ scoring:
     caution: 0.5
 tasks:
   conversion:
-    common: tasks/conversion/common.yaml
+    compose:
+      - shared:tasks/conversion/common.yaml   # SDK-agnostic conversion criteria
+      - tasks/conversion/common.yaml          # NVFLARE-specific criteria (may override shared)
     overlays:
       framework:
         pytorch: tasks/conversion/pytorch.yaml
