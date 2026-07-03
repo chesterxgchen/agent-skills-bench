@@ -407,6 +407,11 @@ def command_failed(event: dict[str, Any]) -> bool:
         return False
     if exit_value not in (None, 0):
         return True
+    # No exit code means the command's outcome was never captured (stream cut
+    # off, tool_result missing): an unresolved command is not a failure, even
+    # when a coarse status field says "failed".
+    if exit_value is None:
+        return False
     return str(event.get("status") or "") == "failed"
 
 

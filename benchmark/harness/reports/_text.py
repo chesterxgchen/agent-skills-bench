@@ -69,6 +69,12 @@ _INLINE_CODE_SPLIT_RE = re.compile(r"(`[^`]*`)")
 # Demote the image to a plain link (drop the leading ``!``): no fetch happens
 # until a human clicks, and the URL stays visible for inspection.
 _IMAGE_MARKER_RE = re.compile(r"!(?=\[)")
+# Defang URL schemes (``https://x`` -> ``https[:]//x``) so no injected URL —
+# demoted image, link target, or raw autolink — renders clickable either: the
+# URL stays readable for inspection, but exfiltrating via it now takes a
+# deliberate copy-paste-repair, and ``javascript:``/``data:`` targets lose
+# their scheme entirely.
+_URL_SCHEME_RE = re.compile(r"\b(?:https?|ftp|file|data|javascript|vbscript):(?=\S)", re.IGNORECASE)
 
 
 def sanitize_agent_markdown(text: str) -> str:
@@ -76,14 +82,16 @@ def sanitize_agent_markdown(text: str) -> str:
 
     Raw HTML openers are escaped (an injected ``<script>``/``<img onerror>``
     must not survive into HTML-rendered reports), markdown image markers are
-    demoted to links so no URL auto-fetches, and h1/h2 headings are demoted to
-    h3 so the embedded block cannot restructure the host document. Inline code
+    demoted to links so no URL auto-fetches, URL schemes are defanged so no
+    injected URL renders clickable, and h1/h2 headings are demoted to h3 so
+    the embedded block cannot restructure the host document. Inline code
     spans and fenced blocks are left untouched — quoted commands keep their
     ``<`` characters.
     """
 
     def _neutralize(part: str) -> str:
-        return _IMAGE_MARKER_RE.sub("", _HTML_TAG_OPEN_RE.sub("&lt;", part))
+        part = _IMAGE_MARKER_RE.sub("", _HTML_TAG_OPEN_RE.sub("&lt;", part))
+        return _URL_SCHEME_RE.sub(lambda match: match.group(0).replace(":", "[:]"), part)
 
     lines: list[str] = []
     fence_marker = ""  # e.g. "```" or "~~~~": only the SAME marker (>= length) closes a fence

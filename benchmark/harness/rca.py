@@ -252,11 +252,18 @@ def _codex_invoker(prompt: str, cwd: Path) -> str:
     # must hold out of every command the model spawns. Residual risk: injected
     # instructions can still quote non-home host files into the answer — the
     # claude invoker is preferred by resolve_invoker for that reason.
+    # --ignore-rules/--ephemeral keep instruction files captured into the
+    # evidence copy (AGENTS.md and friends) from steering the investigator,
+    # and --cd pins the session to the staged evidence root.
     return _checked_agent_run(
         [
             "codex",
             "exec",
             "--skip-git-repo-check",
+            "--ignore-rules",
+            "--ephemeral",
+            "--cd",
+            str(cwd),
             "--sandbox",
             "read-only",
             "-c",
