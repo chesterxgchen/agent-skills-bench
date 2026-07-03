@@ -31,13 +31,7 @@ from typing import Any
 
 from ..metric_artifacts import metric_is_runtime_result_artifact
 from ._runs import combined_text
-from ._text import (
-    FILE_INSPECTION_COMMANDS,
-    _command_tokens,
-    _shell_command_parts,
-    fmt_number,
-    strip_ansi,
-)
+from ._text import FILE_INSPECTION_COMMANDS, _command_tokens, _shell_command_parts, fmt_number, strip_ansi
 
 
 def parse_event_timestamp(value: Any) -> datetime | None:
@@ -670,7 +664,11 @@ def _parse_python_stage(executable: str, tokens: list[str], operator_after: str)
             kind = "pip_install" if module in ("pip", "pip3") and module_args[:1] == ("install",) else "module"
             positionals = _module_positionals(module, module_args) if kind == "module" else ()
             return Invocation(
-                kind, executable, module=module, positionals=positionals, args=module_args,
+                kind,
+                executable,
+                module=module,
+                positionals=positionals,
+                args=module_args,
                 operator_after=operator_after,
             )
         if token.startswith("-c") and not token.startswith("--"):

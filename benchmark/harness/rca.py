@@ -536,9 +536,7 @@ def seed_token_context(result_root: Path, mode: str, run_id: str | None = None) 
             ),
         }
 
-    return _summary_delta_seed(
-        result_root, mode, run_id, topic="tokens", summary_key="token_count", describe=describe
-    )
+    return _summary_delta_seed(result_root, mode, run_id, topic="tokens", summary_key="token_count", describe=describe)
 
 
 def seed_custom_context(result_root: Path, mode: str, question: str, run_id: str | None = None) -> dict[str, Any]:

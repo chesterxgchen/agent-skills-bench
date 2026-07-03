@@ -9472,8 +9472,10 @@ def test_stale_success_marker_from_non_job_command_is_not_recovery():
     assert "torch" in anchored[1]["display"]
 
     # The same marker from a genuine job run still counts as recovery.
-    recovered = events + "\n" + _codex_command(
-        "python3 -m nvflare.cli simulator jobs/other -n 2", output="Result workspace: /tmp/new_run"
+    recovered = (
+        events
+        + "\n"
+        + _codex_command("python3 -m nvflare.cli simulator jobs/other -n 2", output="Result workspace: /tmp/new_run")
     )
     assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
 
@@ -9531,11 +9533,7 @@ def test_spaceless_pipe_still_splits_stages():
 
 
 def test_success_marker_from_runtime_wrapper_counts_as_recovery():
-    from benchmark.harness.reports._events import (
-        _command_is_job_run,
-        event_timeline_from_text,
-        terminal_failure_anchor,
-    )
+    from benchmark.harness.reports._events import _command_is_job_run, event_timeline_from_text, terminal_failure_anchor
 
     # `make simulate` and the SDK console script execute the job they wrap;
     # an echo of a stale marker is still not job-run-shaped.
