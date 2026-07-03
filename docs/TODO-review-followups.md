@@ -6,6 +6,29 @@ review is merged to `main`.
 
 ---
 
+## 4. RCA container egress is unrestricted (security, residual)
+
+**Status:** Open (accepted residual, matches benchmark posture).
+
+The RCA investigator now runs in the container with full benchmark-parity
+permissions (`--dangerously-skip-permissions` / `--dangerously-bypass-
+approvals-and-sandbox`) because the container confines the filesystem to the
+read-only evidence mount + the vendor API key. But the container keeps network
+egress (needed for the model API), and the evidence is attacker-authored — so
+an injected instruction could in principle exfil the mounted evidence or the
+API key over the network via a tool call.
+
+This is the **same posture the benchmark run itself accepts** (the benchmarked
+agent also runs bypass-sandbox with network + key in its container), so it is a
+consistent residual, not a new hole.
+
+**Proper fix (if we want to close it):** apply a network policy to the RCA
+container that allows egress only to the model API endpoint(s) — e.g. a
+`--network` with an allowlist / proxy, or run on an isolated docker network with
+egress filtering. Would also apply to the benchmark container for symmetry.
+
+---
+
 ## 1. RCA investigator read scope needs OS/container sandboxing (security) — DONE
 
 **Status:** Implemented. `rca.py` now supports `--sandbox {auto,docker,host}`
