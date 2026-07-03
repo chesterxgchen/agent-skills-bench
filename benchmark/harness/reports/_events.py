@@ -430,8 +430,9 @@ def command_recovery_key(command: str) -> str:
         return f"python {Path(script.group(1)).name} {role}"
     # `python -m <module>` runs key on the module, not the bare interpreter:
     # otherwise any later successful `python3 ...` (e.g. an import probe)
-    # would look like a rerun of the failed module job.
-    module = re.search(r"\bpython[\d.]*\s+(?:-[^m]\S*\s+)*-m\s+([A-Za-z0-9_.]+)", command)
+    # would look like a rerun of the failed module job. `\s*` also covers the
+    # attached `-mmodule` form Python accepts.
+    module = re.search(r"\bpython[\d.]*\s+(?:-[^m]\S*\s+)*-m\s*([A-Za-z0-9_.]+)", command)
     if module:
         return f"python -m {module.group(1)}"
     first_word = re.search(r"(?:^|['\"])([A-Za-z0-9_./-]+)", command)
@@ -775,10 +776,14 @@ def _segment_is_python_job_run(segment: str) -> bool:
     if not tokens or not _PYTHON_EXECUTABLE_RE.fullmatch(Path(tokens[0]).name.lower()):
         return False
     for index, token in enumerate(tokens[1:], start=1):
-        if token == "-m":
-            module = tokens[index + 1] if index + 1 < len(tokens) else ""
+        # Python also accepts attached option arguments (`-mnvflare.cli`,
+        # `-c'code'`), so match the option prefix, not the whole token —
+        # otherwise `python3 -mnvflare.cli ...` would not read as a job run
+        # and would fall back to the broad interpreter recovery key.
+        if token.startswith("-m") and not token.startswith("--"):
+            module = token[2:] or (tokens[index + 1] if index + 1 < len(tokens) else "")
             return bool(module) and module.split(".")[0].lower() not in _PYTHON_TOOLING_MODULES
-        if token == "-c":
+        if token.startswith("-c") and not token.startswith("--"):
             return False
         if token.startswith("-"):
             continue
