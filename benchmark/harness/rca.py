@@ -37,12 +37,19 @@ Standalone usage (after a benchmark run)::
         [--topic auto|failure|slowdown|tokens] [--question "..."] \
         [--agent claude|codex] [--max-steps 8]
 
-The investigator agent runs read-only inside a staged, symlink-free copy of
-the result root with an allowlisted environment: every answer is grounded by
+The investigator agent runs read-only over a staged, symlink-free copy of the
+result root with an allowlisted environment: every answer is grounded by
 reading the captured artifacts (``agent_events.jsonl``, ``prompt.txt``,
-workspace deltas, ...), while host files, credentials, and incidental env
-secrets stay out of reach. Captured text embedded in prompts is delimited as
+workspace deltas, ...). Captured text embedded in prompts is delimited as
 untrusted data.
+
+Because the evidence is attacker-authored, ``--sandbox docker`` (the default
+when a built agent image is available) runs the investigator inside a container
+with ONLY the staged evidence mounted, so a prompt-injected read of host files
+finds nothing outside that tree — the complete defense. ``--sandbox host`` runs
+it as a host subprocess instead (agent CLI flags restrict tools but cannot
+confine reads to the evidence dir), and ``auto`` falls back to that with a
+warning when no image is built.
 """
 
 from __future__ import annotations
@@ -218,79 +225,227 @@ def _checked_agent_run(
     return captured.get("stdout") or ""
 
 
-def _claude_invoker(prompt: str, cwd: Path) -> str:
+# The mount point for the staged evidence copy inside the container sandbox;
+# the investigator's working directory. The staged tree is the ONLY host
+# content mounted, so an injected read of ~/.ssh, /etc, or another project
+# finds nothing — the files are not present in the container.
+_CONTAINER_EVIDENCE_DIR = "/evidence"
+
+
+def _claude_cli_args(cwd: str) -> list[str]:
     # Read-only investigator over untrusted evidence (see
     # _UNTRUSTED_DATA_PREAMBLE): no execution, no mutation, and — because the
     # prompt embeds attacker-influenced captured output — no network tools
     # (WebFetch/WebSearch are exfiltration channels) and no host-configured
     # MCP servers (--strict-mcp-config). Claude Code permission rules cannot
     # whitelist reads by location (deny rules are the only read restriction,
-    # and Read(//**) denies the cwd too), so reads are open except the home
-    # tree, where credentials concentrate (~/.ssh, ~/.aws, agent CLI configs);
-    # Read deny rules also gate Grep/Glob best-effort. The prompt goes via
-    # stdin: the tool flags are variadic and would swallow a positional prompt.
-    return _checked_agent_run(
-        [
-            "claude",
-            "-p",
-            "--strict-mcp-config",
-            "--allowedTools",
-            "Read,Grep,Glob",
-            "--disallowedTools",
-            "Bash,Write,Edit,NotebookEdit,WebFetch,WebSearch,Task,Read(~/**)",
-        ],
-        cwd,
-        input_text=prompt,
-        env_prefixes=_CLAUDE_ENV_PREFIXES,
-    )
+    # and Read(//**) denies the cwd too); on the HOST path reads are therefore
+    # open except the home tree, which is why the container sandbox is
+    # preferred. Read deny rules gate Grep/Glob only best-effort. The prompt
+    # goes via stdin: the tool flags are variadic and would swallow a
+    # positional prompt. ``cwd`` is unused — claude uses its process/-w dir.
+    return [
+        "claude",
+        "-p",
+        "--strict-mcp-config",
+        "--allowedTools",
+        "Read,Grep,Glob",
+        "--disallowedTools",
+        "Bash,Write,Edit,NotebookEdit,WebFetch,WebSearch,Task,Read(~/**)",
+    ]
 
 
-def _codex_invoker(prompt: str, cwd: Path) -> str:
+def _codex_cli_args(cwd: str) -> list[str]:
     # codex's read-only seatbelt still allows full-disk reads and gives
     # model-run commands the CLI's own environment by default;
     # shell_environment_policy.inherit=core keeps the API keys this process
-    # must hold out of every command the model spawns. Residual risk: injected
-    # instructions can still quote non-home host files into the answer — the
-    # claude invoker is preferred by resolve_invoker for that reason.
-    # --ignore-rules/--ephemeral keep instruction files captured into the
-    # evidence copy (AGENTS.md and friends) from steering the investigator,
-    # and --cd pins the session to the staged evidence root.
-    return _checked_agent_run(
-        [
-            "codex",
-            "exec",
-            "--skip-git-repo-check",
-            "--ignore-rules",
-            "--ephemeral",
-            "--cd",
-            str(cwd),
-            "--sandbox",
-            "read-only",
-            "-c",
-            "shell_environment_policy.inherit=core",
-            "-",
-        ],
+    # must hold out of every command the model spawns. On the HOST path
+    # injected instructions can still quote non-home host files into the
+    # answer — the container sandbox closes that. --ignore-rules/--ephemeral
+    # keep instruction files captured into the evidence copy (AGENTS.md and
+    # friends) from steering the investigator, and --cd pins the session to the
+    # evidence root.
+    return [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--ignore-rules",
+        "--ephemeral",
+        "--cd",
         cwd,
-        input_text=prompt,
-        env_prefixes=_CODEX_ENV_PREFIXES,
-    )
+        "--sandbox",
+        "read-only",
+        "-c",
+        "shell_environment_policy.inherit=core",
+        "-",
+    ]
 
 
-_AGENT_INVOKERS: dict[str, AgentInvoker] = {
-    "claude": _claude_invoker,
-    "codex": _codex_invoker,
+# agent name -> (argv builder, env-prefix allowlist for the invoker process).
+_AGENT_CLI: dict[str, tuple[Callable[[str], list[str]], tuple[str, ...]]] = {
+    "claude": (_claude_cli_args, _CLAUDE_ENV_PREFIXES),
+    "codex": (_codex_cli_args, _CODEX_ENV_PREFIXES),
 }
 
+_container_run_counter = 0
 
-def resolve_invoker(agent: str | None) -> tuple[str, AgentInvoker]:
+
+def _next_container_name() -> str:
+    # os.getpid + a monotonic counter (no Math.random / clock, which the
+    # environment forbids) makes each investigation step's container uniquely
+    # nameable so it can be force-removed even if the step times out.
+    global _container_run_counter
+    _container_run_counter += 1
+    return f"rca-investigator-{os.getpid()}-{_container_run_counter}"
+
+
+def _docker_available() -> bool:
+    return shutil.which("docker") is not None
+
+
+def _image_exists(image: str) -> bool:
+    if not _docker_available():
+        return False
+    try:
+        result = subprocess.run(["docker", "image", "inspect", image], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _best_effort_docker_rm(name: str) -> None:
+    with suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True, timeout=30)
+
+
+def _adapter_auth_mounts(adapter: Any) -> list[Any]:
+    """Host auth/config files the CLI needs, as DockerMounts (best-effort).
+
+    Auth is ALSO passed via the vendor env keys (``--env`` below), so a run
+    that authenticates by API key works even when no auth file exists."""
+
+    from types import SimpleNamespace
+
+    try:
+        host_home = adapter.host_home_from_env(os.environ)
+        return list(adapter.auth_mounts(SimpleNamespace(host_agent_home=host_home)))
+    except Exception:
+        return []
+
+
+def _make_host_invoker(agent: str) -> AgentInvoker:
+    args_builder, env_prefixes = _AGENT_CLI[agent]
+
+    def invoke(prompt: str, cwd: Path) -> str:
+        return _checked_agent_run(args_builder(str(cwd)), cwd, input_text=prompt, env_prefixes=env_prefixes)
+
+    return invoke
+
+
+def _make_container_invoker(agent: str, adapter: Any, image: str) -> AgentInvoker:
+    args_builder, env_prefixes = _AGENT_CLI[agent]
+    home_env = adapter.agent_home_env
+    container_home = adapter.container_home
+    passthrough = tuple(adapter.passthrough_env())
+    auth_mounts = _adapter_auth_mounts(adapter)
+
+    def invoke(prompt: str, cwd: Path) -> str:
+        evidence = Path(cwd).resolve()
+        name = _next_container_name()
+        docker_args = [
+            "docker",
+            "run",
+            "--rm",
+            "-i",
+            "--name",
+            name,
+            # The staged evidence is the only host tree in the container, and
+            # read-only: the investigator cannot mutate captured evidence.
+            "-v",
+            f"{evidence}:{_CONTAINER_EVIDENCE_DIR}:ro",
+            "-w",
+            _CONTAINER_EVIDENCE_DIR,
+            "--env",
+            f"{home_env}={container_home}",
+        ]
+        # Vendor API keys flow host -> docker-CLI env (allowlisted below) ->
+        # container via --env NAME passthrough; no other host env is exposed.
+        for key in passthrough:
+            docker_args += ["--env", key]
+        for mount in auth_mounts:
+            host_path = Path(mount.host_path)
+            if host_path.exists():
+                mode = "ro" if getattr(mount, "read_only", True) else "rw"
+                docker_args += ["-v", f"{host_path.resolve()}:{mount.container_path}:{mode}"]
+        docker_args.append(image)
+        docker_args += args_builder(_CONTAINER_EVIDENCE_DIR)
+        try:
+            return _checked_agent_run(docker_args, evidence, input_text=prompt, env_prefixes=env_prefixes)
+        finally:
+            # Force-remove even on timeout/error so a killed step never leaves
+            # a container burning model quota.
+            _best_effort_docker_rm(name)
+
+    return invoke
+
+
+def _select_agent(agent: str | None, sandbox: str) -> str:
     if agent:
-        if agent not in _AGENT_INVOKERS:
-            raise SystemExit(f"Unknown RCA agent {agent!r}; choose from {sorted(_AGENT_INVOKERS)}.")
-        return agent, _AGENT_INVOKERS[agent]
+        if agent not in _AGENT_CLI:
+            raise SystemExit(f"Unknown RCA agent {agent!r}; choose from {sorted(_AGENT_CLI)}.")
+        return agent
+    if sandbox in ("docker", "auto"):
+        for name in ("claude", "codex"):
+            if _image_exists(_agent_image(name)):
+                return name
     for name in ("claude", "codex"):
         if shutil.which(name):
-            return name, _AGENT_INVOKERS[name]
-    raise SystemExit("No investigator agent CLI found on PATH (looked for: claude, codex).")
+            return name
+    raise SystemExit("No investigator agent found (no built image, none on PATH). Build an image or pass --agent.")
+
+
+def _agent_image(agent: str) -> str:
+    from .agents.registry import load_agent_adapter
+
+    try:
+        return load_agent_adapter(agent).image_targets().report
+    except Exception:
+        return ""
+
+
+def resolve_invoker(agent: str | None, *, sandbox: str = "auto") -> tuple[str, AgentInvoker]:
+    """Pick the investigator agent and how it runs.
+
+    ``sandbox``: ``docker`` runs the CLI in a container with only the staged
+    evidence mounted (reads are confined — the only complete defense against a
+    prompt-injected investigator reading host files); ``host`` runs it as a
+    host subprocess (reads are NOT confined); ``auto`` uses the container when
+    the agent's image is built and Docker is available, else warns and falls
+    back to the host."""
+
+    name = _select_agent(agent, sandbox)
+    if sandbox == "host":
+        return name, _make_host_invoker(name)
+
+    from .agents.registry import load_agent_adapter
+
+    adapter = image = None
+    with suppress(Exception):
+        adapter = load_agent_adapter(name)
+        image = adapter.image_targets().report
+    if adapter is not None and image and _image_exists(image):
+        return name, _make_container_invoker(name, adapter, image)
+    if sandbox == "docker":
+        raise SystemExit(
+            f"--sandbox docker requested but no built image for {name!r} was found"
+            f"{f' ({image})' if image else ''}. Build it with bin/build.sh, or pass --sandbox host."
+        )
+    print(
+        f"RCA: no built container image for {name!r}; running the investigator UNSANDBOXED on the host "
+        "(reads are not confined to captured evidence). Build the image or pass --sandbox host to silence.",
+        file=sys.stderr,
+    )
+    return name, _make_host_invoker(name)
 
 
 def parse_agent_answer(raw: str) -> dict[str, Any]:
@@ -855,6 +1010,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--question", help="Free-form investigation question (overrides --topic).")
     parser.add_argument("--agent", help="Investigator agent CLI: claude or codex (default: first found on PATH)")
+    parser.add_argument(
+        "--sandbox",
+        default="auto",
+        choices=["auto", "docker", "host"],
+        help="Where the investigator runs: 'docker' confines its reads to the staged evidence (needs a built "
+        "agent image); 'host' runs it unsandboxed on the host; 'auto' (default) uses docker when an image is "
+        "built, else falls back to host with a warning.",
+    )
     parser.add_argument("--max-steps", type=int, default=MAX_INVESTIGATION_STEPS)
     parser.add_argument(
         "--resynthesize",
@@ -867,7 +1030,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip regenerating benchmark_insights.md after the investigation.",
     )
     args = parser.parse_args(argv)
-    agent_name, invoker = resolve_invoker(args.agent)
+    agent_name, invoker = resolve_invoker(args.agent, sandbox=args.sandbox)
     try:
         if args.resynthesize:
             report_path = resynthesize_report(

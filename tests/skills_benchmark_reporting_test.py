@@ -8648,7 +8648,7 @@ def test_rca_codex_invoker_isolates_session_from_instruction_files(monkeypatch, 
         return "{}"
 
     monkeypatch.setattr(rca, "_checked_agent_run", fake_checked_agent_run)
-    rca._codex_invoker("question", tmp_path)
+    rca._make_host_invoker("codex")("question", tmp_path)
 
     codex_args = calls[0]
     # Instruction files captured into the evidence copy (AGENTS.md and
@@ -8657,6 +8657,67 @@ def test_rca_codex_invoker_isolates_session_from_instruction_files(monkeypatch, 
     assert "--ignore-rules" in codex_args
     assert "--ephemeral" in codex_args
     assert ["--cd", str(tmp_path)] == codex_args[codex_args.index("--cd") : codex_args.index("--cd") + 2]
+
+
+def test_rca_container_invoker_confines_reads_to_mounted_evidence(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from benchmark.harness import rca
+
+    calls = []
+
+    def fake_checked_agent_run(args, cwd, input_text=None, env_prefixes=()):
+        calls.append(args)
+        return "{}"
+
+    monkeypatch.setattr(rca, "_checked_agent_run", fake_checked_agent_run)
+    monkeypatch.setattr(rca, "_best_effort_docker_rm", lambda name: None)
+    monkeypatch.setattr(rca, "_adapter_auth_mounts", lambda adapter: [])
+
+    adapter = SimpleNamespace(
+        agent_home_env="CODEX_HOME",
+        container_home="/workspace/.codex",
+        passthrough_env=lambda: ("OPENAI_API_KEY",),
+    )
+    rca._make_container_invoker("codex", adapter, "agent-skills-benchmark:codex-skills")("question", tmp_path)
+
+    docker_args = calls[0]
+    assert docker_args[:2] == ["docker", "run"]
+    # Only the staged evidence is mounted, and read-only.
+    assert f"{tmp_path.resolve()}:{rca._CONTAINER_EVIDENCE_DIR}:ro" in docker_args
+    assert ["-w", rca._CONTAINER_EVIDENCE_DIR] == docker_args[docker_args.index("-w") : docker_args.index("-w") + 2]
+    # The home path and the vendor key are the only env exposed.
+    assert "CODEX_HOME=/workspace/.codex" in docker_args
+    assert "OPENAI_API_KEY" in docker_args
+    # The agent image and the codex CLI argv follow.
+    assert "agent-skills-benchmark:codex-skills" in docker_args
+    assert docker_args[docker_args.index("agent-skills-benchmark:codex-skills") + 1] == "codex"
+    # The container is pinned to the evidence dir, not the host cwd.
+    assert ["--cd", rca._CONTAINER_EVIDENCE_DIR] == docker_args[
+        docker_args.index("--cd") : docker_args.index("--cd") + 2
+    ]
+
+
+def test_rca_resolve_invoker_auto_falls_back_to_host_without_image(monkeypatch, capsys):
+    from benchmark.harness import rca
+
+    monkeypatch.setattr(rca, "_image_exists", lambda image: False)
+    monkeypatch.setattr(rca.shutil, "which", lambda name: "/usr/bin/" + name if name == "claude" else None)
+
+    name, invoker = rca.resolve_invoker(None, sandbox="auto")
+    assert name == "claude"
+    # Fell back to the host invoker and warned that reads are unconfined.
+    assert "UNSANDBOXED" in capsys.readouterr().err
+
+
+def test_rca_resolve_invoker_docker_requires_built_image(monkeypatch):
+    import pytest
+
+    from benchmark.harness import rca
+
+    monkeypatch.setattr(rca, "_image_exists", lambda image: False)
+    with pytest.raises(SystemExit, match="no built image"):
+        rca.resolve_invoker("codex", sandbox="docker")
 
 
 def test_rca_invoker_raises_on_nonzero_agent_exit(monkeypatch):
@@ -8682,7 +8743,7 @@ def test_rca_invoker_raises_on_nonzero_agent_exit(monkeypatch):
 
     monkeypatch.setattr(rca.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
     with pytest.raises(rca.AgentInvocationError, match="status 1.*not logged in"):
-        rca._claude_invoker("question", Path("."))
+        rca._make_host_invoker("claude")("question", Path("."))
     assert subprocess  # keep the import referenced
 
 

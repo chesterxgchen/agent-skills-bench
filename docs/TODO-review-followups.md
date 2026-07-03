@@ -6,7 +6,20 @@ review is merged to `main`.
 
 ---
 
-## 1. RCA investigator read scope needs OS/container sandboxing (security)
+## 1. RCA investigator read scope needs OS/container sandboxing (security) — DONE
+
+**Status:** Implemented. `rca.py` now supports `--sandbox {auto,docker,host}`
+(default `auto`). In docker mode the investigator runs in the built agent image
+with ONLY the staged evidence mounted read-only (`-w /evidence`), vendor API
+keys forwarded via `--env`, one container per step (force-removed even on
+timeout). `auto` uses docker when the image is built, else falls back to the
+host invoker with a warning. Reads are confined to the mounted evidence, so a
+prompt-injected read of `~/.ssh`/`/etc`/other projects finds nothing. Original
+write-up kept below for context.
+
+---
+
+
 
 **Finding (5a):** The RCA investigator (`benchmark/harness/rca.py`) runs the
 agent CLI as a host subprocess over attacker-authored captured evidence. A
