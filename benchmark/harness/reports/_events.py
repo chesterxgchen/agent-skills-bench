@@ -994,9 +994,13 @@ def _is_bare_module_invocation(command: str, module: str, *, require_success_imp
     segment's success — a status guard like ``python -m mod || true`` must not
     pass. Pass ``require_success_implied_by_zero_exit=False`` for a command
     whose exit status is not the success signal (the FAILED command itself,
-    which exited nonzero): there the token shape alone is what matters, and a
-    status guard like ``python -m mod || exit 1`` must not disqualify it from
-    later recovery.
+    which exited nonzero): there a status guard like ``python -m mod || exit
+    1`` must not disqualify it from later recovery — but the module segment
+    must still be the command's ONLY real work. Every other segment has to be
+    a harmless status guard (``exit``/``true``/``false``/``:``); otherwise a
+    chained command like ``python -m mod ; bash run_job.sh`` whose failure
+    came from the OTHER segment would read as a bare module run, and a later
+    clean bare rerun would wrongly clear that unrelated failure.
     """
 
     parts = _shell_command_parts(_unwrap_shell_command(command))
@@ -1004,9 +1008,14 @@ def _is_bare_module_invocation(command: str, module: str, *, require_success_imp
         tokens = _command_tokens(segment)
         if not tokens or not _PYTHON_EXECUTABLE_RE.fullmatch(Path(tokens[0]).name.lower()):
             continue
-        segment_qualifies = not require_success_implied_by_zero_exit or _segment_success_implied_by_zero_exit(
-            parts, segment_index
-        )
+        if require_success_implied_by_zero_exit:
+            segment_qualifies = _segment_success_implied_by_zero_exit(parts, segment_index)
+        else:
+            segment_qualifies = all(
+                _first_command_name(other_segment) in _HARMLESS_STATUS_COMMANDS
+                for other_index, (other_segment, _other_operator) in enumerate(parts)
+                if other_index != segment_index
+            )
         for index, token in enumerate(tokens[1:], start=1):
             if token == "-m":
                 if tokens[index + 1 :] == [module] and segment_qualifies:
@@ -1075,10 +1084,13 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     # job-success output check below.
     bare_module_key = re.fullmatch(r"python -m (\S+)", failed_key)
     # The failed command exited nonzero, so its overall exit status is not a
-    # success signal — only the token shape matters here. A status guard on
-    # the FAILED command (`python -m mod || exit 1`) must not stop a later
-    # clean bare rerun from counting as recovery; the zero-exit implication
-    # check applies only to the recovery candidate below.
+    # success signal — a status guard on the FAILED command (`python -m mod
+    # || exit 1`) must not stop a later clean bare rerun from counting as
+    # recovery; the zero-exit implication check applies only to the recovery
+    # candidate below. The module segment must still be the failed command's
+    # only real work (other segments limited to status guards): a chained
+    # command whose failure came from a different segment must not be
+    # clearable by rerunning just the bare module.
     failed_is_verified_bare_module_run = bool(bare_module_key) and _is_bare_module_invocation(
         failed_command, bare_module_key.group(1), require_success_implied_by_zero_exit=False
     )

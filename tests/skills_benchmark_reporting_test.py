@@ -8162,6 +8162,41 @@ def test_status_guarded_failed_bare_module_command_still_recovers_via_bare_rerun
     assert "torch" in anchored[1]["display"]
 
 
+def test_failed_bare_module_with_chained_real_work_not_cleared_by_bare_rerun():
+    from benchmark.harness.reports._events import event_timeline_from_text, terminal_failure_anchor
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    traceback = "Traceback...\nModuleNotFoundError: No module named 'torch'"
+
+    # Skipping the zero-exit implication check on the FAILED side must not
+    # accept a chained command whose other segments carry real work: the
+    # traceback may have come from that other segment, so rerunning only the
+    # bare module proves nothing and must not clear the terminal failure.
+    for failed in (
+        "python3 -m nvflare.cli ; bash run_job.sh",
+        "bash run_job.sh ; python3 -m nvflare.cli",
+        "python3 -m nvflare.cli || bash run_job.sh",
+    ):
+        events = command(failed, output=traceback, exit_code=1) + "\n" + command(
+            "python3 -m nvflare.cli", output="done"
+        )
+        anchored = terminal_failure_anchor(event_timeline_from_text(events))
+        assert anchored is not None, failed
+        assert "torch" in anchored[1]["display"]
+
+
 def test_attached_pip_install_reads_as_installer():
     from benchmark.harness.reports._events import (
         command_recovery_key,
