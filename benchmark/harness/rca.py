@@ -929,7 +929,9 @@ def resynthesize_report(
     """
 
     mode_dir, _entry = _resolve_run_selection(result_root, mode, run_id)
-    topics = (*_TOPIC_SEEDERS, "custom") if topic == "auto" else (topic,)
+    # Mirror resolve_seed's auto behavior: structure is explicit-only, so a
+    # saved structure trail must not be picked up by auto resynthesis.
+    topics = (*_AUTO_TOPICS, "custom") if topic == "auto" else (topic,)
     loaded = next((trail for name in topics if (trail := load_investigation_trail(mode_dir, name)) is not None), None)
     if loaded is None:
         print(f"No saved investigation trail for mode={mode} topic={topic}.")

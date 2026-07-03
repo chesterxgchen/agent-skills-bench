@@ -9028,6 +9028,49 @@ def test_rca_resynthesize_auto_topic_scans_saved_trails(tmp_path):
     assert "Repeated simulator runs." in report_path.read_text(encoding="utf-8")
 
 
+def test_rca_resynthesize_auto_topic_skips_structure_trail(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resynthesize_report
+
+    mode_dir = tmp_path / "records" / "mode=with_skills"
+    rca_dir = mode_dir / "rca"
+    rca_dir.mkdir(parents=True)
+    write_json(
+        tmp_path / "run_plan.json",
+        {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]},
+    )
+    # Only a structure trail exists. Structure is explicit-only, so auto must
+    # not pick it up — same contract as resolve_seed's auto topic scan.
+    trail = [
+        {"seed": {"topic": "structure", "headline": "converted file lost its class structure"}, "agent": "claude"},
+        {
+            "question": "Which sections were dropped?",
+            "answer": "The client class was flattened into module-level code.",
+            "evidence": [{"file": "converted.py", "quote": "def main():"}],
+            "next_question": None,
+            "conclusion": "Conversion discarded the class wrapper.",
+        },
+    ]
+    (rca_dir / "investigation_structure.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in trail) + "\n", encoding="utf-8"
+    )
+
+    def failing_invoker(prompt, cwd):
+        raise AssertionError("auto resynthesis must not synthesize from a structure trail")
+
+    assert resynthesize_report(tmp_path, "with_skills", failing_invoker, topic="auto", agent_name="fake") is None
+
+    # The explicit topic still resynthesizes the saved structure trail.
+    def fake_invoker(prompt, cwd):
+        assert "Conversion discarded the class wrapper." in prompt
+        return "### Verdict\n\nThe class wrapper was dropped."
+
+    report_path = resynthesize_report(tmp_path, "with_skills", fake_invoker, topic="structure", agent_name="fake")
+    assert report_path is not None
+    assert report_path.name == "rca_report_structure.md"
+    assert "The class wrapper was dropped." in report_path.read_text(encoding="utf-8")
+
+
 def test_evaluation_rules_compose_task_and_overlay_dimensions():
     from benchmark.harness.evaluation import available_tasks, load_evaluation_rules, score_signal
 
