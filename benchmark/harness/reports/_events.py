@@ -703,10 +703,13 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     Returns None only when a later command demonstrates recovery of the failing
     operation itself: a successful command sharing the failed command's recovery
     key, one whose output carries a known job-success marker, or — for a
-    missing-module/import failure — a successful install of the failure's
-    subject. Unrelated successful commands (diagnostics like `ls`, `cat`, or
-    log inspection after the failure) do not count as recovery, so they cannot
-    suppress a real terminal failure.
+    missing-module/import failure — a dependency-install command that installed
+    the failure's subject. Unrelated successful commands (diagnostics like `ls`,
+    `cat`, or log inspection after the failure — even ones that echo install
+    logs) do not count as recovery, so they cannot suppress a real terminal
+    failure. When the failed command was itself a script/job run, installing
+    the missing module alone is not recovery either: the job must be rerun
+    successfully or a job-success marker must appear.
     """
 
     anchor_index: int | None = None
@@ -723,6 +726,7 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     missing_module = (
         signature["subject"].split(".")[0] if signature["kind"] in ("missing_python_module", "import_error") else ""
     )
+    failed_command_was_script_run = failed_key.startswith("python ")
     for item in timeline[anchor_index + 1 :]:
         if item.get("kind") != "command":
             continue
@@ -731,10 +735,16 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
             return None
         if item.get("exit_code") != 0:
             continue
-        if command_recovery_key(str(item.get("command") or "")) == failed_key:
+        command = str(item.get("command") or "")
+        if command_recovery_key(command) == failed_key:
             return None
-        if missing_module and re.search(
-            rf"\bSuccessfully installed\b[^\n]*\b{re.escape(missing_module)}\b", output, flags=re.IGNORECASE
+        if (
+            missing_module
+            and not failed_command_was_script_run
+            and is_dependency_install_command(command)
+            and re.search(
+                rf"\bSuccessfully installed\b[^\n]*\b{re.escape(missing_module)}\b", output, flags=re.IGNORECASE
+            )
         ):
             return None
     return anchor_index, signature

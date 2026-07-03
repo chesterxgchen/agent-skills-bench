@@ -7503,6 +7503,82 @@ def test_why_keeps_root_cause_chain_after_unrelated_successful_diagnostics():
     assert "ModuleNotFoundError: No module named 'torch'" in chain
 
 
+def test_why_keeps_root_cause_chain_when_diagnostics_echo_install_log():
+    from benchmark.harness.reports.insights._why import _failure_root_cause_chain
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    # Inspecting a pip log after the failure echoes "Successfully installed
+    # torch", but the command is diagnostic, not an install — the terminal
+    # failure must still anchor the chain.
+    with_events = "\n".join(
+        [
+            command(
+                "python3 -c 'import torch'",
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            command("cat pip.log", output="Collecting torch\nSuccessfully installed torch-2.12.0"),
+        ]
+    )
+    base_events = command("python3 job.py", output="workflow Finished", exit_code=0)
+    with_run = _ev({"available": True, "label": "With skills", "agent_events_text": with_events})
+    base_run = _ev({"available": True, "label": "No skills baseline", "agent_events_text": base_events})
+
+    chain = "\n".join(_failure_root_cause_chain(with_run, base_run))
+    assert "Root-cause chain (auto-extracted from With skills events)" in chain
+    assert "ModuleNotFoundError: No module named 'torch'" in chain
+
+
+def test_why_keeps_root_cause_chain_when_failed_job_is_never_rerun_after_install():
+    from benchmark.harness.reports.insights._why import _failure_root_cause_chain
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    # The job itself fails and the missing module is then installed, but the
+    # job is never rerun — installing alone does not demonstrate the job
+    # recovered, so the failure still anchors the chain.
+    with_events = "\n".join(
+        [
+            command(
+                "python3 job.py --num-clients 3",
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            command("python3 -m pip install torch", output="Collecting torch\nSuccessfully installed torch-2.12.0"),
+        ]
+    )
+    base_events = command("python3 job.py", output="workflow Finished", exit_code=0)
+    with_run = _ev({"available": True, "label": "With skills", "agent_events_text": with_events})
+    base_run = _ev({"available": True, "label": "No skills baseline", "agent_events_text": base_events})
+
+    chain = "\n".join(_failure_root_cause_chain(with_run, base_run))
+    assert "Root-cause chain (auto-extracted from With skills events)" in chain
+    assert "ModuleNotFoundError: No module named 'torch'" in chain
+
+
 def test_why_root_cause_chain_from_claude_tool_result_events():
     from benchmark.harness.reports._events import event_timeline_from_text
     from benchmark.harness.reports.insights._why import _failure_root_cause_chain
