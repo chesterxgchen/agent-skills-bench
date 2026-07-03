@@ -400,13 +400,18 @@ def resynthesize_report(
     mode: str,
     invoker: AgentInvoker,
     *,
-    topic: str = "failure",
+    topic: str = "auto",
     agent_name: str = "agent",
 ) -> Path | None:
-    """Rewrite the RCA report from the saved trail without re-running the investigation."""
+    """Rewrite the RCA report from the saved trail without re-running the investigation.
+
+    ``auto`` mirrors ``resolve_seed``: it picks the first topic with a saved trail,
+    in the same failure/slowdown/tokens order.
+    """
 
     mode_dir = mode_dir_for_benchmark(result_root, mode)
-    loaded = load_investigation_trail(mode_dir, topic)
+    topics = tuple(_TOPIC_SEEDERS) if topic == "auto" else (topic,)
+    loaded = next((trail for name in topics if (trail := load_investigation_trail(mode_dir, name)) is not None), None)
     if loaded is None:
         print(f"No saved investigation trail for mode={mode} topic={topic}.")
         return None
@@ -508,7 +513,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.result_root,
                 args.mode,
                 invoker,
-                topic=args.topic if args.topic != "auto" else "failure",
+                topic=args.topic,
                 agent_name=agent_name,
             )
         else:

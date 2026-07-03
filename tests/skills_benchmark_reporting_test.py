@@ -7415,6 +7415,45 @@ def test_why_suppresses_root_cause_chain_when_run_recovers():
     assert _failure_root_cause_chain(with_run, base_run) == []
 
 
+def test_why_keeps_root_cause_chain_after_unrelated_successful_diagnostics():
+    from benchmark.harness.reports.insights._why import _failure_root_cause_chain
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    # The job fails and the agent only inspects the wreckage afterwards. Those
+    # successful diagnostic commands are not recovery of the failing operation,
+    # so the terminal failure must still anchor the chain.
+    with_events = "\n".join(
+        [
+            command(
+                "python3 job.py --num-clients 3",
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            command("ls results/", output="server\nclient1"),
+            command("cat logs/server.log", output="startup banner"),
+        ]
+    )
+    base_events = command("python3 job.py", output="workflow Finished", exit_code=0)
+    with_run = _ev({"available": True, "label": "With skills", "agent_events_text": with_events})
+    base_run = _ev({"available": True, "label": "No skills baseline", "agent_events_text": base_events})
+
+    chain = "\n".join(_failure_root_cause_chain(with_run, base_run))
+    assert "Root-cause chain (auto-extracted from With skills events)" in chain
+    assert "ModuleNotFoundError: No module named 'torch'" in chain
+
+
 def test_why_root_cause_chain_from_claude_tool_result_events():
     from benchmark.harness.reports._events import event_timeline_from_text
     from benchmark.harness.reports.insights._why import _failure_root_cause_chain
@@ -7707,3 +7746,34 @@ def test_rca_resynthesize_rewrites_report_from_saved_trail(tmp_path):
     assert "**command `python3 job.py` failed with `ModuleNotFoundError: No module named 'torch'`**" in report
     # The legacy report file is removed so it cannot double-embed.
     assert not (rca_dir / "rca_report.md").exists()
+
+
+def test_rca_resynthesize_auto_topic_scans_saved_trails(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resynthesize_report
+
+    mode_dir = tmp_path / "records" / "mode=with_skills"
+    rca_dir = mode_dir / "rca"
+    rca_dir.mkdir(parents=True)
+    write_json(tmp_path / "run_plan.json", {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]})
+    # Only a slowdown trail exists; auto must find it instead of assuming failure.
+    trail = [
+        {"seed": {"topic": "slowdown", "headline": "with_skills was +300s slower"}, "agent": "claude"},
+        {
+            "question": "Where did the extra time go?",
+            "answer": "Repeated simulator runs.",
+            "evidence": [{"file": "agent_events.jsonl", "quote": "rerunning simulator"}],
+            "next_question": None,
+            "conclusion": "The agent reran the job three times.",
+        },
+    ]
+    (rca_dir / "investigation_slowdown.jsonl").write_text("\n".join(json.dumps(r) for r in trail) + "\n", encoding="utf-8")
+
+    def fake_invoker(prompt, cwd):
+        assert "The agent reran the job three times." in prompt
+        return "### Verdict\n\nRepeated simulator runs."
+
+    report_path = resynthesize_report(tmp_path, "with_skills", fake_invoker, topic="auto", agent_name="fake")
+    assert report_path is not None
+    assert report_path.name == "rca_report_slowdown.md"
+    assert "Repeated simulator runs." in report_path.read_text(encoding="utf-8")

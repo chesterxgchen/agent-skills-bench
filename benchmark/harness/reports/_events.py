@@ -700,10 +700,13 @@ def error_signature_from_output(output: str) -> dict[str, str] | None:
 def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[str, str]] | None:
     """Last failed command with a recognized error signature, if the run never recovered.
 
-    Returns None when any command after that failure completed successfully:
-    the agent recovered mid-run (e.g. a failed import probe followed by an
-    install and a passing job), so the failure is not the run's terminal state
-    and must not be presented as a terminal root cause.
+    Returns None only when a later command demonstrates recovery of the failing
+    operation itself: a successful command sharing the failed command's recovery
+    key, one whose output carries a known job-success marker, or — for a
+    missing-module/import failure — a successful install of the failure's
+    subject. Unrelated successful commands (diagnostics like `ls`, `cat`, or
+    log inspection after the failure) do not count as recovery, so they cannot
+    suppress a real terminal failure.
     """
 
     anchor_index: int | None = None
@@ -716,8 +719,23 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
             anchor_index, signature = index, candidate
     if anchor_index is None or signature is None:
         return None
+    failed_key = command_recovery_key(str(timeline[anchor_index].get("command") or ""))
+    missing_module = (
+        signature["subject"].split(".")[0] if signature["kind"] in ("missing_python_module", "import_error") else ""
+    )
     for item in timeline[anchor_index + 1 :]:
-        if item.get("kind") == "command" and item.get("exit_code") == 0:
+        if item.get("kind") != "command":
+            continue
+        output = str(item.get("output") or "")
+        if job_output_succeeded(output):
+            return None
+        if item.get("exit_code") != 0:
+            continue
+        if command_recovery_key(str(item.get("command") or "")) == failed_key:
+            return None
+        if missing_module and re.search(
+            rf"\bSuccessfully installed\b[^\n]*\b{re.escape(missing_module)}\b", output, flags=re.IGNORECASE
+        ):
             return None
     return anchor_index, signature
 
