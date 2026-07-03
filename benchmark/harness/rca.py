@@ -318,21 +318,6 @@ def _best_effort_docker_rm(name: str) -> None:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True, timeout=30)
 
 
-def _adapter_auth_mounts(adapter: Any) -> list[Any]:
-    """Host auth/config files the CLI needs, as DockerMounts (best-effort).
-
-    Auth is ALSO passed via the vendor env keys (``--env`` below), so a run
-    that authenticates by API key works even when no auth file exists."""
-
-    from types import SimpleNamespace
-
-    try:
-        host_home = adapter.host_home_from_env(os.environ)
-        return list(adapter.auth_mounts(SimpleNamespace(host_agent_home=host_home)))
-    except Exception:
-        return []
-
-
 def _make_host_invoker(agent: str) -> AgentInvoker:
     args_builder, env_prefixes = _AGENT_CLI[agent]
 
@@ -346,8 +331,7 @@ def _make_container_invoker(agent: str, adapter: Any, image: str) -> AgentInvoke
     args_builder, env_prefixes = _AGENT_CLI[agent]
     home_env = adapter.agent_home_env
     container_home = adapter.container_home
-    passthrough = tuple(adapter.passthrough_env())
-    auth_mounts = _adapter_auth_mounts(adapter)
+    passthrough = tuple(adapter.passthrough_env_names())
 
     def invoke(prompt: str, cwd: Path) -> str:
         evidence = Path(cwd).resolve()
@@ -370,13 +354,11 @@ def _make_container_invoker(agent: str, adapter: Any, image: str) -> AgentInvoke
         ]
         # Vendor API keys flow host -> docker-CLI env (allowlisted below) ->
         # container via --env NAME passthrough; no other host env is exposed.
+        # Host auth/config files are deliberately NOT mounted: the evidence is
+        # untrusted, and a prompt-injected investigator must not be able to
+        # read host credentials (e.g. auth.json / .credentials.json).
         for key in passthrough:
             docker_args += ["--env", key]
-        for mount in auth_mounts:
-            host_path = Path(mount.host_path)
-            if host_path.exists():
-                mode = "ro" if getattr(mount, "read_only", True) else "rw"
-                docker_args += ["-v", f"{host_path.resolve()}:{mount.container_path}:{mode}"]
         docker_args.append(image)
         docker_args += args_builder(_CONTAINER_EVIDENCE_DIR)
         try:
