@@ -8029,6 +8029,45 @@ def test_bare_module_key_accepts_normalized_bare_rerun():
     assert "torch" in anchored[1]["display"]
 
 
+def test_bare_module_rerun_rejects_status_guarded_run():
+    from benchmark.harness.reports._events import event_timeline_from_text, terminal_failure_anchor
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    traceback = "Traceback...\nModuleNotFoundError: No module named 'torch'"
+    base = command("python3 -m nvflare.cli", output=traceback, exit_code=1)
+
+    # The overall exit code is the only success signal for a bare-module
+    # rerun, so a shell join that lets the command exit 0 despite a failed
+    # module run (`|| true`, a trailing `;` command) must not count as
+    # recovery evidence.
+    for guarded in (
+        "python3 -m nvflare.cli || true",
+        "python3 -m nvflare.cli ; true",
+        "false || python3 -m nvflare.cli || true",
+    ):
+        events = base + "\n" + command(guarded, output="done")
+        anchored = terminal_failure_anchor(event_timeline_from_text(events))
+        assert anchored is not None, guarded
+        assert "torch" in anchored[1]["display"]
+
+    # An `&&` chain propagates any failure to the overall exit code, so a
+    # zero exit does prove the module run succeeded.
+    events = base + "\n" + command("cd /workspace && python3 -m nvflare.cli", output="done")
+    assert terminal_failure_anchor(event_timeline_from_text(events)) is None
+
+
 def test_attached_pip_install_reads_as_installer():
     from benchmark.harness.reports._events import (
         command_recovery_key,
