@@ -173,7 +173,9 @@ def metric_source_path_is_runtime_artifact(source_path: str) -> bool:
         (index for index, segment in enumerate(segments[:runtime_index]) if segment == "workspace_delta"),
         None,
     )
-    interior = segments[delta_root_index + 1 : runtime_index] if delta_root_index is not None else segments[:runtime_index]
+    interior = (
+        segments[delta_root_index + 1 : runtime_index] if delta_root_index is not None else segments[:runtime_index]
+    )
     # Reject when a copied workspace-change category appears between the delta root
     # and the ``runtime_artifacts`` segment, which is where a copied file would
     # masquerade as runtime output regardless of the delta directory name.

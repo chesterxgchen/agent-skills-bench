@@ -157,10 +157,9 @@ def _first_command_name(command: str) -> str:
 def _shell_command_parts(command: str) -> list[tuple[str, str]]:
     """Split a command into (segment, operator_after) pairs, honoring shell quoting.
 
-    Only unquoted ``&&``, ``||``, ``;`` and ``|`` separate segments; operators inside
-    quoted strings (e.g. an ``rg`` search pattern) stay within the segment.
-    ``operator_after`` is the operator that joins the segment to the next one ("" for
-    the final segment).
+    Only unquoted ``&&``, ``||`` and ``;`` separate segments; operators inside quoted
+    strings (e.g. an ``rg`` search pattern) stay within the segment. ``operator_after`` is
+    the operator that joins the segment to the next one ("" for the final segment).
     """
     text = _classification_command(command)
     parts: list[tuple[str, str]] = []
@@ -194,13 +193,6 @@ def _shell_command_parts(command: str) -> list[tuple[str, str]]:
                 parts.append((segment, char * 2))
             buf = []
             index += 2
-            continue
-        if char == "|":
-            segment = "".join(buf).strip()
-            if segment:
-                parts.append((segment, "|"))
-            buf = []
-            index += 1
             continue
         buf.append(char)
         index += 1

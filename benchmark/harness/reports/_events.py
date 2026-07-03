@@ -407,11 +407,6 @@ def command_failed(event: dict[str, Any]) -> bool:
         return False
     if exit_value not in (None, 0):
         return True
-    # No exit code means the command's outcome was never captured (stream cut
-    # off, tool_result missing): an unresolved command is not a failure, even
-    # when a coarse status field says "failed".
-    if exit_value is None:
-        return False
     return str(event.get("status") or "") == "failed"
 
 
@@ -802,16 +797,6 @@ def parse_shell_command(command: str) -> list[Invocation]:
                 if invocation is not None:
                     invocations.append(invocation)
     return invocations
-
-
-def _command_executes_python(command: str) -> bool:
-    """True when some segment's executable (wrappers peeled) is a python interpreter."""
-
-    return any(
-        _PYTHON_EXECUTABLE_RE.fullmatch(_segment_executable_name(segment) or "-")
-        for segment in _shell_command_segments(command)
-        if segment.strip()
-    )
 
 
 def command_recovery_key(command: str) -> str:

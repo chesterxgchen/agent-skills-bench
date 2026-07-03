@@ -242,9 +242,7 @@ def comparison_scorecard(runs: dict[str, RunEvidence], ctx: ReportContext | None
         label = markdown_cell(str(item["label"]))
         if metric_is_mixed and item.get("id") == "metric":
             # Show each run's own metric (name + value) instead of the synthetic name.
-            displays = [
-                markdown_cell(metric_display(runs[mode], None, ctx.evidence.get(mode))) for mode in modes
-            ]
+            displays = [markdown_cell(metric_display(runs[mode], None, ctx.evidence.get(mode))) for mode in modes]
             lines.append(f"| {label} | " + " | ".join(displays) + f" | {markdown_cell('not comparable')} |")
             continue
         values = [item["value"](runs[mode], ctx.evidence.get(mode)) for mode in modes]

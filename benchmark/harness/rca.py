@@ -815,11 +815,6 @@ def run_investigation(
                     break
                 asked.add(step.next_question)
                 question = step.next_question
-        finally:
-            stream.close()
-            if not trail_published:
-                with suppress(OSError):
-                    temp_trail_path.unlink()
         report_markdown = invoker(_synthesis_prompt(seed, steps), staged_root).strip()
     finally:
         shutil.rmtree(staged_root, ignore_errors=True)

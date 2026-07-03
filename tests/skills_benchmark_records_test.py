@@ -311,7 +311,9 @@ def test_metric_artifact_parser_falls_back_to_local_replay_delta_dir(tmp_path):
         "runtime_artifacts": [{"artifact_path": "runtime_artifacts/metrics_summary.json"}],
     }
 
-    metric = validation_metric_from_workspace_delta_manifest(manifest, mode_dir / "workspace_delta_manifest.json", "AUROC")
+    metric = validation_metric_from_workspace_delta_manifest(
+        manifest, mode_dir / "workspace_delta_manifest.json", "AUROC"
+    )
 
     assert metric["value"] == 0.7757
 
@@ -535,9 +537,7 @@ def test_runtime_artifact_gate_rejects_copied_workspace_for_renamed_delta_dir():
 
     # A copied workspace-change file under a non-``workspace_delta`` delta root must
     # be rejected even though the path nests a ``runtime_artifacts`` segment.
-    assert not metric_source_path_is_runtime_artifact(
-        "delta/changed_files/job/runtime_artifacts/metrics_summary.json"
-    )
+    assert not metric_source_path_is_runtime_artifact("delta/changed_files/job/runtime_artifacts/metrics_summary.json")
     assert not metric_source_path_is_runtime_artifact(
         "delta/workspace_added_files/job/runtime_artifacts/metrics_summary.json"
     )
@@ -545,9 +545,7 @@ def test_runtime_artifact_gate_rejects_copied_workspace_for_renamed_delta_dir():
         "delta/workspace_modified_files/job/runtime_artifacts/metrics_summary.json"
     )
     # Genuine runtime output under a renamed delta root is still accepted.
-    assert metric_source_path_is_runtime_artifact(
-        "delta/runtime_artifacts/job/server/metrics_summary.json"
-    )
+    assert metric_source_path_is_runtime_artifact("delta/runtime_artifacts/job/server/metrics_summary.json")
 
 
 def test_runtime_artifact_gate_accepts_copied_key_outside_delta_category():
@@ -596,13 +594,7 @@ def test_metric_artifact_parser_ignores_config_thresholds(tmp_path):
         / "config_fed_server.json"
     )
     metric_artifact = (
-        delta
-        / "changed_files"
-        / "nvflare_workspace"
-        / "server"
-        / "simulate_job"
-        / "metrics"
-        / "metrics_summary.json"
+        delta / "changed_files" / "nvflare_workspace" / "server" / "simulate_job" / "metrics" / "metrics_summary.json"
     )
     config_artifact.parent.mkdir(parents=True)
     metric_artifact.parent.mkdir(parents=True)
@@ -827,7 +819,10 @@ def test_prepare_input_workspace_skips_runtime_outputs_but_keeps_input_data(tmp_
     assert config.run_workspace_dir.joinpath("job.py").is_file()
     assert config.run_input_dir.joinpath("data", "sample.txt").read_text(encoding="utf-8") == "fixture\n"
     assert config.run_workspace_dir.joinpath("data", "sample.txt").read_text(encoding="utf-8") == "fixture\n"
-    assert config.run_input_dir.joinpath("src", "outputs", "expected.txt").read_text(encoding="utf-8") == "source fixture\n"
+    assert (
+        config.run_input_dir.joinpath("src", "outputs", "expected.txt").read_text(encoding="utf-8")
+        == "source fixture\n"
+    )
     assert (
         config.run_workspace_dir.joinpath("src", "outputs", "expected.txt").read_text(encoding="utf-8")
         == "source fixture\n"

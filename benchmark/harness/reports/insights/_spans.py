@@ -192,9 +192,7 @@ def _span_uses_background_task(span: dict[str, Any]) -> bool:
     return "Command running in background with ID:" in output
 
 
-def _adjust_dependency_install_span(
-    span: dict[str, Any], background_durations: dict[str, float]
-) -> dict[str, Any]:
+def _adjust_dependency_install_span(span: dict[str, Any], background_durations: dict[str, float]) -> dict[str, Any]:
     if is_dependency_install_command(str(span.get("command") or "")):
         tool_id = str(span.get("id") or "")
         background_duration = background_durations.get(tool_id)
@@ -208,10 +206,7 @@ def _adjust_dependency_install_span(
 
 def _adjusted_command_spans(run: dict[str, Any]) -> list[dict[str, Any]]:
     background_durations = _background_task_durations_by_tool_id(run)
-    return [
-        _adjust_dependency_install_span(span, background_durations)
-        for span in agent_command_spans(run.raw)
-    ]
+    return [_adjust_dependency_install_span(span, background_durations) for span in agent_command_spans(run.raw)]
 
 
 def _dependency_install_spans(run: dict[str, Any]) -> list[dict[str, Any]]:

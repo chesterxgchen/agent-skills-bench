@@ -305,7 +305,7 @@ def _populate_mode_dir(mode_dir: Path, mode: str) -> None:
             "artifact_path": f"runtime_artifacts/{metrics_rel}",
             "path": metrics_rel,
             "source_path": "/tmp/nvflare/workspaces/job/server/simulate_job/metrics/metrics_summary.json",
-        }
+        },
     ]
     workspace_delta = {
         "changed_file_count": len(changed_files),

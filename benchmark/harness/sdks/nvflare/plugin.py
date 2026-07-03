@@ -192,6 +192,7 @@ class NvflareReportPlugin(ReportPlugin):
         "derived from artifacts such as `config_fed_server.json`; agent planning or final-message text is "
         "not counted as runtime workflow evidence."
     )
+
     def section_copy(self, key: str) -> str | None:
         return self._SECTION_COPY.get(key)
 

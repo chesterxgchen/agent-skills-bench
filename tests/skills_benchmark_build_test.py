@@ -146,8 +146,8 @@ def test_write_wheel_metadata_uses_atomic_json_helper(tmp_path, monkeypatch):
 
 def test_sdk_repo_evaluation_criteria_are_validated_staged_and_hashed(tmp_path):
     from benchmark.harness.host import build
-    from benchmark.harness.sdks.config import ConfigurableSdkAdapter
     from benchmark.harness.sdks.base import SdkSource
+    from benchmark.harness.sdks.config import ConfigurableSdkAdapter
 
     repo = tmp_path / "sdk"
     criteria = repo / "quality" / "rules.yaml"
