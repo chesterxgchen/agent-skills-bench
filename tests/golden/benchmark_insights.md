@@ -343,7 +343,7 @@ Command span timing is operation-level evidence, not a strict wall-clock partiti
 | Changed/generated files | 3 | 3 | 0 |
 | Runtime artifacts | 1 | 1 | 0 |
 
-## RCA
+## Root Cause Analysis
 
 **Why the comparison needs review**
 

@@ -4159,7 +4159,7 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
     assert human_readable_status(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("needs review")
     assert benchmark_outcome(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("fail:")
     why = _unwrap_cells(why_section(typed, modes, ctx))
-    assert "## RCA" in why
+    assert "## Root Cause Analysis" in why
     assert "**Why With skills needs more work**" in why
     assert "**Primary result failure**" in why
     assert "did not produce a usable FL result" in why
@@ -4580,7 +4580,7 @@ def test_why_section_renders_when_both_runs_fail_result_gate():
 
     why = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
 
-    assert "## RCA" in why
+    assert "## Root Cause Analysis" in why
     assert "**Why the comparison needs review**" in why
     assert "Both runs need review; neither side is a valid comparison winner" in why
     assert "Failed check `primary_metric_reporting`" in why
@@ -5511,7 +5511,7 @@ def test_why_section_reports_runtime_regression_when_total_time_is_not_slower():
 
     section = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
 
-    assert "## RCA" in section
+    assert "## Root Cause Analysis" in section
     assert "Why With skills has longer runtime after install" in section
     assert "| With skills | 500s | 50s | 450s | 400s |" in section
     assert "| No skills baseline | 600s | 300s | 300s | 40s |" in section
@@ -5600,7 +5600,7 @@ def test_why_section_reports_dependency_install_regression_when_runtime_is_not_s
 
     section = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
 
-    assert "## RCA" in section
+    assert "## Root Cause Analysis" in section
     assert "Why With skills has longer dependency install" in section
     assert "| With skills | 150s | 50s | 200s |" in section
     assert "| No skills baseline | 30s | 220s | 250s |" in section
@@ -8660,9 +8660,8 @@ def test_rca_codex_invoker_isolates_session_from_instruction_files(monkeypatch, 
 
 
 def test_rca_container_invoker_confines_reads_to_mounted_evidence(monkeypatch, tmp_path):
-    from types import SimpleNamespace
-
     from benchmark.harness import rca
+    from benchmark.harness.agents.registry import load_agent_adapter
 
     calls = []
 
@@ -8672,19 +8671,19 @@ def test_rca_container_invoker_confines_reads_to_mounted_evidence(monkeypatch, t
 
     monkeypatch.setattr(rca, "_checked_agent_run", fake_checked_agent_run)
     monkeypatch.setattr(rca, "_best_effort_docker_rm", lambda name: None)
-    monkeypatch.setattr(rca, "_adapter_auth_mounts", lambda adapter: [])
 
-    adapter = SimpleNamespace(
-        agent_home_env="CODEX_HOME",
-        container_home="/workspace/.codex",
-        passthrough_env=lambda: ("OPENAI_API_KEY",),
-    )
+    # A real adapter, so the invoker is exercised against the actual adapter
+    # interface (passthrough_env_names etc.), not a drifting mock.
+    adapter = load_agent_adapter("codex")
     rca._make_container_invoker("codex", adapter, "agent-skills-benchmark:codex-skills")("question", tmp_path)
 
     docker_args = calls[0]
     assert docker_args[:2] == ["docker", "run"]
-    # Only the staged evidence is mounted, and read-only.
-    assert f"{tmp_path.resolve()}:{rca._CONTAINER_EVIDENCE_DIR}:ro" in docker_args
+    # The staged evidence is the ONLY mount, and read-only: host auth/config
+    # files (e.g. auth.json) must never be exposed to the untrusted
+    # investigation, even when they exist on the host.
+    mounts = [docker_args[i + 1] for i, arg in enumerate(docker_args) if arg == "-v"]
+    assert mounts == [f"{tmp_path.resolve()}:{rca._CONTAINER_EVIDENCE_DIR}:ro"]
     assert ["-w", rca._CONTAINER_EVIDENCE_DIR] == docker_args[docker_args.index("-w") : docker_args.index("-w") + 2]
     # The home path and the vendor key are the only env exposed.
     assert "CODEX_HOME=/workspace/.codex" in docker_args

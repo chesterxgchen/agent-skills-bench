@@ -127,7 +127,7 @@ Read cost winners only after checking the quality gates; a cheaper run that does
 | elapsed_seconds_with_skills_minus_without_skills | 60 |
 | token_count_with_skills_minus_without_skills | 3000 |
 
-## RCA
+## Root Cause Analysis
 
 **Why the comparison needs review**
 

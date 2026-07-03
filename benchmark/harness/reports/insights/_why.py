@@ -1380,7 +1380,7 @@ def why_section(
         sections.append(base_rca)
     if not sections:
         return ""
-    lines = ["## RCA", ""]
+    lines = ["## Root Cause Analysis", ""]
     for section_lines in sections:
         lines.extend(section_lines)
         lines.append("")
