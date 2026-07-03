@@ -7349,3 +7349,147 @@ def test_why_renders_generic_failure_root_cause_chain():
 
     # A run whose commands all succeed produces no chain.
     assert _failure_root_cause_chain(base_run, with_run) == []
+
+
+def test_rca_investigation_loop_follows_agent_questions(tmp_path):
+    from benchmark.harness.rca import run_investigation, seed_failure_context
+
+    mode_dir = tmp_path / "records" / "agent=codex" / "model=x" / "mode=with_skills"
+    mode_dir.mkdir(parents=True)
+    events = [
+        {"type": "item.completed", "item": {"type": "command_execution", "command": "pip check", "exit_code": 0, "aggregated_output": "ok"}},
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "python3 job.py",
+                "aggregated_output": "ModuleNotFoundError: No module named 'torch'",
+                "exit_code": 1,
+            },
+        },
+    ]
+    (mode_dir / "agent_events.jsonl").write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
+    write_json = __import__("benchmark.harness.common", fromlist=["write_json"]).write_json
+    write_json(tmp_path / "run_plan.json", {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]})
+
+    seed = seed_failure_context(tmp_path, "with_skills")
+    assert seed is not None
+    assert seed["error_kind"] == "missing_python_module"
+    assert "torch" in seed["error"]
+
+    scripted = [
+        json.dumps(
+            {
+                "answer": "torch was never installed; no install command ran.",
+                "evidence": [{"file": seed["events_file"], "quote": "ModuleNotFoundError: No module named 'torch'"}],
+                "next_question": "Was an install instruction present in the skill or prompt?",
+                "conclusion": None,
+            }
+        ),
+        json.dumps(
+            {
+                "answer": "The skill instructs an isolated-venv install; the agent read it but chose not to install.",
+                "evidence": [{"file": seed["events_file"], "quote": "dependency-install.md"}],
+                "next_question": None,
+                "conclusion": "Instruction present but not followed: the agent misread the supply-chain gate as a prohibition.",
+            }
+        ),
+        "### Root cause\n\nInstruction present but not followed.\n\n### Evidence\n\n- events\n\n### Recommendation\n\nTighten skill wording.",
+    ]
+    prompts = []
+
+    def fake_invoker(prompt, cwd):
+        prompts.append(prompt)
+        return scripted[len(prompts) - 1]
+
+    report_path = run_investigation(tmp_path, "with_skills", fake_invoker, agent_name="fake")
+    assert report_path is not None
+
+    # The second call's question came from the agent's own next_question.
+    assert "Was an install instruction present" in prompts[1]
+    # The synthesis prompt carries the full Q/A trail.
+    assert "Instruction present but not followed" in prompts[2]
+
+    trail = [json.loads(line) for line in (mode_dir / "rca" / "investigation_failure.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert trail[0]["agent"] == "fake"
+    assert trail[2]["conclusion"].startswith("Instruction present but not followed")
+    report = report_path.read_text(encoding="utf-8")
+    assert "### Root cause" in report
+    assert "investigated by `fake` over 2 question(s)" in report
+    assert report.startswith("**command `python3 job.py` failed")
+
+
+def test_why_embeds_agent_rca_report():
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.insights._why import why_section
+
+    with_run = {
+        "available": True,
+        "label": "With skills",
+        "mode": WITH_SKILLS_MODE,
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0, "elapsed_seconds": 500},
+        "record": {
+            "quality_signals": {
+                "job_guidance_primary_validation_metric": {
+                    "status": "missing",
+                    "expected_primary_metric": "AUROC",
+                    "evidence": "no metric reported",
+                }
+            }
+        },
+        "rca_report": "### Root cause\n\nInstruction present but not followed.",
+    }
+    base_run = {
+        "available": True,
+        "label": "No skills baseline",
+        "mode": NO_SKILLS_MODE,
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0, "elapsed_seconds": 400},
+        "validation_metric": {"name": "AUROC", "value": 0.76},
+    }
+    runs = {NO_SKILLS_MODE: base_run, WITH_SKILLS_MODE: with_run}
+    why = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
+    assert "Agent root-cause investigation (With skills)" in why
+    assert "Instruction present but not followed." in why
+
+
+def test_rca_slowdown_topic_seeds_comparative_question(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import run_investigation
+
+    dirs = {}
+    for mode, elapsed in (("with_skills", 1400), ("without_skills", 1100)):
+        mode_dir = tmp_path / "records" / f"mode={mode}"
+        mode_dir.mkdir(parents=True)
+        write_json(mode_dir / "run_summary.json", {"mode": mode, "elapsed_seconds": elapsed})
+        (mode_dir / "agent_events.jsonl").write_text("", encoding="utf-8")
+        dirs[mode] = mode_dir
+    write_json(
+        tmp_path / "run_plan.json",
+        {
+            "entries": [
+                {"mode": mode, "record_dir": str(mode_dir.relative_to(tmp_path))} for mode, mode_dir in dirs.items()
+            ]
+        },
+    )
+
+    prompts = []
+
+    def fake_invoker(prompt, cwd):
+        prompts.append(prompt)
+        return json.dumps(
+            {
+                "answer": "The extra time went to dependency installation.",
+                "evidence": [],
+                "next_question": None,
+                "conclusion": "Skill requirements pulled the CUDA stack.",
+            }
+        )
+
+    report_path = run_investigation(tmp_path, "with_skills", fake_invoker, topic="slowdown", agent_name="fake")
+    assert report_path is not None
+    assert report_path.name == "rca_report_slowdown.md"
+    assert "+300s" in prompts[0]
+    assert "what did this run spend time doing that without_skills did not" in prompts[0]
+    assert "records/mode=without_skills" in prompts[0]

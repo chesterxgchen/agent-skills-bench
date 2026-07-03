@@ -48,6 +48,19 @@ def first_non_empty(*values: Any) -> Any:
     return None
 
 
+def _combined_rca_reports(mode_dir: Path) -> str:
+    """All agent RCA reports for a run (one per investigated topic), joined."""
+
+    rca_dir = mode_dir / "rca"
+    if not rca_dir.is_dir():
+        return ""
+    reports = [
+        read_text(path, max_bytes=MAX_PROMPT_TEXT_BYTES).strip()
+        for path in sorted(rca_dir.glob("rca_report*.md"))
+    ]
+    return "\n\n".join(report for report in reports if report)
+
+
 def mode_dir_for_benchmark(root: Path, mode: str) -> Path:
     legacy = root / mode
     if legacy.exists():
@@ -250,6 +263,7 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "skills_list": skills_list,
             "prompt_text": read_text(mode_dir / "prompt.txt", max_bytes=MAX_PROMPT_TEXT_BYTES) if mode_dir.exists() else "",
             "prompt_metadata": load_json(mode_dir / "prompt_metadata.json", {}) if mode_dir.exists() else {},
+            "rca_report": _combined_rca_reports(mode_dir),
             "runtime_image": load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {},
             "agent_last_message": read_text(mode_dir / "agent_last_message.txt") if mode_dir.exists() else "",
             "agent_stderr": agent_stderr_text,

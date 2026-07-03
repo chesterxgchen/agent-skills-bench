@@ -617,6 +617,76 @@ def is_dependency_install_command(command: str) -> bool:
     return bool(re.search(install_pattern, lowered))
 
 
+def event_timeline_from_text(events_text: str) -> list[dict[str, Any]]:
+    """Ordered command/message items from a captured agent event stream.
+
+    Understands both stream shapes: Claude (message.content text/tool_use items,
+    tool_use_result outputs) and codex (item.completed command_execution /
+    agent_message / reasoning items).
+    """
+
+    items: list[dict[str, Any]] = []
+    for line in str(events_text or "").splitlines():
+        try:
+            payload = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        codex_item = payload.get("item")
+        if isinstance(codex_item, dict):
+            if codex_item.get("type") == "command_execution" and payload.get("type") == "item.completed":
+                items.append(
+                    {
+                        "kind": "command",
+                        "command": str(codex_item.get("command") or ""),
+                        "output": str(codex_item.get("aggregated_output") or ""),
+                        "exit_code": codex_item.get("exit_code"),
+                    }
+                )
+            elif codex_item.get("type") in ("agent_message", "reasoning"):
+                text = str(codex_item.get("text") or "").strip()
+                if text:
+                    items.append({"kind": "message", "text": text})
+            continue
+        message = payload.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            for entry in content:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("type") == "text" and str(entry.get("text") or "").strip():
+                    items.append({"kind": "message", "text": str(entry["text"]).strip()})
+                elif entry.get("type") == "tool_use" and isinstance(entry.get("input"), dict):
+                    command = str(entry["input"].get("command") or "")
+                    if command:
+                        items.append({"kind": "command", "command": command, "output": "", "exit_code": None})
+        result = payload.get("tool_use_result")
+        if isinstance(result, dict) and items and items[-1]["kind"] == "command":
+            items[-1]["output"] = "\n".join(
+                str(result.get(key) or "") for key in ("stdout", "stderr") if result.get(key)
+            )
+    return items
+
+
+# Error-class taxonomy: how to read a failure signature out of command output.
+# Data, not narrative — extending coverage means adding a row here.
+ERROR_SIGNATURE_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"ModuleNotFoundError: No module named ['\"]?([A-Za-z0-9_.]+)['\"]?", "missing_python_module"),
+    (r"ImportError: cannot import name ['\"]?([A-Za-z0-9_.]+)['\"]?", "import_error"),
+    (r"(?:FileNotFoundError|No such file or directory)[:\s]+['\"]?([\w./-]+)", "missing_file"),
+    (r"([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)): ([^\n]{1,120})", "exception"),
+)
+
+
+def error_signature_from_output(output: str) -> dict[str, str] | None:
+    for pattern, kind in ERROR_SIGNATURE_PATTERNS:
+        match = re.search(pattern, output)
+        if match:
+            return {"kind": kind, "subject": match.group(1), "display": match.group(0).splitlines()[0]}
+    return None
+
+
 def dependency_install_events(run: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         event for event in agent_command_events(run) if is_dependency_install_command(str(event.get("command") or ""))
