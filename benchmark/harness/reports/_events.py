@@ -977,7 +977,7 @@ def _segment_success_implied_by_zero_exit(parts: list[tuple[str, str]], index: i
     return all(operator == "&&" for _segment, operator in parts[index:-1])
 
 
-def _is_bare_module_invocation(command: str, module: str) -> bool:
+def _is_bare_module_invocation(command: str, module: str, *, require_success_implied_by_zero_exit: bool = True) -> bool:
     """True when a shell segment runs exactly ``python -m <module>`` and nothing more.
 
     Verified from parsed tokens: the interpreter (any ``python``/``python3``/
@@ -987,10 +987,15 @@ def _is_bare_module_invocation(command: str, module: str) -> bool:
     recovery key can also come from a command whose tokens cannot be parsed
     even though it really carried a job target, and the key equally matches
     same-module non-reruns like ``--help``; token-level verification is what
-    lets a bare-key match stand in for a rerun. Because that match vouches for
-    a SUCCESSFUL rerun via the command's overall zero exit, the module segment
-    only counts when that zero exit actually entails the segment's success —
-    a status guard like ``python -m mod || true`` must not pass.
+    lets a bare-key match stand in for a rerun. When the match vouches for
+    a SUCCESSFUL rerun via the command's overall zero exit (the default), the
+    module segment only counts when that zero exit actually entails the
+    segment's success — a status guard like ``python -m mod || true`` must not
+    pass. Pass ``require_success_implied_by_zero_exit=False`` for a command
+    whose exit status is not the success signal (the FAILED command itself,
+    which exited nonzero): there the token shape alone is what matters, and a
+    status guard like ``python -m mod || exit 1`` must not disqualify it from
+    later recovery.
     """
 
     parts = _shell_command_parts(_unwrap_shell_command(command))
@@ -998,17 +1003,16 @@ def _is_bare_module_invocation(command: str, module: str) -> bool:
         tokens = _command_tokens(segment)
         if not tokens or not _PYTHON_EXECUTABLE_RE.fullmatch(Path(tokens[0]).name.lower()):
             continue
+        segment_qualifies = not require_success_implied_by_zero_exit or _segment_success_implied_by_zero_exit(
+            parts, segment_index
+        )
         for index, token in enumerate(tokens[1:], start=1):
             if token == "-m":
-                if tokens[index + 1 :] == [module] and _segment_success_implied_by_zero_exit(parts, segment_index):
+                if tokens[index + 1 :] == [module] and segment_qualifies:
                     return True
                 break
             if token.startswith("-m") and not token.startswith("--"):
-                if (
-                    index == len(tokens) - 1
-                    and token == f"-m{module}"
-                    and _segment_success_implied_by_zero_exit(parts, segment_index)
-                ):
+                if index == len(tokens) - 1 and token == f"-m{module}" and segment_qualifies:
                     return True
                 break
             if token.startswith("-"):
@@ -1069,8 +1073,13 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     # run succeeded. Otherwise recovery needs an exact rerun or the
     # job-success output check below.
     bare_module_key = re.fullmatch(r"python -m (\S+)", failed_key)
+    # The failed command exited nonzero, so its overall exit status is not a
+    # success signal — only the token shape matters here. A status guard on
+    # the FAILED command (`python -m mod || exit 1`) must not stop a later
+    # clean bare rerun from counting as recovery; the zero-exit implication
+    # check applies only to the recovery candidate below.
     failed_is_verified_bare_module_run = bool(bare_module_key) and _is_bare_module_invocation(
-        failed_command, bare_module_key.group(1)
+        failed_command, bare_module_key.group(1), require_success_implied_by_zero_exit=False
     )
     for item in timeline[anchor_index + 1 :]:
         if item.get("kind") != "command":

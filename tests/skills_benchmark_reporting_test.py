@@ -8111,6 +8111,48 @@ def test_bare_module_rerun_rejects_status_guarded_run():
     assert terminal_failure_anchor(event_timeline_from_text(events)) is None
 
 
+def test_status_guarded_failed_bare_module_command_still_recovers_via_bare_rerun():
+    from benchmark.harness.reports._events import event_timeline_from_text, terminal_failure_anchor
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    traceback = "Traceback...\nModuleNotFoundError: No module named 'torch'"
+
+    # The zero-exit implication check guards the RECOVERY candidate, whose
+    # overall exit code is its only success signal. The FAILED command exited
+    # nonzero, so a status guard on it (`|| exit 1`, a trailing `;` command)
+    # says nothing about its token shape — it must still verify as a bare
+    # module invocation so a later clean bare rerun clears the failure.
+    for failed in (
+        "python3 -m nvflare.cli || exit 1",
+        "python3 -m nvflare.cli ; false",
+    ):
+        events = command(failed, output=traceback, exit_code=1) + "\n" + command(
+            "python3 -m nvflare.cli", output="done"
+        )
+        assert terminal_failure_anchor(event_timeline_from_text(events)) is None, failed
+
+    # The recovery candidate itself must still refuse a status guard even
+    # when the failed command carried one.
+    events = command("python3 -m nvflare.cli || exit 1", output=traceback, exit_code=1) + "\n" + command(
+        "python3 -m nvflare.cli || true", output="done"
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "torch" in anchored[1]["display"]
+
+
 def test_attached_pip_install_reads_as_installer():
     from benchmark.harness.reports._events import (
         command_recovery_key,
