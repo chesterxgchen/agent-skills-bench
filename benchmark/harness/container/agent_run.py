@@ -35,7 +35,8 @@ from typing import Any
 from ..agent_identity import (
     OBSERVED_SESSION_MODEL_SOURCE,
     UNSPECIFIED_AGENT_MODEL,
-    observed_agent_model_from_session_files,
+    agent_session_file_snapshot,
+    observed_agent_session_evidence_from_files,
 )
 
 from ..agents.base import (
@@ -1270,7 +1271,10 @@ def write_configured_failure(
     )
 
 
-def resolve_model_from_session_evidence(config: AgentRunConfig) -> AgentRunConfig:
+def resolve_model_from_session_evidence(
+    config: AgentRunConfig,
+    previous_snapshot: dict[str, tuple[int, int]] | None = None,
+) -> AgentRunConfig:
     """Recover the run model from agent-written session rollouts when unresolved.
 
     Runs after the agent finishes: some agents (codex) never name their model in
@@ -1280,14 +1284,38 @@ def resolve_model_from_session_evidence(config: AgentRunConfig) -> AgentRunConfi
     """
 
     configured = str(config.agent_model or "").strip()
-    if configured and configured != UNSPECIFIED_AGENT_MODEL:
+    if config.agent != "codex" or (configured and configured != UNSPECIFIED_AGENT_MODEL):
         return config
-    model, evidence_path = observed_agent_model_from_session_files(config.agent_home / "sessions")
+    evidence, evidence_path = observed_agent_session_evidence_from_files(
+        config.agent_home / "sessions",
+        previous_snapshot=previous_snapshot,
+    )
+    model = str(evidence.get("model") or "").strip()
     if not model:
         return config
-    if evidence_path is not None:
-        with suppress(OSError):
-            shutil.copy2(evidence_path, config.result_dir / "agent_session_evidence.jsonl")
+    if evidence_path is None:
+        return config
+    try:
+        relative_session_path = str(evidence_path.relative_to(config.agent_home))
+    except ValueError:
+        relative_session_path = evidence_path.name
+    try:
+        source_stat = evidence_path.stat()
+        write_json(
+            config.result_dir / "agent_session_evidence.json",
+            {
+                "schema_version": "1",
+                "evidence_type": "agent_session_turn_context",
+                "model_source": OBSERVED_SESSION_MODEL_SOURCE,
+                "session_file": relative_session_path,
+                "session_file_mtime_ns": source_stat.st_mtime_ns,
+                "turn_context": evidence,
+            },
+        )
+    except OSError:
+        # Do not claim captured evidence when the supporting artifact could not
+        # be persisted with the rest of the benchmark result.
+        return config
     return replace(config, agent_model=model, agent_model_source=OBSERVED_SESSION_MODEL_SOURCE)
 
 
@@ -1336,10 +1364,15 @@ def run_agent_benchmark() -> int:
 
         phase = "agent_exec"
         progress = ProgressWriter(config.mode, script_start, config.progress_log_path)
+        session_snapshot = (
+            agent_session_file_snapshot(config.agent_home / "sessions")
+            if config.agent == "codex" and config.agent_model == UNSPECIFIED_AGENT_MODEL
+            else None
+        )
         agent_start, agent_end, agent_exit = run_agent(config, progress, skill_exposure, agent_launch)
         elapsed_seconds = agent_end - agent_start
         phase = "post_process"
-        config = resolve_model_from_session_evidence(config)
+        config = resolve_model_from_session_evidence(config, session_snapshot)
         post_start, post_end = post_process(config, elapsed_seconds, agent_exit, script_start_ns)
         normal_record_written = True
         phase = "report_outcome"

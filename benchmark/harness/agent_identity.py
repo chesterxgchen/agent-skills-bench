@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -68,9 +69,12 @@ def observed_agent_model_from_events_text(events_text: str) -> str:
             model = clean_agent_model_name(message.get("model"))
             if model:
                 return model
-        # Codex session rollouts carry the per-turn model on turn_context.payload.model.
+        # Codex session rollouts carry the per-turn model on
+        # turn_context.payload.model.  Require the event type so an unrelated
+        # payload (for example, tool output describing an application model)
+        # cannot be mistaken for agent identity.
         payload = event.get("payload")
-        if isinstance(payload, dict):
+        if event.get("type") == "turn_context" and isinstance(payload, dict):
             model = clean_agent_model_name(payload.get("model"))
             if model:
                 return model
@@ -143,7 +147,93 @@ def preferred_agent_model(*candidates: tuple[Any, Any]) -> tuple[Any, Any]:
     return model, source
 
 
-def observed_agent_model_from_session_files(sessions_dir: Path, max_files: int = 8) -> tuple[str, Path | None]:
+def agent_session_file_snapshot(sessions_dir: Path) -> dict[str, tuple[int, int]]:
+    """Return stable-enough file state for correlating rollouts with one invocation."""
+
+    snapshot: dict[str, tuple[int, int]] = {}
+    try:
+        paths = sessions_dir.rglob("*.jsonl")
+        for path in paths:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            snapshot[str(path)] = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return {}
+    return snapshot
+
+
+def observed_agent_session_evidence_from_path(path: Path) -> dict[str, Any]:
+    """Extract a minimal, non-sensitive Codex turn-context identity record."""
+
+    bytes_read = 0
+    latest_evidence: dict[str, Any] = {}
+    try:
+        with path.open("rb") as stream:
+            for raw_line in stream:
+                bytes_read += len(raw_line)
+                if bytes_read > MAX_AGENT_EVENTS_TEXT_BYTES:
+                    break
+                try:
+                    event = json.loads(raw_line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if not isinstance(event, dict) or event.get("type") != "turn_context":
+                    continue
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                model = clean_agent_model_name(payload.get("model"))
+                if not model:
+                    continue
+                latest_evidence = {
+                    "event_type": "turn_context",
+                    "timestamp": event.get("timestamp"),
+                    "turn_id": payload.get("turn_id"),
+                    "model": model,
+                    "source_line_sha256": hashlib.sha256(raw_line).hexdigest(),
+                }
+    except OSError:
+        return {}
+    return latest_evidence
+
+
+def observed_agent_session_evidence_from_files(
+    sessions_dir: Path,
+    *,
+    previous_snapshot: dict[str, tuple[int, int]] | None = None,
+    max_files: int = 8,
+) -> tuple[dict[str, Any], Path | None]:
+    """Return minimal model evidence from a rollout changed by this invocation."""
+
+    candidates: list[tuple[Path, tuple[int, int]]] = []
+    try:
+        for path in sessions_dir.rglob("*.jsonl"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            state = (stat.st_mtime_ns, stat.st_size)
+            if previous_snapshot is not None and previous_snapshot.get(str(path)) == state:
+                continue
+            candidates.append((path, state))
+        candidates.sort(key=lambda item: item[1][0], reverse=True)
+    except OSError:
+        return {}, None
+    for path, _state in candidates[:max_files]:
+        evidence = observed_agent_session_evidence_from_path(path)
+        if evidence:
+            return evidence, path
+    return {}, None
+
+
+def observed_agent_model_from_session_files(
+    sessions_dir: Path,
+    max_files: int = 8,
+    *,
+    previous_snapshot: dict[str, tuple[int, int]] | None = None,
+) -> tuple[str, Path | None]:
     """Model evidence from agent-written session rollout files (newest first).
 
     Codex names its model only in ``CODEX_HOME/sessions`` rollout JSONL
@@ -152,19 +242,12 @@ def observed_agent_model_from_session_files(sessions_dir: Path, max_files: int =
     Returns the model and the rollout file it came from.
     """
 
-    try:
-        candidates = sorted(
-            sessions_dir.rglob("*.jsonl"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return "", None
-    for path in candidates[:max_files]:
-        model = observed_agent_model_from_events_path(path)
-        if model:
-            return model, path
-    return "", None
+    evidence, path = observed_agent_session_evidence_from_files(
+        sessions_dir,
+        previous_snapshot=previous_snapshot,
+        max_files=max_files,
+    )
+    return clean_agent_model_name(evidence.get("model")), path
 
 
 def resolve_agent_model(

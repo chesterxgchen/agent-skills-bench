@@ -519,6 +519,11 @@ Each mode directory contains direct canonical artifacts such as
 `agent_activity.json`, `agent_last_message.txt`, `agent_stderr.txt`,
 `agent_record.json`, and `benchmark_record.json`.
 
+When an otherwise unspecified Codex model is recovered from the session
+rollout created by that invocation, the directory also contains
+`agent_session_evidence.json`. This is a minimal identity record; the harness
+does not retain the complete Codex session rollout.
+
 ## Regenerate Reports
 
 Use `report` to regenerate parser artifacts, scenario
@@ -561,6 +566,7 @@ records/agent=<agent>/model=<model>/workflow=<workflow>/job=<job>/mode=with_skil
 |-- agent_events.jsonl
 |-- agent_record.json
 |-- agent_last_message.txt
+|-- agent_session_evidence.json  # only when model source is agent_session
 |-- agent_stderr.txt
 |-- agent_usage.json
 |-- benchmark_record.json

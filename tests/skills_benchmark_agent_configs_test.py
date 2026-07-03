@@ -942,11 +942,12 @@ def test_agent_config_rejects_unsafe_legacy_artifact_prefix(tmp_path):
         raise AssertionError("legacy artifact prefixes must not contain path separators")
 
 
-def test_codex_model_recovered_from_session_rollout_evidence(tmp_path):
+def test_codex_model_recovered_from_session_rollout_evidence(tmp_path, monkeypatch):
     import json as json_module
 
     from benchmark.harness.agent_identity import (
         OBSERVED_SESSION_MODEL_SOURCE,
+        agent_session_file_snapshot,
         observed_agent_model_from_events_text,
         observed_agent_model_from_session_files,
     )
@@ -968,6 +969,13 @@ def test_codex_model_recovered_from_session_rollout_evidence(tmp_path):
     assert model == "gpt-5.5"
     assert evidence == rollout_path
 
+    snapshot = agent_session_file_snapshot(agent_home / "sessions")
+    stale_model, stale_evidence = observed_agent_model_from_session_files(
+        agent_home / "sessions", previous_snapshot=snapshot
+    )
+    assert stale_model == ""
+    assert stale_evidence is None
+
     result_dir = tmp_path / "results"
     result_dir.mkdir()
     config = agent_run.AgentRunConfig(
@@ -985,10 +993,16 @@ def test_codex_model_recovered_from_session_rollout_evidence(tmp_path):
         agent_home=agent_home,
         agent_model_was_explicit=False,
     )
-    resolved = agent_run.resolve_model_from_session_evidence(config)
+    rollout_path.write_text(rollout_text + "\n", encoding="utf-8")
+    resolved = agent_run.resolve_model_from_session_evidence(config, snapshot)
     assert resolved.agent_model == "gpt-5.5"
     assert resolved.agent_model_source == OBSERVED_SESSION_MODEL_SOURCE
-    assert (result_dir / "agent_session_evidence.jsonl").read_text(encoding="utf-8") == rollout_text
+    captured = json_module.loads((result_dir / "agent_session_evidence.json").read_text(encoding="utf-8"))
+    assert captured["model_source"] == OBSERVED_SESSION_MODEL_SOURCE
+    assert captured["session_file"].startswith("sessions/")
+    assert captured["turn_context"]["model"] == "gpt-5.5"
+    assert "source_line_sha256" in captured["turn_context"]
+    assert "model_provider" not in json_module.dumps(captured)
 
     explicit = agent_run.resolve_model_from_session_evidence(
         agent_run.AgentRunConfig(
@@ -1008,3 +1022,52 @@ def test_codex_model_recovered_from_session_rollout_evidence(tmp_path):
         )
     )
     assert explicit.agent_model == "gpt-5.6"
+
+    failed_result_dir = tmp_path / "failed-results"
+    failed_result_dir.mkdir()
+    failed_config = agent_run.replace(config, result_dir=failed_result_dir)
+
+    def fail_evidence_write(*_args, **_kwargs):
+        raise OSError("evidence destination is unavailable")
+
+    monkeypatch.setattr(agent_run, "write_json", fail_evidence_write)
+    unresolved = agent_run.resolve_model_from_session_evidence(failed_config)
+    assert unresolved.agent_model == "unspecified_default"
+    assert unresolved.agent_model_source == "adapter_default"
+
+
+def test_codex_model_extractor_rejects_unrelated_payload_model():
+    import json as json_module
+
+    from benchmark.harness.agent_identity import observed_agent_model_from_events_text
+
+    event = {"type": "tool_result", "payload": {"model": "application-model"}}
+
+    assert observed_agent_model_from_events_text(json_module.dumps(event)) == ""
+
+
+def test_codex_session_evidence_uses_latest_turn_context(tmp_path):
+    import json as json_module
+
+    from benchmark.harness.agent_identity import observed_agent_session_evidence_from_path
+
+    rollout = tmp_path / "rollout.jsonl"
+    rollout.write_text(
+        "\n".join(
+            [
+                json_module.dumps(
+                    {"timestamp": "2026-07-03T01:00:00Z", "type": "turn_context", "payload": {"model": "gpt-old"}}
+                ),
+                json_module.dumps(
+                    {"timestamp": "2026-07-03T01:01:00Z", "type": "turn_context", "payload": {"model": "gpt-new"}}
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    evidence = observed_agent_session_evidence_from_path(rollout)
+
+    assert evidence["model"] == "gpt-new"
+    assert evidence["timestamp"] == "2026-07-03T01:01:00Z"
