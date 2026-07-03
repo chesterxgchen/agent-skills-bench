@@ -724,34 +724,85 @@ def _parse_stage(tokens: list[str], operator_after: str) -> Invocation | None:
 _OPERATOR_TOKENS = {"&&", "||", ";", "|"}
 
 
+def _split_unquoted_pipes(segment: str) -> list[str]:
+    """Split a segment on unquoted single ``|`` pipeline operators.
+
+    shlex yields ``|`` as its own token only when whitespace surrounds it, so
+    the spaceless form (``cat cfg.json|python3 run.py``) must be split at the
+    character level, where quoting is still visible. A quoted or
+    backslash-escaped ``|`` is operand text, ``>|`` is the noclobber redirect,
+    and ``||`` (only reachable here out of a nested unwrap) is a segment
+    join, not a pipe — none of them split.
+    """
+
+    pieces: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    index = 0
+    length = len(segment)
+    while index < length:
+        char = segment[index]
+        if quote:
+            buf.append(char)
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in ("'", '"'):
+            quote = char
+            buf.append(char)
+            index += 1
+            continue
+        if char == "|" and not (buf and buf[-1] in ("\\", ">", "|")):
+            if index + 1 < length and segment[index + 1] == "|":
+                buf.append("||")
+                index += 2
+                continue
+            piece = "".join(buf).strip()
+            if piece:
+                pieces.append(piece)
+            buf = []
+            index += 1
+            continue
+        buf.append(char)
+        index += 1
+    piece = "".join(buf).strip()
+    if piece:
+        pieces.append(piece)
+    return pieces
+
+
 def parse_shell_command(command: str) -> list[Invocation]:
     """Parse a shell command into per-stage Invocations: unwrap a `sh -c '...'`
     wrapper once, split `&&`/`||`/`;` segments and `|` pipeline stages
-    (quote-aware), strip env/wrapper prefixes and redirections per stage, and
-    classify each stage. A segment whose quoting cannot be tokenized
-    contributes an empty-executable marker, distinguishing "could not parse"
-    from "parsed as harmless".
+    (quote-aware, with or without surrounding spaces), strip env/wrapper
+    prefixes and redirections per stage, and classify each stage. A segment
+    whose quoting cannot be tokenized contributes an empty-executable marker,
+    distinguishing "could not parse" from "parsed as harmless".
     """
 
     invocations: list[Invocation] = []
     for segment, operator in _shell_command_parts(_unwrap_shell_command(command)):
-        tokens = _command_tokens(segment)
-        if not tokens:
-            invocations.append(Invocation("other", operator_after=operator))
-            continue
-        stages: list[list[str]] = [[]]
-        stage_operators: list[str] = []
-        for token in tokens:
-            if token in _OPERATOR_TOKENS:
-                stage_operators.append(token)
-                stages.append([])
-            else:
-                stages[-1].append(token)
-        stage_operators.append(operator)
-        for stage, stage_operator in zip(stages, stage_operators):
-            invocation = _parse_stage(stage, stage_operator) if stage else None
-            if invocation is not None:
-                invocations.append(invocation)
+        pieces = _split_unquoted_pipes(segment) or [segment]
+        piece_operators = ["|"] * (len(pieces) - 1) + [operator]
+        for piece, piece_operator in zip(pieces, piece_operators):
+            tokens = _command_tokens(piece)
+            if not tokens:
+                invocations.append(Invocation("other", operator_after=piece_operator))
+                continue
+            stages: list[list[str]] = [[]]
+            stage_operators: list[str] = []
+            for token in tokens:
+                if token in _OPERATOR_TOKENS:
+                    stage_operators.append(token)
+                    stages.append([])
+                else:
+                    stages[-1].append(token)
+            stage_operators.append(piece_operator)
+            for stage, stage_operator in zip(stages, stage_operators):
+                invocation = _parse_stage(stage, stage_operator) if stage else None
+                if invocation is not None:
+                    invocations.append(invocation)
     return invocations
 
 
@@ -1104,6 +1155,12 @@ def _command_is_inspection_only(command: str) -> bool:
 
 _SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 
+#: Non-Python runtime wrappers that execute a job when invoked: `make
+#: simulate` runs whatever its Makefile target wraps, and the SDK console
+#: script (`nvflare simulator ...`) is the CLI twin of `python -m
+#: nvflare.cli`, which the module branch already accepts.
+_JOB_WRAPPER_EXECUTABLES = frozenset({"make", "nvflare"})
+
 
 def _invocation_is_job_run(invocation: Invocation, *, python_only: bool = False) -> bool:
     if invocation.kind == "script":
@@ -1112,6 +1169,8 @@ def _invocation_is_job_run(invocation: Invocation, *, python_only: bool = False)
         return invocation.module.split(".")[0].lower() not in _PYTHON_TOOLING_MODULES
     if python_only:
         return False
+    if invocation.executable in _JOB_WRAPPER_EXECUTABLES:
+        return True
     if invocation.executable in _SHELL_INTERPRETERS and invocation.positionals:
         return True
     return invocation.executable.endswith((".sh", ".py"))
@@ -1129,8 +1188,9 @@ def _command_is_python_job_run(command: str) -> bool:
 
 
 def _command_is_job_run(command: str) -> bool:
-    """True when any stage is job-run-shaped: a Python script/module run or a
-    script-interpreter execution. Only such commands can vouch for a job's
+    """True when any stage is job-run-shaped: a Python script/module run, a
+    script-interpreter execution, or a runtime wrapper (``make simulate``,
+    the SDK console script). Only such commands can vouch for a job's
     success — an arbitrary command (``python -c "print(open('old.log')...)"``)
     can echo a stale success marker without running anything.
     """

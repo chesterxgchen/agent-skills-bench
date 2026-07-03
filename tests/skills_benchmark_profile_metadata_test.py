@@ -100,6 +100,36 @@ def test_write_root_descriptor_noops_when_no_block_fields(tmp_path):
     assert not (tmp_path / profile_metadata.ROOT_DESCRIPTOR_FILENAME).exists()
 
 
+def test_write_root_descriptor_untrusted_source_carries_no_criteria_and_never_overwrites(tmp_path):
+    # Host-side (image-baked) metadata anchors the descriptor, criteria included.
+    trusted = {"sdk_name": "nvflare", "evaluation_criteria": {"entrypoint": ".", "sha256": "aa"}}
+    assert profile_metadata.write_root_descriptor(tmp_path, trusted) is True
+    assert profile_metadata.read_evaluation_criteria(tmp_path)["sha256"] == "aa"
+
+    # Mount-resident metadata is container-writable: its criteria block must
+    # not enter the descriptor, and it must not replace the trusted anchor.
+    forged = {"sdk_name": "nvflare", "evaluation_criteria": {"entrypoint": ".", "sha256": "ff"}}
+    assert profile_metadata.write_root_descriptor(tmp_path, forged, include_criteria=False, overwrite=False) is False
+    assert profile_metadata.read_evaluation_criteria(tmp_path)["sha256"] == "aa"
+
+
+def test_write_root_descriptor_mount_fallback_lifts_identity_without_criteria(tmp_path):
+    # Legacy fallback (no host-anchored descriptor yet): the identity block is
+    # lifted, but the mount copy's criteria stays out, so the report treats the
+    # rules copy as unverifiable instead of blessing a forgeable hash.
+    mount_metadata = {
+        "sdk_name": "nvflare",
+        "report_plugin_id": "nvflare",
+        "evaluation_criteria": {"entrypoint": ".", "sha256": "ff"},
+    }
+    assert (
+        profile_metadata.write_root_descriptor(tmp_path, mount_metadata, include_criteria=False, overwrite=False)
+        is True
+    )
+    assert profile_metadata.read_report_plugin_id(tmp_path) == "nvflare"
+    assert profile_metadata.read_evaluation_criteria(tmp_path) == {}
+
+
 def test_write_root_descriptor_for_pre_step2_metadata_yields_no_plugin_id(tmp_path):
     # A tree built before step 2 has sdk_name but no report_plugin_id. The lift
     # still surfaces what it has, and the reader returns None (legacy fallback).

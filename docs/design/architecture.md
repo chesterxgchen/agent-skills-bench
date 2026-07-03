@@ -205,7 +205,11 @@ or SDK-native criteria layouts with an explicit converter; NVFLARE's
 `dev_tools/agent/skill_evals/*/evals.json` is converted this way. The build
 records the bundle's content hash in the §4.3 identity block, which the host
 lifts to the root-level descriptor — outside the container-writable result
-mount. Stage 3 captures the resolved bundle under each mode's
+mount — by extracting the image-baked metadata copy (`docker create` +
+`docker cp`, no container code executes) **before any run starts**; the
+mode-dir metadata copy lives in the writable mount, so it may neither supply
+the criteria anchor nor overwrite a descriptor already anchored from the
+image. Stage 3 captures the resolved bundle under each mode's
 `evaluation_rules/`, but Stage 4 scores from that copy **only when its recomputed
 hash matches the host-anchored hash**; any mismatch (a run that rewrote its own
 grading criteria in the mount) or missing anchor falls back to the packaged

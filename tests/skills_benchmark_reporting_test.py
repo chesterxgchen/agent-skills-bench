@@ -606,6 +606,83 @@ def test_canonicalize_keeps_resolved_model_over_plan_sentinel(tmp_path):
     assert summary["model_source"] == "agent_config"
 
 
+def test_canonicalize_never_lifts_mount_criteria_into_root_descriptor(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.host.runner import canonicalize_entry_artifacts
+    from benchmark.harness.modes import NO_SKILLS_MODE
+    from benchmark.harness.profile_metadata import (
+        read_evaluation_criteria,
+        read_report_plugin_id,
+        write_root_descriptor,
+    )
+
+    record_dir = tmp_path / "records" / "agent=codex" / "model=m" / "mode=without_skills"
+    record_dir.mkdir(parents=True)
+    # The mode-dir metadata sits in the container-writable result mount: a run
+    # can rewrite evaluation_rules/ AND this block to bless a tampered hash.
+    write_json(
+        record_dir / "sdk_wheel_metadata.json",
+        {
+            "sdk_name": "nvflare",
+            "report_plugin_id": "nvflare",
+            "evaluation_criteria": {"entrypoint": ".", "sha256": "f" * 64},
+        },
+    )
+    entry = {
+        "run_id": "run_00001",
+        "mode": NO_SKILLS_MODE,
+        "agent": "codex",
+        "agent_model": "m",
+        "record_dir": str(record_dir.relative_to(tmp_path)),
+    }
+
+    # Legacy fallback: the identity block is lifted, the criteria are not.
+    canonicalize_entry_artifacts(tmp_path, entry, 0)
+    assert read_report_plugin_id(tmp_path) == "nvflare"
+    assert read_evaluation_criteria(tmp_path) == {}
+
+    # With a host-anchored descriptor in place, canonicalize must not touch it.
+    write_root_descriptor(
+        tmp_path,
+        {"sdk_name": "nvflare", "evaluation_criteria": {"entrypoint": ".", "sha256": "a" * 64}},
+    )
+    canonicalize_entry_artifacts(tmp_path, entry, 0)
+    assert read_evaluation_criteria(tmp_path)["sha256"] == "a" * 64
+
+
+def test_anchor_root_descriptor_from_images_writes_trusted_criteria(tmp_path, monkeypatch):
+    from benchmark.harness.host import runner
+    from benchmark.harness.modes import NO_SKILLS_MODE
+    from benchmark.harness.profile_metadata import read_evaluation_criteria, read_report_plugin_id
+
+    requested_images = []
+
+    def fake_image_metadata(image):
+        requested_images.append(image)
+        return {
+            "sdk_name": "nvflare",
+            "report_plugin_id": "nvflare",
+            "evaluation_criteria": {"entrypoint": ".", "sha256": "a" * 64},
+        }
+
+    monkeypatch.setattr(runner, "read_image_profile_metadata", fake_image_metadata)
+    entry = {
+        "run_id": "run_00001",
+        "mode": NO_SKILLS_MODE,
+        "agent": "codex",
+        "agent_model": "m",
+        "skills_enabled": False,
+        "job_path": str(tmp_path / "job"),
+        "prompt_source": str(tmp_path / "prompt.txt"),
+        "record_dir": "records/mode=without_skills",
+    }
+
+    assert runner.anchor_root_descriptor_from_images([entry], tmp_path) is True
+    assert requested_images  # metadata came from the image, not the result mount
+    assert read_report_plugin_id(tmp_path) == "nvflare"
+    assert read_evaluation_criteria(tmp_path)["sha256"] == "a" * 64
+
+
 def test_reports_surface_captured_host_os(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
@@ -9421,6 +9498,64 @@ def test_pipeline_behind_inspection_head_can_anchor():
     anchored = terminal_failure_anchor(event_timeline_from_text(events))
     assert anchored is not None
     assert "ConfigError" in anchored[1]["display"]
+
+
+def test_spaceless_pipe_still_splits_stages():
+    from benchmark.harness.reports._events import (
+        _command_is_inspection_only,
+        event_timeline_from_text,
+        parse_shell_command,
+        terminal_failure_anchor,
+    )
+
+    # The pipe operator needs no surrounding spaces: `cat cfg.json|python3
+    # run.py` runs run.py just like the spaced form, while a quoted `|` (an rg
+    # alternation) stays operand text and `>|` is the noclobber redirect.
+    assert [invocation.kind for invocation in parse_shell_command("cat cfg.json|python3 run.py")] == [
+        "inspection",
+        "script",
+    ]
+    assert not _command_is_inspection_only("cat cfg.json|python3 run.py")
+    assert _command_is_inspection_only("grep -n 'epoch|loss' server.log")
+    assert _command_is_inspection_only("cat server.log|grep -c epoch")
+    assert [invocation.kind for invocation in parse_shell_command("python3 run.py >| out.log")] == ["script"]
+
+    events = _codex_command(
+        "cat cfg.json|python3 run.py",
+        output="Traceback...\nConfigError: executors are not specified",
+        exit_code=1,
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "ConfigError" in anchored[1]["display"]
+
+
+def test_success_marker_from_runtime_wrapper_counts_as_recovery():
+    from benchmark.harness.reports._events import (
+        _command_is_job_run,
+        event_timeline_from_text,
+        terminal_failure_anchor,
+    )
+
+    # `make simulate` and the SDK console script execute the job they wrap;
+    # an echo of a stale marker is still not job-run-shaped.
+    assert _command_is_job_run("make simulate")
+    assert _command_is_job_run("nvflare simulator jobs/train -n 2")
+    assert not _command_is_job_run("echo 'Finished FedAvg'")
+
+    base = _codex_command(
+        "python3 -m nvflare.cli simulator jobs/train -n 2",
+        output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+        exit_code=1,
+    )
+    recovered = base + "\n" + _codex_command("make simulate", output="Finished FedAvg\nResult workspace: /tmp/run")
+    assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
+
+    recovered = base + "\n" + _codex_command("nvflare simulator jobs/train -n 2", output="Result workspace: /tmp/run")
+    assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
+
+    not_recovered = base + "\n" + _codex_command("echo 'Finished FedAvg'", output="Finished FedAvg")
+    assert terminal_failure_anchor(event_timeline_from_text(not_recovered)) is not None
 
 
 def test_interpreter_value_options_do_not_hide_module_or_script():

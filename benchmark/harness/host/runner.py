@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -34,7 +35,7 @@ from ..agents.registry import DEFAULT_BENCHMARK_AGENT, load_agent_adapter
 from ..common import load_json, write_json
 from ..host_environment import host_os_display, read_host_environment, write_host_environment
 from ..modes import PAIR_RUNS
-from ..profile_metadata import write_root_descriptor
+from ..profile_metadata import MODE_METADATA_FILENAME, write_root_descriptor
 from ..reports import benchmark_insights, metrics_report
 from ..scenarios import (
     ScenarioCompilation,
@@ -655,6 +656,105 @@ def preflight_docker_images(
     raise ScenarioValidationError(message)
 
 
+def read_image_profile_metadata(image: str) -> dict[str, object]:
+    """Extract the build-baked ``sdk_wheel_metadata.json`` from a benchmark image.
+
+    The image copy was staged by the host at build time and container writes
+    cannot reach it, so it is the trusted source for the root descriptor's
+    identity block and evaluation-criteria anchor — unlike the mode-dir copy,
+    which sits in the container-writable result mount. Extraction uses
+    ``docker create`` + ``docker cp`` (no container code executes). Returns
+    ``{}`` when docker or the file is unavailable.
+    """
+
+    agent_home = "/workspace/agent-home"
+    try:
+        env_result = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{json .Config.Env}}", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if env_result.returncode == 0:
+            try:
+                env_entries = json.loads(env_result.stdout or "[]")
+            except ValueError:
+                env_entries = []
+            for env_entry in env_entries if isinstance(env_entries, list) else []:
+                name, sep, value = str(env_entry).partition("=")
+                if sep and name == "BENCHMARK_AGENT_HOME" and value:
+                    agent_home = value
+        create_result = subprocess.run(
+            ["docker", "create", image],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return {}
+    container_id = create_result.stdout.strip()
+    if create_result.returncode != 0 or not container_id:
+        return {}
+    try:
+        with tempfile.TemporaryDirectory(prefix="agent-benchmark-image-metadata-") as staging:
+            target = Path(staging) / MODE_METADATA_FILENAME
+            copy_result = subprocess.run(
+                ["docker", "cp", f"{container_id}:{agent_home}/{MODE_METADATA_FILENAME}", str(target)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if copy_result.returncode != 0:
+                return {}
+            metadata = load_json(target, {}) or {}
+            return metadata if isinstance(metadata, dict) else {}
+    except OSError:
+        return {}
+    finally:
+        subprocess.run(
+            ["docker", "rm", "-f", container_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+
+
+def anchor_root_descriptor_from_images(
+    entries: Iterable[dict[str, object]],
+    result_root: Path,
+    runtime_auth_options: RuntimeAuthOptions | None = None,
+    *,
+    logs: Iterable[Path] = (),
+) -> bool:
+    """Write the root descriptor from image-baked metadata BEFORE any run.
+
+    All of a plan's images are built from one criteria input, so the first
+    image that yields the §4.3 block anchors the whole result root. Anchoring
+    before the containers start means a run that rewrites its mount-resident
+    metadata or rules copy can no longer influence the trust anchor; without
+    an anchor the report refuses to score the mount copy ("unverifiable").
+    """
+
+    images: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        config = case_config_for_entry(entry, result_root, runtime_auth_options)
+        if config.run_image not in images:
+            images.append(config.run_image)
+    for image in images:
+        if write_root_descriptor(result_root, read_image_profile_metadata(image)):
+            emit(f"Root profile descriptor anchored from image metadata: {image}", logs=logs)
+            return True
+    return False
+
+
 def copy_file_if_present(source: Path, target: Path) -> bool:
     if not source.is_file():
         return False
@@ -732,12 +832,13 @@ def canonicalize_entry_artifacts(result_root: Path, entry: dict[str, object], st
             run_summary["host_environment"] = host_environment
         write_json(record_dir / "run_summary.json", run_summary)
 
-    # Surface the §4.2/§4.3 identity block at the result-root level so the report
-    # path can resolve identity from RESULT_ROOT without descending into a mode
-    # dir. No-ops for legacy trees whose mode metadata lacks the block.
-    mode_metadata = load_json(record_dir / "sdk_wheel_metadata.json", {}) or {}
+    # Legacy fallback for the §4.3 identity block only: the mode-dir copy sits
+    # in the container-writable result mount, so it must not carry the
+    # evaluation-criteria anchor into the root descriptor and must not replace
+    # a descriptor already anchored from host-side image metadata.
+    mode_metadata = load_json(record_dir / MODE_METADATA_FILENAME, {}) or {}
     if isinstance(mode_metadata, dict):
-        write_root_descriptor(result_root, mode_metadata)
+        write_root_descriptor(result_root, mode_metadata, include_criteria=False, overwrite=False)
 
 
 def execute_run_plan(
@@ -776,6 +877,7 @@ def execute_run_plan(
             },
         )
         raise
+    anchor_root_descriptor_from_images(entries, result_root, runtime_auth_options, logs=logs)
     statuses: dict[str, int] = {}
     for entry in entries:
         if not isinstance(entry, dict):

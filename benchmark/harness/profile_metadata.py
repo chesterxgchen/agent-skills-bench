@@ -76,19 +76,36 @@ def build_profile_metadata_block(sdk: Any) -> dict[str, Any]:
     }
 
 
-def write_root_descriptor(result_root: Path, mode_metadata: Mapping[str, Any]) -> bool:
+def write_root_descriptor(
+    result_root: Path,
+    metadata: Mapping[str, Any],
+    *,
+    include_criteria: bool = True,
+    overwrite: bool = True,
+) -> bool:
     """Lift the §4.3 block to a root-level descriptor (§4.2 step 2).
 
     No-ops (returns ``False``) when the source metadata carries no block fields
     so legacy trees stay unchanged. Returns ``True`` when a descriptor is written.
-    The evaluation-criteria identity is carried along when present so the report
-    can verify the mount-resident rules copy against this host-written anchor.
+
+    The descriptor is the trust anchor the report verifies the mount-resident
+    rules copy against, so what may flow into it depends on where ``metadata``
+    came from. Metadata read from HOST-SIDE state (the image baked at build
+    time) may carry the evaluation-criteria identity and replace an existing
+    descriptor. Metadata read from the container-WRITABLE result mount must
+    pass ``include_criteria=False`` (a run that rewrites ``evaluation_rules/``
+    can rewrite that copy to bless a tampered rules hash) and
+    ``overwrite=False`` (it must not clobber a descriptor already lifted from
+    trusted state); it remains only a legacy fallback for the identity block.
     """
 
-    block = {key: mode_metadata[key] for key in PROFILE_METADATA_KEYS if key in mode_metadata}
-    criteria = mode_metadata.get(EVALUATION_CRITERIA_KEY)
-    if isinstance(criteria, Mapping) and criteria:
-        block[EVALUATION_CRITERIA_KEY] = dict(criteria)
+    if not overwrite and (result_root / ROOT_DESCRIPTOR_FILENAME).is_file():
+        return False
+    block = {key: metadata[key] for key in PROFILE_METADATA_KEYS if key in metadata}
+    if include_criteria:
+        criteria = metadata.get(EVALUATION_CRITERIA_KEY)
+        if isinstance(criteria, Mapping) and criteria:
+            block[EVALUATION_CRITERIA_KEY] = dict(criteria)
     if not block:
         return False
     write_json(result_root / ROOT_DESCRIPTOR_FILENAME, block)
