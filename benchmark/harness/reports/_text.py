@@ -137,12 +137,67 @@ def _command_count_display(count: int) -> str:
     return f"{count} command" if count == 1 else f"{count} commands"
 
 
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+
+#: Generic execution prefixes stripped before the `bash -lc`/`sh -c` unwrap so
+#: the wrapped inner command is recovered on the same key as its unprefixed
+#: spelling. Value-taking wrappers consume their options plus, for
+#: `timeout`/`gtimeout`, a DURATION operand; `command` consumes its own boolean
+#: options (`-p`/`-v`/`-V`). This substrate stays SDK-neutral: only generic
+#: wrappers live here.
+_PREFIX_VALUE_OPTIONS = {
+    "env": frozenset({"-u", "--unset"}),
+    "sudo": frozenset({"-u", "--user", "-g", "--group"}),
+    "timeout": frozenset({"-k", "-s", "--kill-after", "--signal"}),
+    "gtimeout": frozenset({"-k", "-s", "--kill-after", "--signal"}),
+}
+_COMMAND_BUILTIN_OPTIONS = frozenset({"-p", "-v", "-V"})
+
+
+def _strip_execution_prefix_tokens(tokens: list[str]) -> list[str]:
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if _ENV_ASSIGNMENT_RE.fullmatch(token):
+            index += 1
+            continue
+        name = Path(token).name.lower()
+        if name in ("nohup", "time"):
+            index += 1
+            continue
+        if name == "command":
+            index += 1
+            while index < len(tokens) and tokens[index] in _COMMAND_BUILTIN_OPTIONS:
+                index += 1
+            continue
+        if name in _PREFIX_VALUE_OPTIONS:
+            value_options = _PREFIX_VALUE_OPTIONS[name]
+            index += 1
+            while index < len(tokens):
+                if name in ("env", "sudo") and _ENV_ASSIGNMENT_RE.fullmatch(tokens[index]):
+                    index += 1
+                elif tokens[index] in value_options and index + 1 < len(tokens):
+                    index += 2
+                elif tokens[index].startswith("-"):
+                    index += 1
+                else:
+                    break
+            if name in ("timeout", "gtimeout"):
+                index += 1
+            continue
+        break
+    return tokens[index:]
+
+
 def _classification_command(command: str) -> str:
     text = str(command).strip()
     try:
         tokens = shlex.split(text)
     except ValueError:
         return text
+    # Strip execution prefixes BEFORE the wrapper unwrap so `timeout 600 bash
+    # -lc "... python train.py"` keys on the inner job, not on `bash`.
+    tokens = _strip_execution_prefix_tokens(tokens)
     if len(tokens) >= 3 and Path(tokens[0]).name in {"bash", "sh"}:
         for index, token in enumerate(tokens[1:], start=1):
             if token.startswith("-") and "c" in token and index + 1 < len(tokens):

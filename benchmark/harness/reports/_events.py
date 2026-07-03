@@ -500,19 +500,27 @@ _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 
 #: Wrapper executables whose operands are the real command, with their
 #: value-taking options (`env -u NAME`, `timeout -k 5s`, `sudo -u user`);
-#: `timeout` additionally takes a DURATION operand before the command, and
-#: `env`/`sudo` accept further VAR=val assignments among their arguments.
+#: `timeout`/`gtimeout` (GNU coreutils, `gtimeout` on macOS) additionally take
+#: a DURATION operand before the command, and `env`/`sudo` accept further
+#: VAR=val assignments among their arguments.
 _WRAPPER_VALUE_OPTIONS = {
     "env": frozenset({"-u", "--unset"}),
     "sudo": frozenset({"-u", "--user", "-g", "--group"}),
     "timeout": frozenset({"-k", "-s", "--kill-after", "--signal"}),
+    "gtimeout": frozenset({"-k", "-s", "--kill-after", "--signal"}),
 }
+
+#: Wrappers whose operands are the real command with no value-taking options,
+#: only boolean flags of their own (`command -pvV argv`); `nohup`/`time` take
+#: no options at all.
+_COMMAND_BUILTIN_OPTIONS = frozenset({"-p", "-v", "-V"})
 
 
 def _strip_execution_prefix(tokens: list[str]) -> list[str]:
-    """Drop leading VAR=val assignments and env/nohup/time/timeout wrappers:
-    `CUDA_VISIBLE_DEVICES=0 python train.py` and `timeout 600 python3 -m ...`
-    execute the same job as their unprefixed spellings.
+    """Drop leading VAR=val assignments and env/nohup/time/timeout/command
+    wrappers: `CUDA_VISIBLE_DEVICES=0 python train.py`, `gtimeout 600 python3
+    -m ...`, and `command python job.py` execute the same job as their
+    unprefixed spellings.
     """
 
     index = 0
@@ -524,6 +532,11 @@ def _strip_execution_prefix(tokens: list[str]) -> list[str]:
         name = Path(token).name.lower()
         if name in ("nohup", "time"):
             index += 1
+            continue
+        if name == "command":
+            index += 1
+            while index < len(tokens) and tokens[index] in _COMMAND_BUILTIN_OPTIONS:
+                index += 1
             continue
         if name in _WRAPPER_VALUE_OPTIONS:
             value_options = _WRAPPER_VALUE_OPTIONS[name]
@@ -537,7 +550,7 @@ def _strip_execution_prefix(tokens: list[str]) -> list[str]:
                     index += 1
                 else:
                     break
-            if name == "timeout":
+            if name in ("timeout", "gtimeout"):
                 index += 1
             continue
         break
@@ -1192,18 +1205,24 @@ def _make_invocation_runs_simulate(invocation: Invocation) -> bool:
             skip_value = "=" not in token and name in _MAKE_VALUE_LONG_OPTIONS
             continue
         if token.startswith("-") and len(token) > 1:
-            # Short options cluster (`-kn` is `-k -n`); an attached value
-            # (`-Cdir`) stays inside the token and never reads as a target.
+            option = f"-{token[1]}"
+            if option in _MAKE_VALUE_SHORT_OPTIONS:
+                # A value-taking option carries its value attached (`-Cdir`,
+                # `-ftraining.mk`) or in the next token (`-C dir`); that value
+                # must NOT be scanned char-by-char for no-execute letters.
+                skip_value = len(token) == 2
+                continue
+            # A genuine flag cluster (`-nq`, `-kn`): any no-execute letter
+            # disqualifies the whole stage.
             if any(flag in _MAKE_NO_EXECUTE_SHORT_FLAGS for flag in token[1:]):
                 return False
-            skip_value = token in _MAKE_VALUE_SHORT_OPTIONS
             continue
         if token == "simulate":
             runs_simulate = True
     return runs_simulate
 
 
-def _invocation_is_job_run(invocation: Invocation, *, python_only: bool = False) -> bool:
+def _invocation_is_job_run(invocation: Invocation, *, python_only: bool = False, marker_source: bool = False) -> bool:
     if invocation.kind == "script":
         return True
     if invocation.kind == "module":
@@ -1219,6 +1238,12 @@ def _invocation_is_job_run(invocation: Invocation, *, python_only: bool = False)
         return _make_invocation_runs_simulate(invocation)
     if invocation.executable == "nvflare":
         return invocation.positionals[:1] == ("simulator",)
+    # A bash/sh script run (`bash cleanup.sh`, `./run.sh`) executes real work,
+    # so it may ANCHOR a failure, but its output can echo a stale success
+    # marker; it must not be trusted as the SOURCE of an output-borne success
+    # marker that clears another command's failure.
+    if marker_source:
+        return False
     if invocation.executable in _SHELL_INTERPRETERS and invocation.positionals:
         return True
     return invocation.executable.endswith((".sh", ".py"))
@@ -1244,6 +1269,18 @@ def _command_is_job_run(command: str) -> bool:
     """
 
     return any(_invocation_is_job_run(invocation) for invocation in parse_shell_command(command))
+
+
+def _command_can_supply_success_marker(command: str) -> bool:
+    """True when a stage is a genuine job execution (Python script/module run,
+    `make simulate`, or the SDK simulator console script) whose printed
+    success marker may CLEAR another command's failure. A bare shell-script
+    run (`bash cleanup.sh`) executes work and may ANCHOR its own failure, but
+    its output can echo a stale marker, so it must not clear a failure it did
+    not produce.
+    """
+
+    return any(_invocation_is_job_run(invocation, marker_source=True) for invocation in parse_shell_command(command))
 
 
 def _invocation_success_implied_by_zero_exit(invocations: list[Invocation], index: int) -> bool:
@@ -1364,9 +1401,10 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
             continue
         output = str(item.get("output") or "")
         # An output-borne success marker only vouches for the job when the
-        # command that printed it is itself job-run-shaped: any other command
-        # can echo a stale marker (e.g. printing an old log via `python -c`).
-        if job_output_succeeded(output) and _command_is_job_run(command):
+        # command that printed it is itself a genuine job execution: any other
+        # command — an inspection, a `python -c` echo, or a bash/sh script that
+        # merely quotes an old log — can print a stale marker.
+        if job_output_succeeded(output) and _command_can_supply_success_marker(command):
             return None
         if item.get("exit_code") != 0:
             continue

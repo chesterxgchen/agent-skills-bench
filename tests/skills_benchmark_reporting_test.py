@@ -9356,6 +9356,132 @@ def test_success_marker_from_runtime_wrapper_counts_as_recovery():
     assert terminal_failure_anchor(event_timeline_from_text(not_recovered)) is not None
 
 
+def test_gtimeout_and_command_prefixes_classify_the_wrapped_job():
+    from benchmark.harness.reports._events import (
+        _command_is_job_run,
+        _strip_execution_prefix,
+        event_timeline_from_text,
+        terminal_failure_anchor,
+    )
+
+    # `gtimeout` (GNU coreutils on macOS) is the value-taking twin of
+    # `timeout`: its options (`-k 5s`, `-s SIGTERM`) and DURATION operand are
+    # consumed, and `command` is a bare prefix that consumes its own `-p`/`-v`/
+    # `-V` options before the real argv.
+    assert _strip_execution_prefix(["gtimeout", "600", "python", "job.py"]) == ["python", "job.py"]
+    assert _strip_execution_prefix(["gtimeout", "-k", "5s", "600", "python", "job.py"]) == ["python", "job.py"]
+    assert _strip_execution_prefix(["command", "python", "job.py"]) == ["python", "job.py"]
+    assert _strip_execution_prefix(["command", "-p", "python", "job.py"]) == ["python", "job.py"]
+    assert _command_is_job_run("gtimeout 600 python job.py")
+    assert _command_is_job_run("command python job.py")
+
+    # A failed `gtimeout 600 python job.py` is a job run, so installing the
+    # missing module alone (without rerunning the job) is not recovery — the
+    # terminal failure stays visible.
+    traceback = "Traceback...\nModuleNotFoundError: No module named 'torch'"
+    for failed in ("gtimeout 600 python job.py", "command python job.py"):
+        events = (
+            _codex_command(failed, output=traceback, exit_code=1)
+            + "\n"
+            + _codex_command("python3 -m pip install torch", output="Successfully installed torch-2.1.0")
+        )
+        anchored = terminal_failure_anchor(event_timeline_from_text(events))
+        assert anchored is not None, failed
+        assert "torch" in anchored[1]["display"]
+
+
+def test_prefixed_shell_wrapper_keys_on_inner_job():
+    from benchmark.harness.reports._events import (
+        command_recovery_key,
+        event_timeline_from_text,
+        terminal_failure_anchor,
+    )
+
+    # An env-assignment or timeout prefix in front of `bash -lc "..."` must be
+    # stripped before the wrapper unwrap so the command keys on the inner job
+    # (`python train.py`), not on `bash`/`workspace`. A genuine rerun written
+    # without the prefix then shares the recovery key.
+    plain_key = command_recovery_key("python train.py")
+    assert command_recovery_key('DEBUG=1 bash -lc "cd /workspace && python train.py"') == plain_key
+    assert command_recovery_key('timeout 600 bash -lc "cd /workspace && python train.py"') == plain_key
+
+    traceback = "Traceback...\nModuleNotFoundError: No module named 'torch'"
+    for failed in (
+        'DEBUG=1 bash -lc "cd /workspace && python train.py"',
+        'timeout 600 bash -lc "cd /workspace && python train.py"',
+    ):
+        events = (
+            _codex_command(failed, output=traceback, exit_code=1)
+            + "\n"
+            + _codex_command("python train.py", output="done")
+        )
+        assert terminal_failure_anchor(event_timeline_from_text(events)) is None, failed
+
+
+def test_make_attached_value_option_not_scanned_for_no_execute_letters():
+    from benchmark.harness.reports._events import _command_is_job_run, event_timeline_from_text, terminal_failure_anchor
+
+    # An ATTACHED value (`-Ctraining`, `-ftraining.mk`) must be consumed as the
+    # option's value, not scanned char-by-char for the no-execute letters
+    # `n`/`q`/`t` — `training` contains both `n` and `t` yet the stage really
+    # executes the recipe.
+    assert _command_is_job_run("make -Ctraining simulate")
+    assert _command_is_job_run("make -ftraining.mk simulate")
+    assert _command_is_job_run("make -Itraining -jauto simulate")
+    # A genuine flag cluster is still checked: `-nq` is a dry-run/question mode.
+    assert not _command_is_job_run("make -nq simulate")
+    assert not _command_is_job_run("make -Ctraining -n simulate")
+
+    # A real `make -Ctraining simulate` job run whose output carries a success
+    # marker recovers a failed simulator run.
+    base = _codex_command(
+        "python3 -m nvflare.cli simulator jobs/train -n 2",
+        output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+        exit_code=1,
+    )
+    recovered = base + "\n" + _codex_command("make -Ctraining simulate", output="Result workspace: /tmp/run")
+    assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
+
+
+def test_stale_success_marker_from_shell_script_is_not_recovery():
+    from benchmark.harness.reports._events import (
+        _command_can_supply_success_marker,
+        _command_is_job_run,
+        event_timeline_from_text,
+        terminal_failure_anchor,
+    )
+
+    # A bash/sh script run executes real work (it can ANCHOR a failure), but
+    # its output may echo a stale success marker; only genuine job executions
+    # may CLEAR another command's failure via a printed marker.
+    assert _command_is_job_run("bash cleanup.sh")
+    assert not _command_can_supply_success_marker("bash cleanup.sh")
+    assert _command_can_supply_success_marker("python train.py")
+    assert _command_can_supply_success_marker("make simulate")
+
+    base = _codex_command(
+        "python job.py",
+        output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+        exit_code=1,
+    )
+    not_recovered = (
+        base + "\n" + _codex_command("bash cleanup.sh", output="Result workspace: /tmp/old_run\nFINISHED:COMPLETED")
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(not_recovered))
+    assert anchored is not None
+    assert "torch" in anchored[1]["display"]
+
+    # A genuine rerun of the SAME job still clears its own failure via the
+    # shared recovery key, even for a shell-script job.
+    base_script = _codex_command(
+        "bash run_job.sh",
+        output="Traceback...\nConfigError: executors are not specified",
+        exit_code=1,
+    )
+    recovered = base_script + "\n" + _codex_command("bash run_job.sh", output="ok")
+    assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
+
+
 def test_interpreter_value_options_do_not_hide_module_or_script():
     from benchmark.harness.reports._events import _command_is_python_job_run, command_recovery_key
 
