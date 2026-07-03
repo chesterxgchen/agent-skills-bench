@@ -90,27 +90,34 @@ class InvestigationStep:
 AgentInvoker = Callable[[str, Path], str]
 
 
-def _claude_invoker(prompt: str, cwd: Path) -> str:
+class AgentInvocationError(RuntimeError):
+    """The investigator agent CLI exited nonzero (auth/config/CLI failure, not an answer)."""
+
+
+def _checked_agent_run(args: list[str], cwd: Path, input_text: str | None = None) -> str:
     result = subprocess.run(
-        ["claude", "-p", prompt],
+        args,
         cwd=cwd,
+        input=input_text,
         capture_output=True,
         text=True,
         timeout=AGENT_STEP_TIMEOUT_SECONDS,
     )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise AgentInvocationError(
+            f"Investigator agent `{args[0]}` exited with status {result.returncode}"
+            + (f": {stderr}" if stderr else " (no stderr)")
+        )
     return result.stdout
+
+
+def _claude_invoker(prompt: str, cwd: Path) -> str:
+    return _checked_agent_run(["claude", "-p", prompt], cwd)
 
 
 def _codex_invoker(prompt: str, cwd: Path) -> str:
-    result = subprocess.run(
-        ["codex", "exec", "--skip-git-repo-check", "-"],
-        cwd=cwd,
-        input=prompt,
-        capture_output=True,
-        text=True,
-        timeout=AGENT_STEP_TIMEOUT_SECONDS,
-    )
-    return result.stdout
+    return _checked_agent_run(["codex", "exec", "--skip-git-repo-check", "-"], cwd, input_text=prompt)
 
 
 _AGENT_INVOKERS: dict[str, AgentInvoker] = {
@@ -495,24 +502,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     agent_name, invoker = resolve_invoker(args.agent)
-    if args.resynthesize:
-        report_path = resynthesize_report(
-            args.result_root,
-            args.mode,
-            invoker,
-            topic=args.topic if args.topic != "auto" else "failure",
-            agent_name=agent_name,
-        )
-    else:
-        report_path = run_investigation(
-            args.result_root,
-            args.mode,
-            invoker,
-            topic=args.topic,
-            question=args.question,
-            max_steps=args.max_steps,
-            agent_name=agent_name,
-        )
+    try:
+        if args.resynthesize:
+            report_path = resynthesize_report(
+                args.result_root,
+                args.mode,
+                invoker,
+                topic=args.topic if args.topic != "auto" else "failure",
+                agent_name=agent_name,
+            )
+        else:
+            report_path = run_investigation(
+                args.result_root,
+                args.mode,
+                invoker,
+                topic=args.topic,
+                question=args.question,
+                max_steps=args.max_steps,
+                agent_name=agent_name,
+            )
+    except AgentInvocationError as error:
+        print(error, file=sys.stderr)
+        return 1
     if report_path is None:
         return 1
     print(report_path)

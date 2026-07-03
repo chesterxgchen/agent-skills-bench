@@ -1055,6 +1055,20 @@ def _root_cause_lead(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportCo
     return lines
 
 
+def _agent_rca_section(run: RunEvidence, fallback_label: str) -> list[str]:
+    """Render an agent-driven RCA report (benchmark.harness.rca) for a run, if one was captured."""
+
+    report = run.rca_report.strip()
+    if not report:
+        return []
+    return [
+        f"**Agent root-cause investigation ({run.label or fallback_label})**",
+        "",
+        report,
+        "",
+    ]
+
+
 def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext | None = None) -> list[str]:
     with_label = with_run.label or "With skills"
     base_label = base_run.label or "No skills baseline"
@@ -1104,17 +1118,11 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
             lines.extend([*root_causes, ""])
     if quality_explanation:
         lines.extend([*quality_explanation, ""])
-    if with_run.rca_report.strip():
+    rca_lines = _agent_rca_section(with_run, "With skills")
+    if rca_lines:
         # An agent-driven RCA investigation ran (benchmark.harness.rca): its
         # report is authoritative over the deterministic seed chain.
-        lines.extend(
-            [
-                f"**Agent root-cause investigation ({with_run.label or 'With skills'})**",
-                "",
-                with_run.rca_report.strip(),
-                "",
-            ]
-        )
+        lines.extend(rca_lines)
     else:
         root_cause_chain = _failure_root_cause_chain(with_run, base_run)
         if root_cause_chain:
@@ -1347,12 +1355,23 @@ def why_section(
     if any_failure_needs_why and not quality_is_worse:
         runs_by_mode = {mode: _as_run_evidence(runs.get(mode, {})) for mode in modes}
         sections.append(_comparison_failure_explanation(runs_by_mode, modes, ctx))
+    with_rca_embedded = False
     if elapsed_is_slower or runtime_is_slower or quality_is_worse:
         sections.append(_why_slower(with_run, base_run, ctx))
+        with_rca_embedded = True  # _why_slower embeds with_run's RCA report itself
     elif _dependency_install_slowdown_note(with_run, base_run):
         sections.append(_why_dependency_install_slower(with_run, base_run))
     if with_tokens is not None and base_tokens is not None and with_tokens > base_tokens:
         sections.append(_why_more_tokens(with_run, base_run))
+    # Agent RCA reports stand on their own: render any that no subsection embedded,
+    # regardless of which Why triggers fired or which mode was investigated.
+    if not with_rca_embedded:
+        with_rca = _agent_rca_section(with_run, WITH_SKILLS_MODE)
+        if with_rca:
+            sections.append(with_rca)
+    base_rca = _agent_rca_section(base_run, base_mode)
+    if base_rca:
+        sections.append(base_rca)
     if not sections:
         return ""
     lines = ["## Why", ""]

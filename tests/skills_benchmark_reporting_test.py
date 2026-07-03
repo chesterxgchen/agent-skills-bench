@@ -7562,6 +7562,74 @@ def test_why_embeds_agent_rca_report():
     assert "Instruction present but not followed." in why
 
 
+def test_why_renders_rca_report_when_only_token_section_triggers():
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.insights._why import why_section
+
+    # Not slower (so _why_slower never runs), only the token delta triggers a Why
+    # subsection — a --topic tokens RCA report must still be rendered.
+    with_run = {
+        "available": True,
+        "label": "With skills",
+        "mode": WITH_SKILLS_MODE,
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0, "elapsed_seconds": 300, "token_count": 90_000},
+        "rca_report": "### Verdict\n\nSkill files were re-read every turn.",
+    }
+    base_run = {
+        "available": True,
+        "label": "No skills baseline",
+        "mode": NO_SKILLS_MODE,
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0, "elapsed_seconds": 400, "token_count": 50_000},
+    }
+    runs = {NO_SKILLS_MODE: base_run, WITH_SKILLS_MODE: with_run}
+    why = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
+    assert "Agent root-cause investigation (With skills)" in why
+    assert "Skill files were re-read every turn." in why
+
+
+def test_why_renders_rca_report_for_base_mode():
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.insights._why import why_section
+
+    with_run = {
+        "available": True,
+        "label": "With skills",
+        "mode": WITH_SKILLS_MODE,
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0, "elapsed_seconds": 500},
+    }
+    base_run = {
+        "available": True,
+        "label": "No skills baseline",
+        "mode": NO_SKILLS_MODE,
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0, "elapsed_seconds": 400},
+        "rca_report": "### Verdict\n\nBaseline failed on a missing dependency.",
+    }
+    runs = {NO_SKILLS_MODE: base_run, WITH_SKILLS_MODE: with_run}
+    why = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
+    assert "Agent root-cause investigation (No skills baseline)" in why
+    assert "Baseline failed on a missing dependency." in why
+
+
+def test_rca_invoker_raises_on_nonzero_agent_exit(monkeypatch):
+    import subprocess
+    from pathlib import Path
+
+    import pytest
+
+    from benchmark.harness import rca
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=args[0], returncode=1, stdout="", stderr="not logged in")
+
+    monkeypatch.setattr(rca.subprocess, "run", fake_run)
+    with pytest.raises(rca.AgentInvocationError, match="status 1.*not logged in"):
+        rca._claude_invoker("question", Path("."))
+
+
 def test_rca_slowdown_topic_seeds_comparative_question(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.rca import run_investigation
