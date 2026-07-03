@@ -9450,6 +9450,48 @@ def test_gtimeout_and_command_prefixes_classify_the_wrapped_job():
         assert "torch" in anchored[1]["display"]
 
 
+def test_command_v_lookup_is_inspection_not_execution_prefix():
+    from benchmark.harness.reports._events import (
+        _command_is_inspection_only,
+        _command_is_job_run,
+        _strip_execution_prefix,
+        event_timeline_from_text,
+        terminal_failure_anchor,
+    )
+
+    # `command -v`/`-V` (alone or clustered with `-p`) locate or describe
+    # their operand without running it, so the `command` head must survive
+    # prefix stripping and the stage must classify as an inspection.
+    for lookup in (
+        ["command", "-v", "python", "job.py"],
+        ["command", "-V", "python", "job.py"],
+        ["command", "-pv", "python", "job.py"],
+    ):
+        assert _strip_execution_prefix(lookup) == lookup
+    assert not _command_is_job_run("command -v python job.py")
+    assert not _command_is_job_run("command -V python")
+    assert _command_is_inspection_only("command -v python")
+    # The executing forms (plain and `-p`) still strip to the wrapped argv.
+    assert _command_is_job_run("command python job.py")
+    assert _command_is_job_run("command -p python job.py")
+
+    # A `command -v` lookup echoing a stale success marker after a failed job
+    # is not recovery: nothing reran the job, so the failure stays anchored.
+    events = "\n".join(
+        [
+            _codex_command(
+                "python train.py",
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            _codex_command("command -v python", output="/usr/bin/python\nFinished FedAvg"),
+        ]
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "torch" in anchored[1]["display"]
+
+
 def test_prefixed_shell_wrapper_keys_on_inner_job():
     from benchmark.harness.reports._events import (
         command_recovery_key,
@@ -9500,6 +9542,37 @@ def test_make_attached_value_option_not_scanned_for_no_execute_letters():
         exit_code=1,
     )
     recovered = base + "\n" + _codex_command("make -Ctraining simulate", output="Result workspace: /tmp/run")
+    assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
+
+
+def test_make_detached_optional_value_keeps_target_visible():
+    from benchmark.harness.reports._events import _command_is_job_run, event_timeline_from_text, terminal_failure_anchor
+
+    # `-j`/`-l` (`--jobs`/`--load-average`/`--max-load`) take OPTIONAL values:
+    # make consumes a detached argument only when it is numeric, so in
+    # `make -j simulate` the word `simulate` is the target, not the value.
+    assert _command_is_job_run("make -j simulate")
+    assert _command_is_job_run("make -l simulate")
+    assert _command_is_job_run("make --jobs simulate")
+    assert _command_is_job_run("make --load-average simulate")
+    # A detached NUMBER (integer or float) is the option's value and must not
+    # read as a target.
+    assert _command_is_job_run("make -j 4 simulate")
+    assert _command_is_job_run("make -l 2.5 simulate")
+    assert _command_is_job_run("make --max-load 2.5 simulate")
+    assert not _command_is_job_run("make -j 4")
+    # No-execute flags are still honored around detached optional values.
+    assert not _command_is_job_run("make -j 4 -n simulate")
+    assert not _command_is_job_run("make -j -n simulate")
+
+    # A real `make -j simulate` run whose output carries a success marker
+    # recovers a failed simulator run.
+    base = _codex_command(
+        "python3 -m nvflare.cli simulator jobs/train -n 2",
+        output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+        exit_code=1,
+    )
+    recovered = base + "\n" + _codex_command("make -j simulate", output="Result workspace: /tmp/run")
     assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
 
 
