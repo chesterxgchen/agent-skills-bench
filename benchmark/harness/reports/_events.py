@@ -33,7 +33,6 @@ from ._runs import combined_text
 from ._text import (
     FILE_INSPECTION_COMMANDS,
     _command_tokens,
-    _first_command_name,
     _shell_command_parts,
     _shell_command_segments,
     fmt_number,
@@ -411,6 +410,11 @@ def command_failed(event: dict[str, Any]) -> bool:
         return False
     if exit_value not in (None, 0):
         return True
+    # No exit code means the command's outcome was never captured (stream cut
+    # off, tool_result missing): an unresolved command is not a failure, even
+    # when a coarse status field says "failed".
+    if exit_value is None:
+        return False
     return str(event.get("status") or "") == "failed"
 
 
@@ -571,28 +575,51 @@ def _module_invocation_key_suffix(command: str, module: str) -> str:
     return ""
 
 
+def _command_executes_python(command: str) -> bool:
+    """True when some segment's executable (wrappers peeled) is a python interpreter."""
+
+    return any(
+        _PYTHON_EXECUTABLE_RE.fullmatch(_segment_executable_name(segment) or "-")
+        for segment in _shell_command_segments(command)
+        if segment.strip()
+    )
+
+
 def command_recovery_key(command: str) -> str:
     command = _unwrap_shell_command(command)
+    # The pip/python branches require the command to actually EXECUTE the
+    # matched tool: the regexes also match inside quoted text, and a
+    # diagnostic like `echo "pip install -r requirements.txt"` must not share
+    # the failed installer's key and pass for its rerun.
     # `pip3` and the attached `-mpip` form Python accepts are the same
     # installer as `pip`/`python -m pip`; they must share the `pip install`
     # key rather than fall through to the interpreter/module branches.
-    if re.search(r"(?:\bpip3?|-m\s*pip3?)\s+install\b", command):
+    if re.search(r"(?:\bpip3?|-m\s*pip3?)\s+install\b", command) and is_dependency_install_command(command):
         requirements = re.search(r"-r\s+([A-Za-z0-9_./-]*requirements[A-Za-z0-9_.-]*\.txt)", command)
         return f"pip install {Path(requirements.group(1)).name}" if requirements else "pip install"
-    script = re.search(r"\bpython(?:3)?\s+([A-Za-z0-9_./-]+\.py)\b", command)
-    if script:
-        role = "export" if "--export" in command else "run"
-        return f"python {Path(script.group(1)).name} {role}"
-    # `python -m <module>` runs key on the module plus its positional
-    # subcommand/job target, not the bare interpreter or bare module:
-    # otherwise any later successful `python3 ...` (e.g. an import probe) or
-    # same-module non-rerun (e.g. `python3 -m nvflare.cli --help`) would look
-    # like a rerun of the failed module job. `\s*` also covers the attached
-    # `-mmodule` form Python accepts.
-    module = re.search(r"\bpython[\d.]*\s+(?:-[^m]\S*\s+)*-m\s*([A-Za-z0-9_.]+)", command)
-    if module:
-        suffix = _module_invocation_key_suffix(command, module.group(1))
-        return f"python -m {module.group(1)} {suffix}".rstrip()
+    if _command_executes_python(command):
+        script = re.search(r"\bpython(?:3)?\s+([A-Za-z0-9_./-]+\.py)\b", command)
+        if script:
+            role = "export" if "--export" in command else "run"
+            return f"python {Path(script.group(1)).name} {role}"
+        # `python -m <module>` runs key on the module plus its positional
+        # subcommand/job target, not the bare interpreter or bare module:
+        # otherwise any later successful `python3 ...` (e.g. an import probe) or
+        # same-module non-rerun (e.g. `python3 -m nvflare.cli --help`) would look
+        # like a rerun of the failed module job. `\s*` also covers the attached
+        # `-mmodule` form Python accepts.
+        module = re.search(r"\bpython[\d.]*\s+(?:-[^m]\S*\s+)*-m\s*([A-Za-z0-9_.]+)", command)
+        if module:
+            suffix = _module_invocation_key_suffix(command, module.group(1))
+            return f"python -m {module.group(1)} {suffix}".rstrip()
+    # Shell scripts key on the script, not the interpreter: `bash cleanup.sh`
+    # must not read as a rerun of a failed `bash run_job.sh`.
+    for segment in _shell_command_segments(command):
+        tokens = _segment_executable_tokens(segment)
+        if tokens and Path(tokens[0]).name.lower() in {"bash", "sh", "zsh"}:
+            script_arg = _first_positional_arg(tokens)
+            if script_arg:
+                return f"shell {Path(script_arg).name}"
     first_word = re.search(r"(?:^|['\"])([A-Za-z0-9_./-]+)", command)
     return first_word.group(1) if first_word else command[:80]
 
@@ -792,12 +819,10 @@ def is_dependency_install_command(command: str) -> bool:
     pipeline segment executes pip).
     """
 
-    text = re.sub(r"^\s*(?:/bin/)?(?:ba|z)?sh\s+-l?c\s+", "", str(command or "")).strip()
-    if text[:1] in {"'", '"'} and text[-1:] == text[:1]:
-        text = text[1:-1]
+    text = _unwrap_shell_command(command)
     for segment in _shell_command_segments(text):
         stripped = segment.strip()
-        name = _first_command_name(stripped)
+        name = _segment_executable_name(stripped)
         if name in _INSTALL_EXECUTABLES and re.search(r"\bpip3?\s+install\b", stripped, re.IGNORECASE):
             return True
         # `\s*` covers the attached `-mpip` form Python accepts.
@@ -887,21 +912,94 @@ def error_signature_from_output(output: str) -> dict[str, str] | None:
 
 
 _SHELL_WRAPPER_RE = re.compile(r"^\s*(?:/bin/)?(?:ba|z)?sh\s+-l?c\s+", re.IGNORECASE)
+_ENV_ASSIGNMENT_PREFIX_RE = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+_TRANSPARENT_WRAPPER_COMMANDS = frozenset({"nohup", "command"})
+_TIMEOUT_COMMANDS = frozenset({"timeout", "gtimeout"})
+_TIMEOUT_OPTIONS_WITH_VALUES = frozenset({"-k", "--kill-after", "-s", "--signal"})
 
 
 def _unwrap_shell_command(command: str) -> str:
-    """Strip a `sh -c '...'` wrapper (and its quotes) to expose the real command."""
+    """Strip env assignments and a `sh -c '...'` wrapper to expose the real command.
 
-    text = _SHELL_WRAPPER_RE.sub("", str(command or "")).strip()
+    Leading ``VAR=value`` assignments (``DEBUG=1 bash -lc "..."``) would
+    otherwise hide the shell wrapper — and, downstream, make the first token
+    of a command look like ``DEBUG=1`` instead of its executable.
+    """
+
+    text = _ENV_ASSIGNMENT_PREFIX_RE.sub("", str(command or "")).strip()
+    text = _SHELL_WRAPPER_RE.sub("", text)
     if text[:1] in {"'", '"'} and text[-1:] == text[:1]:
         text = text[1:-1]
     return text
+
+
+def _skip_timeout_tokens(tokens: list[str], index: int) -> int:
+    """Index of the wrapped command inside ``timeout [options] duration cmd...``."""
+
+    cursor = index + 1
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if token == "--":
+            cursor += 1
+            break
+        if not token.startswith("-") or token == "-":
+            break
+        cursor += 2 if token in _TIMEOUT_OPTIONS_WITH_VALUES else 1
+    if cursor < len(tokens):
+        cursor += 1  # the duration operand
+    return cursor
+
+
+def _peel_wrapper_tokens(tokens: list[str]) -> list[str]:
+    """Tokens with leading env assignments and process wrappers removed.
+
+    ``CUDA_VISIBLE_DEVICES=0 python train.py``, ``timeout 600 python ...``,
+    ``nohup python ...`` and ``env -i FOO=1 python ...`` all EXECUTE the
+    wrapped command; classifying them by their first token would misread the
+    wrapper as the work.
+    """
+
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if _ENV_ASSIGNMENT_RE.fullmatch(token):
+            index += 1
+            continue
+        name = Path(token).name.lower()
+        if name in _TRANSPARENT_WRAPPER_COMMANDS:
+            index += 1
+            continue
+        if name == "env":
+            index += 1
+            while index < len(tokens) and (
+                tokens[index].startswith("-") or _ENV_ASSIGNMENT_RE.fullmatch(tokens[index])
+            ):
+                index += 1
+            continue
+        if name in _TIMEOUT_COMMANDS:
+            index = _skip_timeout_tokens(tokens, index)
+            continue
+        break
+    return tokens[index:]
+
+
+def _segment_executable_tokens(segment: str) -> list[str]:
+    return _peel_wrapper_tokens(_command_tokens(segment))
+
+
+def _segment_executable_name(segment: str) -> str:
+    tokens = _segment_executable_tokens(segment)
+    return Path(tokens[0]).name.lower() if tokens else ""
 
 
 # Shell status guards (`grep ... || true`) neither execute work nor produce
 # output of their own; they must not stop a read-only pipeline from
 # classifying as inspection-only.
 _HARMLESS_STATUS_COMMANDS = frozenset({"true", "false", ":", "exit"})
+# `cd` only sets context for the segments around it; a `cd x && cat log`
+# pipeline is still inspection-only.
+_NON_WORK_COMMANDS = _HARMLESS_STATUS_COMMANDS | {"cd"}
 
 
 def _command_is_inspection_only(command: str) -> bool:
@@ -910,14 +1008,14 @@ def _command_is_inspection_only(command: str) -> bool:
     Inspection commands echo file contents, so their output can quote an old
     traceback or an old success marker — they are neither failure anchors nor
     recovery evidence for `terminal_failure_anchor`. Status guards like
-    ``|| true`` are ignored: they cannot make an inspection pipeline execute
-    anything.
+    ``|| true`` and context-only `cd` segments are ignored: they cannot make
+    an inspection pipeline execute anything.
     """
 
     text = _unwrap_shell_command(command)
     segments = [segment for segment in _shell_command_segments(text) if segment.strip()]
-    names = [_first_command_name(segment) for segment in segments]
-    meaningful = [name for name in names if name not in _HARMLESS_STATUS_COMMANDS]
+    names = [_segment_executable_name(segment) for segment in segments]
+    meaningful = [name for name in names if name not in _NON_WORK_COMMANDS]
     if not meaningful:
         return False
     return all(name in FILE_INSPECTION_COMMANDS for name in meaningful)
@@ -930,7 +1028,7 @@ _PYTHON_EXECUTABLE_RE = re.compile(r"python[\d.]*")
 
 
 def _segment_is_python_job_run(segment: str) -> bool:
-    tokens = _command_tokens(segment)
+    tokens = _segment_executable_tokens(segment)
     if not tokens or not _PYTHON_EXECUTABLE_RE.fullmatch(Path(tokens[0]).name.lower()):
         return False
     for index, token in enumerate(tokens[1:], start=1):
@@ -963,6 +1061,49 @@ def _command_is_python_job_run(command: str) -> bool:
     return any(_segment_is_python_job_run(segment) for segment in _shell_command_segments(text) if segment.strip())
 
 
+def _first_positional_arg(tokens: list[str]) -> str:
+    for token in tokens[1:]:
+        if token == "--" or token.startswith("-"):
+            continue
+        return token
+    return ""
+
+
+def _segment_is_shell_script_run(segment: str) -> bool:
+    tokens = _segment_executable_tokens(segment)
+    if not tokens:
+        return False
+    name = Path(tokens[0]).name.lower()
+    if name in {"bash", "sh", "zsh"}:
+        return _first_positional_arg(tokens).endswith(".sh")
+    # Direct invocations (`./run_job.sh`) execute the script without an
+    # interpreter token.
+    return name.endswith(".sh")
+
+
+def _segment_is_known_job_run(segment: str) -> bool:
+    if _segment_is_python_job_run(segment) or _segment_is_shell_script_run(segment):
+        return True
+    tokens = _segment_executable_tokens(segment)
+    if tokens and Path(tokens[0]).name.lower() == "nvflare":
+        return bool({token.lower() for token in tokens[1:]} & {"simulator", "simulate", "run", "submit"})
+    return False
+
+
+def _command_is_known_job_run(command: str) -> bool:
+    """True when any shell segment executes a recognized job command.
+
+    Job runs are what job-success markers and rerun evidence must come from:
+    Python scripts/modules, shell scripts (``bash run_job.sh``, ``./run.sh``),
+    and nvflare CLI job subcommands. A diagnostic that merely ECHOES a
+    success marker (``python3 -c "print(open('old.log').read())"``, ``echo``)
+    is not a job run and must not pass for recovery.
+    """
+
+    text = _unwrap_shell_command(command)
+    return any(_segment_is_known_job_run(segment) for segment in _shell_command_segments(text) if segment.strip())
+
+
 def _segment_success_implied_by_zero_exit(parts: list[tuple[str, str]], index: int) -> bool:
     """True when the command exiting 0 proves segment ``index`` ran and exited 0.
 
@@ -989,12 +1130,11 @@ def _segment_is_harmless_status_guard(segment: str) -> bool:
     """True when the segment is ONLY a status command: ``true``, ``false``,
     ``:``, or ``exit [status]`` — nothing else.
 
-    Segments split on ``&&``/``||``/``;`` but not on ``|``, so a first-command
-    check alone would bless ``true | bash run_job.sh``, whose pipeline executes
-    real work behind the status command. Requiring the status command to be the
-    segment's only token (plus an inert exit status operand — a literal code,
-    ``$?``, or a simple variable reference) also rejects redirections,
-    backgrounding, and substitutions hiding extra work.
+    Requiring the status command to be the segment's only token (plus an
+    inert exit status operand — a literal code, ``$?``, or a simple variable
+    reference) rejects redirections, backgrounding, and substitutions hiding
+    extra work; with segments also split on ``|``, the real work behind a
+    ``true | bash run_job.sh`` pipeline lands in its own (non-guard) segment.
     """
 
     tokens = _command_tokens(segment)
@@ -1038,7 +1178,7 @@ def _is_bare_module_invocation(command: str, module: str, *, require_success_imp
 
     parts = _shell_command_parts(_unwrap_shell_command(command))
     for segment_index, (segment, _operator) in enumerate(parts):
-        tokens = _command_tokens(segment)
+        tokens = _peel_wrapper_tokens(_command_tokens(segment))
         if not tokens or not _PYTHON_EXECUTABLE_RE.fullmatch(Path(tokens[0]).name.lower()):
             continue
         if require_success_implied_by_zero_exit:
@@ -1069,14 +1209,15 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
 
     Returns None only when a later command demonstrates recovery of the failing
     operation itself: a successful command sharing the failed command's recovery
-    key, one whose output carries a known job-success marker, or — for a
-    missing-module/import failure — a dependency-install command that installed
-    the failure's subject. Unrelated successful commands (diagnostics like `ls`,
-    `cat`, or log inspection after the failure — even ones that echo install
-    logs) do not count as recovery, so they cannot suppress a real terminal
-    failure. When the failed command was itself a script/job run, installing
-    the missing module alone is not recovery either: the job must be rerun
-    successfully or a job-success marker must appear. A module-run key that
+    key, a known job command whose output carries a known job-success marker, or
+    — for a missing-module/import failure — a dependency-install command that
+    installed the failure's subject. Unrelated successful commands (diagnostics
+    like `ls`, `cat`, or log inspection after the failure — even ones that echo
+    install logs or quote an old success marker) do not count as recovery, so
+    they cannot suppress a real terminal failure. When the failed command was
+    itself a script/job run, installing the missing module alone is not recovery
+    either: the job must be rerun successfully or a job-success marker must
+    appear from a job command. A module-run key that
     carries no subcommand/job target matches any same-module invocation, so a
     bare-key match only counts as rerun evidence when both commands verify,
     token by token, as bare invocations of that module; otherwise such a run
@@ -1103,7 +1244,7 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     missing_module = (
         signature["subject"].split(".")[0] if signature["kind"] in ("missing_python_module", "import_error") else ""
     )
-    failed_command_was_job_run = _command_is_python_job_run(failed_command)
+    failed_command_was_job_run = _command_is_known_job_run(failed_command)
     # A module key without a subcommand/job-target suffix (`python -m
     # nvflare.cli`, e.g. when the failed command's tokens cannot be parsed)
     # would match ANY later successful invocation of the same module —
@@ -1130,23 +1271,26 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     for item in timeline[anchor_index + 1 :]:
         if item.get("kind") != "command":
             continue
+        command = str(item.get("command") or "")
         # Inspection commands can quote an OLD success log; they are not
         # recovery evidence.
-        if _command_is_inspection_only(str(item.get("command") or "")):
+        if _command_is_inspection_only(command):
             continue
         output = str(item.get("output") or "")
-        if job_output_succeeded(output):
+        # A job-success marker in the output only proves recovery when the
+        # command could have PRODUCED it — a diagnostic that prints an old
+        # log carries the marker without rerunning anything.
+        if job_output_succeeded(output) and _command_is_known_job_run(command):
             return None
         if item.get("exit_code") != 0:
             continue
-        command = str(item.get("command") or "")
         # A failed job run only recovers via another job run: broad keys (bare
         # interpreter/shell names) must not let an unrelated successful command
         # (e.g. an import probe after an install) pass for a job rerun. An
         # exact rerun of the failed command is always rerun evidence, even
         # when its key is a bare module key.
         key_match_is_rerun = command_recovery_key(command) == failed_key and (
-            not failed_command_was_job_run or _command_is_python_job_run(command)
+            not failed_command_was_job_run or _command_is_known_job_run(command)
         )
         if bare_module_key:
             key_match_is_rerun = (

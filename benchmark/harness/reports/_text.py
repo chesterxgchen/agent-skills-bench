@@ -64,6 +64,15 @@ def _soft_wrap_cell_line(text: str, width: int) -> str:
 _HTML_TAG_OPEN_RE = re.compile(r"<(?=[A-Za-z/!])")
 _SHALLOW_HEADING_RE = re.compile(r"^#{1,2}(?=\s)")
 _INLINE_CODE_SPLIT_RE = re.compile(r"(`[^`]*`)")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)\n]*\)")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]+)\]\([^)\n]*\)")
+_URL_SCHEME_RE = re.compile(r"\b(?:https?|ftp|file|data|javascript):(?://)?", re.IGNORECASE)
+
+
+def _neutralize_markdown_urls(text: str) -> str:
+    text = _MARKDOWN_IMAGE_RE.sub(lambda match: f"[image removed: {match.group(1).strip()}]", text)
+    text = _MARKDOWN_LINK_RE.sub(lambda match: match.group(1), text)
+    return _URL_SCHEME_RE.sub(lambda match: match.group(0).replace(":", "[:]"), text)
 
 
 def sanitize_agent_markdown(text: str) -> str:
@@ -94,7 +103,12 @@ def sanitize_agent_markdown(text: str) -> str:
             continue
         line = _SHALLOW_HEADING_RE.sub("###", line)
         parts = _INLINE_CODE_SPLIT_RE.split(line)
-        lines.append("".join(part if part.startswith("`") else _HTML_TAG_OPEN_RE.sub("&lt;", part) for part in parts))
+        lines.append(
+            "".join(
+                part if part.startswith("`") else _neutralize_markdown_urls(_HTML_TAG_OPEN_RE.sub("&lt;", part))
+                for part in parts
+            )
+        )
     return "\n".join(lines)
 
 
@@ -148,9 +162,10 @@ def _first_command_name(command: str) -> str:
 def _shell_command_parts(command: str) -> list[tuple[str, str]]:
     """Split a command into (segment, operator_after) pairs, honoring shell quoting.
 
-    Only unquoted ``&&``, ``||`` and ``;`` separate segments; operators inside quoted
-    strings (e.g. an ``rg`` search pattern) stay within the segment. ``operator_after`` is
-    the operator that joins the segment to the next one ("" for the final segment).
+    Only unquoted ``&&``, ``||``, ``;`` and ``|`` separate segments; operators inside
+    quoted strings (e.g. an ``rg`` search pattern) stay within the segment.
+    ``operator_after`` is the operator that joins the segment to the next one ("" for
+    the final segment).
     """
     text = _classification_command(command)
     parts: list[tuple[str, str]] = []
@@ -184,6 +199,13 @@ def _shell_command_parts(command: str) -> list[tuple[str, str]]:
                 parts.append((segment, char * 2))
             buf = []
             index += 2
+            continue
+        if char == "|":
+            segment = "".join(buf).strip()
+            if segment:
+                parts.append((segment, "|"))
+            buf = []
+            index += 1
             continue
         buf.append(char)
         index += 1

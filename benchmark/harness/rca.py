@@ -127,27 +127,35 @@ class AgentInvocationError(RuntimeError):
 # The investigator subprocess gets an allowlisted environment, not the full
 # host environment: incidental secrets (cloud keys, tokens) must not be
 # reachable from a process whose prompt embeds untrusted captured output.
+# Each invoker passes through only ITS OWN provider's variables (plus XDG_
+# config plumbing): the claude CLI has no business seeing OPENAI_/CODEX_
+# credentials and vice versa — codex's sandbox can still read its own
+# environment, so a cross-provider key there would be one prompt injection
+# away from being quoted into the report.
 _INVOKER_ENV_ALLOWLIST = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM")
-_INVOKER_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_", "CODEX_", "OPENAI_", "XDG_")
+_CLAUDE_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_", "XDG_")
+_CODEX_ENV_PREFIXES = ("CODEX_", "OPENAI_", "XDG_")
 MAX_AGENT_OUTPUT_BYTES = 2_000_000
 _STREAM_READ_CHUNK = 65_536
 
 
-def _investigator_env() -> dict[str, str]:
+def _investigator_env(prefixes: tuple[str, ...]) -> dict[str, str]:
     env: dict[str, str] = {}
     for key, value in os.environ.items():
-        if key in _INVOKER_ENV_ALLOWLIST or key.startswith(_INVOKER_ENV_PREFIXES):
+        if key in _INVOKER_ENV_ALLOWLIST or key.startswith(prefixes):
             env[key] = value
     return env
 
 
-def _checked_agent_run(args: list[str], cwd: Path, input_text: str | None = None) -> str:
+def _checked_agent_run(
+    args: list[str], cwd: Path, input_text: str | None = None, env_prefixes: tuple[str, ...] = ()
+) -> str:
     # start_new_session so a timeout kills the whole process group, not just
     # the CLI wrapper (agent CLIs spawn helpers).
     process = subprocess.Popen(
         args,
         cwd=cwd,
-        env=_investigator_env(),
+        env=_investigator_env(env_prefixes),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -213,7 +221,9 @@ def _claude_invoker(prompt: str, cwd: Path) -> str:
     # Read-only tool allowlist scoped to the evidence root: the investigator
     # analyzes captured evidence and must not execute commands, write files,
     # or read outside its working directory (its prompt embeds untrusted
-    # captured output — see _UNTRUSTED_DATA_PREAMBLE). The prompt goes via
+    # captured output — see _UNTRUSTED_DATA_PREAMBLE). Grep/Glob take no path
+    # specifier of their own; the Read(...) allow/deny rules govern where all
+    # file-reading tools (Read, Grep, Glob) may look. The prompt goes via
     # stdin: the tool flags are variadic and would swallow a positional prompt.
     return _checked_agent_run(
         [
@@ -226,12 +236,30 @@ def _claude_invoker(prompt: str, cwd: Path) -> str:
         ],
         cwd,
         input_text=prompt,
+        env_prefixes=_CLAUDE_ENV_PREFIXES,
     )
 
 
 def _codex_invoker(prompt: str, cwd: Path) -> str:
+    # --ignore-rules/--ephemeral keep instruction files captured into the
+    # evidence copy (AGENTS.md and friends) from steering the investigator,
+    # and --cd pins the session to the staged evidence root.
     return _checked_agent_run(
-        ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-"], cwd, input_text=prompt
+        [
+            "codex",
+            "exec",
+            "--skip-git-repo-check",
+            "--ignore-rules",
+            "--ephemeral",
+            "--cd",
+            str(cwd),
+            "--sandbox",
+            "read-only",
+            "-",
+        ],
+        cwd,
+        input_text=prompt,
+        env_prefixes=_CODEX_ENV_PREFIXES,
     )
 
 
@@ -301,14 +329,17 @@ def _stage_evidence_copy(result_root: Path) -> Path:
 
     staged_root = Path(tempfile.mkdtemp(prefix="rca_evidence_"))
     resolved_root = result_root.resolve()
-    for source in resolved_root.rglob("*"):
-        if source.is_symlink():
-            continue
-        target = staged_root / source.relative_to(resolved_root)
-        if source.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-        elif source.is_file():
-            target.parent.mkdir(parents=True, exist_ok=True)
+    for dirpath, dirnames, filenames in os.walk(resolved_root, followlinks=False):
+        current = Path(dirpath)
+        dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
+        relative_dir = current.relative_to(resolved_root)
+        target_dir = staged_root / relative_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for filename in filenames:
+            source = current / filename
+            if source.is_symlink() or not source.is_file():
+                continue
+            target = target_dir / filename
             shutil.copyfile(source, target)
     return staged_root
 
@@ -698,19 +729,24 @@ def run_investigation(
     mode_dir = _contained_mode_dir(result_root, Path(seed["mode_dir"]))
     rca_dir = mode_dir / "rca"
     rca_dir.mkdir(parents=True, exist_ok=True)
-    trail_path = rca_dir / f"investigation_{_topic_slug(seed['topic'])}.jsonl"
-    # A rerun replaces the trail, so a report synthesized from the OLD trail
-    # must not linger next to it: remove it now, rewrite it on success.
+    topic_slug = _topic_slug(seed["topic"])
+    trail_path = rca_dir / f"investigation_{topic_slug}.jsonl"
+    report_path = rca_dir / f"rca_report_{topic_slug}.md"
+    temp_trail_path = rca_dir / f".{trail_path.name}.tmp"
     with suppress(OSError):
-        (rca_dir / f"rca_report_{_topic_slug(seed['topic'])}.md").unlink()
+        temp_trail_path.unlink()
     steps: list[InvestigationStep] = []
     question = str(seed["seed_question"])
     asked = {question}
     staged_root = _stage_evidence_copy(result_root)
     # The trail is written incrementally so a hung/failed step or synthesis call
-    # never discards completed Q/A work — --resynthesize can resume from it.
+    # never discards completed Q/A work — --resynthesize can resume from it. A
+    # fresh trail is only published after the first completed answer, so an
+    # immediate auth/CLI failure leaves the previous trail/report intact.
+    trail_published = False
+    stream = temp_trail_path.open("w", encoding="utf-8")
     try:
-        with trail_path.open("w", encoding="utf-8") as stream:
+        try:
             stream.write(json.dumps({"seed": seed, "agent": agent_name}) + "\n")
             stream.flush()
             for _ in range(max_steps):
@@ -737,6 +773,13 @@ def run_investigation(
                     + "\n"
                 )
                 stream.flush()
+                if not trail_published:
+                    stream.close()
+                    os.replace(temp_trail_path, trail_path)
+                    trail_published = True
+                    with suppress(OSError):
+                        report_path.unlink()
+                    stream = trail_path.open("a", encoding="utf-8")
                 if step.conclusion or not step.next_question:
                     break
                 if step.next_question in asked:
@@ -744,6 +787,11 @@ def run_investigation(
                     break
                 asked.add(step.next_question)
                 question = step.next_question
+        finally:
+            stream.close()
+            if not trail_published:
+                with suppress(OSError):
+                    temp_trail_path.unlink()
         report_markdown = invoker(_synthesis_prompt(seed, steps), staged_root).strip()
     finally:
         shutil.rmtree(staged_root, ignore_errors=True)
