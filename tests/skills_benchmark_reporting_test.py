@@ -7796,11 +7796,12 @@ def test_module_job_recovery_key_is_module_specific():
 def test_module_key_long_option_value_consumption_is_nvflare_specific():
     from benchmark.harness.reports._events import command_recovery_key
 
-    # Only nvflare's long options are known to take separate values. Other
-    # modules commonly use boolean long flags (`--rebuild`, `--no-cache`,
-    # `--no-agent-auth-mount`); assuming those consume the next token would
-    # drop the real positional from the key, collapsing different commands
-    # onto the same bare-module key.
+    # Long-option value consumption is module-aware: nvflare's long options
+    # all take separate values except a fixed boolean set, the repo's host
+    # CLIs enumerate their value-taking options, and unknown modules keep
+    # the conservative boolean reading — assuming `--rebuild`/`--no-cache`
+    # consume the next token would drop the real positional from the key,
+    # collapsing different commands onto the same bare-module key.
     assert (
         command_recovery_key("python3 -m benchmark.harness.host.build --no-cache wheel")
         == "python -m benchmark.harness.host.build wheel"
@@ -7816,6 +7817,48 @@ def test_module_key_long_option_value_consumption_is_nvflare_specific():
     assert (
         command_recovery_key("python3 -m nvflare.cli provision --ui_tool -p project.yml")
         == "python -m nvflare.cli provision"
+    )
+
+
+def test_repo_host_module_key_consumes_value_options_and_keys_on_job_target():
+    from benchmark.harness.reports._events import command_recovery_key
+
+    # The host runner mixes value-taking options with boolean flags, so its
+    # value-taking set is enumerated: option values (`--prompt p.txt`) must
+    # not occupy the key's positional slots, and `--training-code` — the
+    # runner's job target, equivalent to the positional PATH — fills the
+    # job-target slot so different jobs do not collapse onto `pair`.
+    assert (
+        command_recovery_key(
+            "python3 -m benchmark.harness.host.runner pair --prompt p.txt --training-code jobs/a"
+        )
+        == "python -m benchmark.harness.host.runner pair a"
+    )
+    assert command_recovery_key(
+        "python3 -m benchmark.harness.host.runner pair --prompt p.txt --training-code jobs/a"
+    ) != command_recovery_key(
+        "python3 -m benchmark.harness.host.runner pair --prompt p.txt --training-code jobs/b"
+    )
+    # The bare option form, inline `=` form, and positional PATH form all
+    # name the same job and must share one key.
+    assert (
+        command_recovery_key(
+            "python3 -m benchmark.harness.host.runner pair --training-code=jobs/a --prompt p.txt"
+        )
+        == command_recovery_key("python3 -m benchmark.harness.host.runner pair jobs/a --prompt p.txt")
+        == "python -m benchmark.harness.host.runner pair a"
+    )
+    # The runner's boolean flag still does not swallow the following
+    # positional.
+    assert (
+        command_recovery_key("python3 -m benchmark.harness.host.runner pair --no-agent-auth-mount jobs/a")
+        == "python -m benchmark.harness.host.runner pair a"
+    )
+    # build's value-taking options are consumed rather than read as
+    # positionals.
+    assert (
+        command_recovery_key("python3 -m benchmark.harness.host.build --uv-image img:latest --no-cache")
+        == "python -m benchmark.harness.host.build"
     )
 
 

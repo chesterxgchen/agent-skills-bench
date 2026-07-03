@@ -448,6 +448,47 @@ _NVFLARE_BOOLEAN_LONG_OPTIONS = frozenset(
 )
 
 
+#: Value-taking long options of the repo's own ``python -m`` CLIs, keyed by
+#: module. Unlike nvflare, these CLIs mix boolean flags with value-taking
+#: options, so the value-taking set is enumerated explicitly; a bare long
+#: option outside the set is boolean. Without this, option values such as
+#: ``--prompt p.txt`` would occupy the recovery key's positional slots.
+_MODULE_VALUE_LONG_OPTIONS: dict[str, frozenset[str]] = {
+    "benchmark.harness.host.runner": frozenset(
+        {
+            "--agent",
+            "--agent-home",
+            "--job-scale",
+            "--model",
+            "--output-dir",
+            "--prompt",
+            "--result-root",
+            "--results-root",
+            "--training-code",
+            "--workflow",
+        }
+    ),
+    "benchmark.harness.host.build": frozenset(
+        {
+            "--agent-profile",
+            "--node-image",
+            "--sdk-profile",
+            "--uv-image",
+        }
+    ),
+}
+
+
+#: Options whose value *is* the job target (the host runner's usage declares
+#: the positional PATH "equivalent to --training-code"), so the value fills a
+#: positional slot of the recovery key instead of being dropped — otherwise
+#: ``pair --training-code jobs/a`` and ``pair --training-code jobs/b`` would
+#: collapse onto the same key.
+_MODULE_TARGET_LONG_OPTIONS: dict[str, frozenset[str]] = {
+    "benchmark.harness.host.runner": frozenset({"--training-code"}),
+}
+
+
 def _module_invocation_key_suffix(command: str, module: str) -> str:
     """Positional tokens (subcommand and job target) that narrow a module key.
 
@@ -455,14 +496,21 @@ def _module_invocation_key_suffix(command: str, module: str) -> str:
     invocation of the same module (e.g. ``python3 -m nvflare.cli --help``)
     pass for a rerun of a failed ``python3 -m nvflare.cli simulator ...``
     job. The first two positional arguments carry the actual subcommand and
-    job target, so they join the key; option values are skipped, and paths
-    reduce to their basename so relative/absolute rerun paths still match.
+    job target, so they join the key; option values are skipped (except
+    job-target options like the host runner's ``--training-code``, whose
+    value fills a positional slot), and paths reduce to their basename so
+    relative/absolute rerun paths still match.
     """
 
-    # Only nvflare's option semantics are known here (all long options except
-    # a fixed boolean set take a separate value). Other modules keep the
-    # conservative reading: a bare long option is a boolean flag.
+    # Long-option semantics are module-aware: nvflare's long options all take
+    # a separate value except a fixed boolean set, the repo's own host CLIs
+    # enumerate their value-taking options explicitly, and any other module
+    # keeps the conservative reading that a bare long option is a boolean
+    # flag — assuming a value would let `--rebuild target` drop the real
+    # positional target from the key.
     module_is_nvflare = module.split(".", 1)[0] == "nvflare"
+    value_options = _MODULE_VALUE_LONG_OPTIONS.get(module, frozenset())
+    target_options = _MODULE_TARGET_LONG_OPTIONS.get(module, frozenset())
     for segment in _shell_command_segments(command):
         tokens = _command_tokens(segment)
         module_end = None
@@ -477,28 +525,43 @@ def _module_invocation_key_suffix(command: str, module: str) -> str:
             continue
         positionals: list[str] = []
         skip_value = False
+        value_is_target = False
         for token in tokens[module_end:]:
             if skip_value:
                 skip_value = False
+                if value_is_target:
+                    value_is_target = False
+                    positionals.append(Path(token).name)
+                    if len(positionals) == 2:
+                        break
                 continue
             if token.startswith("--"):
-                # `--flag=value` carries its value inline. For nvflare
-                # modules a bare long option takes the next token as its
-                # value (nvflare's long options all do) unless it is a known
-                # boolean flag — otherwise `--workspace /tmp/ws` would let
-                # `ws` steal the job-target slot from the actual positional.
-                # For any other module the option set is unknown and boolean
-                # long flags are common, so a bare long option consumes
-                # nothing — assuming a value would let `--rebuild target`
-                # drop the real positional target from the key.
-                skip_value = (
-                    module_is_nvflare and "=" not in token and token not in _NVFLARE_BOOLEAN_LONG_OPTIONS
-                )
+                name, inline_sep, inline_value = token.partition("=")
+                if inline_sep:
+                    # `--flag=value` carries its value inline; a job-target
+                    # option's inline value still fills a positional slot.
+                    if name in target_options and inline_value:
+                        positionals.append(Path(inline_value).name)
+                        if len(positionals) == 2:
+                            break
+                    continue
+                # A bare nvflare long option takes the next token as its
+                # value unless it is a known boolean flag — otherwise
+                # `--workspace /tmp/ws` would let `ws` steal the job-target
+                # slot from the actual positional. Repo host CLIs consume a
+                # value only for their enumerated value-taking options; other
+                # modules' bare long options consume nothing.
+                if module_is_nvflare:
+                    skip_value = token not in _NVFLARE_BOOLEAN_LONG_OPTIONS
+                else:
+                    skip_value = token in value_options
+                value_is_target = skip_value and token in target_options
                 continue
             if token.startswith("-"):
                 # Short alphabetic options (`-w ws`, `-gpu 0`) consume the
                 # next token as their value; attached (`-n2`) forms do not.
                 skip_value = bool(re.fullmatch(r"-[A-Za-z]+", token))
+                value_is_target = False
                 continue
             positionals.append(Path(token).name)
             if len(positionals) == 2:
