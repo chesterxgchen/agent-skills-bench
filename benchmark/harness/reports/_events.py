@@ -1143,11 +1143,64 @@ def _command_is_inspection_only(command: str) -> bool:
 
 _SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 
-#: Non-Python runtime wrappers that execute a job when invoked: `make
-#: simulate` runs whatever its Makefile target wraps, and the SDK console
-#: script (`nvflare simulator ...`) is the CLI twin of `python -m
-#: nvflare.cli`, which the module branch already accepts.
-_JOB_WRAPPER_EXECUTABLES = frozenset({"make", "nvflare"})
+#: ``make`` options that print, query, or touch instead of executing recipe
+#: commands (`-n`/`--dry-run`, `-q`/`--question`, `-t`/`--touch`): a dry-run
+#: ``make -n simulate`` echoes the recipe — stale success markers included —
+#: without running the job.
+_MAKE_NO_EXECUTE_SHORT_FLAGS = frozenset("nqt")
+_MAKE_NO_EXECUTE_LONG_OPTIONS = frozenset({"--just-print", "--dry-run", "--recon", "--question", "--touch"})
+
+#: ``make`` options whose separate value must not read as a target (``make -C
+#: examples -f build.mk simulate``). ``-j``/``-l`` take optional values, so a
+#: detached number is conservatively consumed rather than counted as a target.
+_MAKE_VALUE_SHORT_OPTIONS = frozenset({"-C", "-f", "-I", "-o", "-W", "-E", "-j", "-l"})
+_MAKE_VALUE_LONG_OPTIONS = frozenset(
+    {
+        "--directory",
+        "--file",
+        "--makefile",
+        "--include-dir",
+        "--old-file",
+        "--assume-old",
+        "--new-file",
+        "--what-if",
+        "--assume-new",
+        "--eval",
+        "--load-average",
+    }
+)
+
+
+def _make_invocation_runs_simulate(invocation: Invocation) -> bool:
+    """True when a ``make`` stage executes the ``simulate`` wrapper target.
+
+    Only that target wraps a job run — ``make help`` or ``make clean`` proves
+    nothing about a job — and a no-execute mode (``-n``, ``-q``, ``-t``, in
+    any position) disqualifies the whole stage.
+    """
+
+    runs_simulate = False
+    skip_value = False
+    for token in invocation.args:
+        if skip_value:
+            skip_value = False
+            continue
+        if token.startswith("--"):
+            name = token.partition("=")[0]
+            if name in _MAKE_NO_EXECUTE_LONG_OPTIONS:
+                return False
+            skip_value = "=" not in token and name in _MAKE_VALUE_LONG_OPTIONS
+            continue
+        if token.startswith("-") and len(token) > 1:
+            # Short options cluster (`-kn` is `-k -n`); an attached value
+            # (`-Cdir`) stays inside the token and never reads as a target.
+            if any(flag in _MAKE_NO_EXECUTE_SHORT_FLAGS for flag in token[1:]):
+                return False
+            skip_value = token in _MAKE_VALUE_SHORT_OPTIONS
+            continue
+        if token == "simulate":
+            runs_simulate = True
+    return runs_simulate
 
 
 def _invocation_is_job_run(invocation: Invocation, *, python_only: bool = False) -> bool:
@@ -1157,8 +1210,15 @@ def _invocation_is_job_run(invocation: Invocation, *, python_only: bool = False)
         return invocation.module.split(".")[0].lower() not in _PYTHON_TOOLING_MODULES
     if python_only:
         return False
-    if invocation.executable in _JOB_WRAPPER_EXECUTABLES:
-        return True
+    # Non-Python runtime wrappers count only in their job-running shapes:
+    # `make simulate` runs whatever its Makefile target wraps, and `nvflare
+    # simulator ...` is the CLI twin of `python -m nvflare.cli`, which the
+    # module branch already accepts. Other targets/subcommands (`make help`,
+    # `nvflare config`) execute no job and cannot vouch for one.
+    if invocation.executable == "make":
+        return _make_invocation_runs_simulate(invocation)
+    if invocation.executable == "nvflare":
+        return invocation.positionals[:1] == ("simulator",)
     if invocation.executable in _SHELL_INTERPRETERS and invocation.positionals:
         return True
     return invocation.executable.endswith((".sh", ".py"))

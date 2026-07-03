@@ -130,6 +130,22 @@ def test_write_root_descriptor_mount_fallback_lifts_identity_without_criteria(tm
     assert profile_metadata.read_evaluation_criteria(tmp_path) == {}
 
 
+def test_clear_root_descriptor_removes_stale_anchor(tmp_path):
+    # A reused result root carries the previous run's descriptor; a fresh run
+    # must clear it so a failed image anchor degrades to unverifiable instead
+    # of inheriting the stale criteria, and the mount fallback's overwrite
+    # guard does not mistake the stale file for a current-run anchor.
+    _write_json(
+        tmp_path / profile_metadata.ROOT_DESCRIPTOR_FILENAME,
+        {"sdk_name": "nvflare", "evaluation_criteria": {"entrypoint": ".", "sha256": "aa"}},
+    )
+    profile_metadata.clear_root_descriptor(tmp_path)
+    assert not (tmp_path / profile_metadata.ROOT_DESCRIPTOR_FILENAME).exists()
+    assert profile_metadata.read_evaluation_criteria(tmp_path) == {}
+    # No descriptor present: clearing is a no-op, not an error.
+    profile_metadata.clear_root_descriptor(tmp_path)
+
+
 def test_write_root_descriptor_for_pre_step2_metadata_yields_no_plugin_id(tmp_path):
     # A tree built before step 2 has sdk_name but no report_plugin_id. The lift
     # still surfaces what it has, and the reader returns None (legacy fallback).

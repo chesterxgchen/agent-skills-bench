@@ -9318,6 +9318,22 @@ def test_success_marker_from_runtime_wrapper_counts_as_recovery():
     assert _command_is_job_run("nvflare simulator jobs/train -n 2")
     assert not _command_is_job_run("echo 'Finished FedAvg'")
 
+    # Only the job-running wrapper shapes count: a dry-run `make -n simulate`
+    # echoes the recipe (stale markers included) without executing it, other
+    # make targets and nvflare subcommands run no job at all.
+    assert not _command_is_job_run("make -n simulate")
+    assert not _command_is_job_run("make --dry-run simulate")
+    assert not _command_is_job_run("make simulate -n")
+    assert not _command_is_job_run("make -kn simulate")
+    assert not _command_is_job_run("make help")
+    assert not _command_is_job_run("make")
+    assert not _command_is_job_run("nvflare job list_templates")
+    assert not _command_is_job_run("nvflare config -d /tmp/ws")
+    # Option values must not hide or fake the target/subcommand.
+    assert _command_is_job_run("make -C examples -f build.mk simulate")
+    assert _command_is_job_run("make simulate EXTRA_ARGS='-n 2'")
+    assert not _command_is_job_run("make -f simulate clean")
+
     base = _codex_command(
         "python3 -m nvflare.cli simulator jobs/train -n 2",
         output="Traceback...\nModuleNotFoundError: No module named 'torch'",
@@ -9330,6 +9346,13 @@ def test_success_marker_from_runtime_wrapper_counts_as_recovery():
     assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
 
     not_recovered = base + "\n" + _codex_command("echo 'Finished FedAvg'", output="Finished FedAvg")
+    assert terminal_failure_anchor(event_timeline_from_text(not_recovered)) is not None
+
+    # A dry-run `make -n simulate` echoes the recipe without executing it, so
+    # a stale marker in its output must not clear the failure either.
+    not_recovered = (
+        base + "\n" + _codex_command("make -n simulate", output="Finished FedAvg\nResult workspace: /tmp/run")
+    )
     assert terminal_failure_anchor(event_timeline_from_text(not_recovered)) is not None
 
 

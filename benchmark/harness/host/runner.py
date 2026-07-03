@@ -35,7 +35,7 @@ from ..agents.registry import DEFAULT_BENCHMARK_AGENT, load_agent_adapter
 from ..common import load_json, write_json
 from ..host_environment import host_os_display, read_host_environment, write_host_environment
 from ..modes import PAIR_RUNS
-from ..profile_metadata import MODE_METADATA_FILENAME, write_root_descriptor
+from ..profile_metadata import MODE_METADATA_FILENAME, clear_root_descriptor, write_root_descriptor
 from ..reports import benchmark_insights, metrics_report
 from ..scenarios import (
     ScenarioCompilation,
@@ -859,6 +859,10 @@ def execute_run_plan(
     execution = compilation.write(result_root)
     run_plan = execution.run_plan
     entries = run_plan.get("entries") if isinstance(run_plan.get("entries"), list) else []
+    # A reused result root may carry the previous run's descriptor; clear it
+    # so this run either anchors from its own images below or stays
+    # unverifiable — a stale anchor must not survive into a fresh run.
+    clear_root_descriptor(result_root)
     try:
         preflight_docker_images(
             entries,

@@ -112,6 +112,20 @@ def write_root_descriptor(
     return True
 
 
+def clear_root_descriptor(result_root: str | Path) -> None:
+    """Remove a leftover root descriptor before a fresh run anchors its own.
+
+    A reused result root can still hold the previous run's descriptor. Fresh
+    runs must start from a clean anchor: if the current images yield no §4.3
+    block (legacy image, docker failure), the run must become unverifiable
+    rather than inherit the STALE criteria/plugin anchor — and the mount
+    fallback's ``overwrite=False`` must not mistake the stale file for a
+    descriptor anchored during this run.
+    """
+
+    (Path(result_root) / ROOT_DESCRIPTOR_FILENAME).unlink(missing_ok=True)
+
+
 def read_evaluation_criteria(result_root: str | Path) -> dict[str, Any]:
     """Return the host-anchored evaluation-criteria identity block, or ``{}``.
 
