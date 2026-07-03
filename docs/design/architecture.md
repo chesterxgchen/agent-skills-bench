@@ -202,10 +202,16 @@ the required source when no repo-relative path is available. Build preparation
 normalizes the source into a harness rules bundle, validates the composition,
 hashes it, and stages it into both images. Sources can be native harness YAML
 or SDK-native criteria layouts with an explicit converter; NVFLARE's
-`dev_tools/agent/skill_evals/*/evals.json` is converted this way. Stage 3
-captures the resolved bundle under each mode's `evaluation_rules/`, and Stage 4
-scores from that captured copy. Report replay therefore never rereads a mutable
-SDK checkout. Comparison modes must carry the same criteria hash.
+`dev_tools/agent/skill_evals/*/evals.json` is converted this way. The build
+records the bundle's content hash in the §4.3 identity block, which the host
+lifts to the root-level descriptor — outside the container-writable result
+mount. Stage 3 captures the resolved bundle under each mode's
+`evaluation_rules/`, but Stage 4 scores from that copy **only when its recomputed
+hash matches the host-anchored hash**; any mismatch (a run that rewrote its own
+grading criteria in the mount) or missing anchor falls back to the packaged
+rules. Criteria are thus a verified build-time input, never something a run can
+influence in its own favor, and report replay never rereads a mutable SDK
+checkout.
 
 ---
 

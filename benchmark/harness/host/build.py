@@ -34,6 +34,7 @@ import yaml
 from ..agents.base import AgentAdapter
 from ..agents.config import ConfigurableAgentAdapter
 from ..agents.registry import DEFAULT_BENCHMARK_AGENT, load_agent_adapter
+from ..common import path_tree_sha256
 from ..evaluation import validate_evaluation_rules_source
 from ..profile_metadata import build_profile_metadata_block
 from ..sdks.base import SdkAdapter, SdkSkillsSetup, SdkSource, SdkWheelBuild, SdkWheelVariant
@@ -423,19 +424,6 @@ def stage_sdk_skills_setup(context: Path, setup: SdkSkillsSetup) -> None:
         raise SystemExit("SDK profile skills.setup.source_path is required for copy setup")
     copy_directory_contents(setup.source_path, target)
     emit(f"Using SDK skills folder: {setup.source_path}")
-
-
-def path_tree_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    files = [path] if path.is_file() else sorted(candidate for candidate in path.rglob("*") if candidate.is_file())
-    for candidate in files:
-        relative = candidate.name if path.is_file() else candidate.relative_to(path).as_posix()
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\0")
-        with candidate.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-    return digest.hexdigest()
 
 
 def resolve_and_stage_evaluation_criteria(

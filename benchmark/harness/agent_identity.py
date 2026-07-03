@@ -171,8 +171,9 @@ def _capped_lines(path: Path):
 
     Agent-authored files can carry a single multi-gigabyte line; a plain
     ``for line in stream`` buffers the whole line before any cap applies. A
-    final line truncated by the cap is dropped — a partial line must not be
-    parsed or hashed as evidence."""
+    final line cut mid-line by the cap is dropped — a partial line must not be
+    parsed or hashed as evidence — but a line whose terminator lands exactly
+    at the cap is complete and kept."""
 
     try:
         with path.open("rb") as stream:
@@ -181,7 +182,7 @@ def _capped_lines(path: Path):
     except OSError:
         return
     lines = data.splitlines(keepends=True)
-    if truncated and lines:
+    if truncated and lines and not data.endswith((b"\n", b"\r")):
         lines.pop()
     yield from lines
 

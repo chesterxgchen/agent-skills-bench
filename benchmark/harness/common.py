@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -28,6 +29,40 @@ from typing import Any
 
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def path_tree_sha256(path: Path) -> str:
+    """Order-independent content hash of a file or directory tree.
+
+    Symlinks are skipped (never followed): the tree may be an agent-writable
+    result-mount copy, so a planted link must not pull host bytes into the
+    digest or let the hash follow a link the reader won't. Directory symlinks
+    are pruned so a link cycle can't recurse unbounded.
+    """
+
+    digest = hashlib.sha256()
+    if path.is_symlink():
+        return digest.hexdigest()
+    if path.is_file():
+        candidates = [(path.name, path)]
+    else:
+        candidates = []
+        for dirpath, dirnames, filenames in os.walk(path, followlinks=False):
+            directory = Path(dirpath)
+            dirnames[:] = [name for name in dirnames if not (directory / name).is_symlink()]
+            for name in filenames:
+                candidate = directory / name
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                candidates.append((candidate.relative_to(path).as_posix(), candidate))
+        candidates.sort()
+    for relative, candidate in candidates:
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        with candidate.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
 
 
 def epoch_seconds() -> int:

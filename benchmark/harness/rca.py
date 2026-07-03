@@ -23,7 +23,7 @@ files and proposes the next question ("was a requirements install expected?",
 followed?"), and the loop continues until the agent declares a conclusion or
 the step budget runs out. Every step is recorded verbatim in
 ``rca/investigation.jsonl``; the final synthesis is written to
-``rca/rca_report.md``, which the report engine embeds in the Why section.
+``rca/rca_report.md``, which the report engine embeds in the RCA section.
 
 The loop is topic- and SDK-independent: it reads only generic captured
 artifacts (``run_summary.json``, ``agent_events.jsonl``, ``prompt.txt``,
@@ -60,7 +60,7 @@ import threading
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from .agent_identity import MAX_AGENT_EVENTS_TEXT_BYTES
 from .common import load_json
@@ -325,12 +325,13 @@ def _contained_mode_dir(result_root: Path, mode_dir: Path) -> Path:
     return mode_dir
 
 
-def _stage_evidence_copy(result_root: Path) -> Path:
+def _stage_evidence_copy(result_root: Path, exclude: Iterable[Path] = ()) -> Path:
     """Symlink-free copy of the result root for the investigator to work in.
 
     The investigator's cwd is this staged copy: relative evidence paths resolve
     identically, but no symlink inside the captured tree can alias a host file
-    into what the agent reads.
+    into what the agent reads. ``exclude`` files are left out of the copy
+    without touching the originals on disk.
     """
 
     # os.walk with followlinks=False, not rglob: on Python < 3.13 rglob
@@ -339,6 +340,7 @@ def _stage_evidence_copy(result_root: Path) -> Path:
     # symlinks) into the staged tree — and a link cycle recurses unboundedly.
     staged_root = Path(tempfile.mkdtemp(prefix="rca_evidence_"))
     resolved_root = result_root.resolve()
+    excluded = {path.resolve() for path in exclude}
     for dirpath, dirnames, filenames in os.walk(resolved_root, followlinks=False):
         directory = Path(dirpath)
         dirnames[:] = [name for name in dirnames if not (directory / name).is_symlink()]
@@ -346,7 +348,7 @@ def _stage_evidence_copy(result_root: Path) -> Path:
         target_dir.mkdir(parents=True, exist_ok=True)
         for name in filenames:
             source = directory / name
-            if source.is_symlink() or not source.is_file():
+            if source in excluded or source.is_symlink() or not source.is_file():
                 continue
             shutil.copyfile(source, target_dir / name)
     return staged_root
@@ -756,7 +758,17 @@ def run_investigation(
     steps: list[InvestigationStep] = []
     question = str(seed["seed_question"])
     asked = {question}
-    staged_root = _stage_evidence_copy(result_root)
+    # The prior run's RCA outputs stay on disk until the first new step
+    # completes (an immediate invoker failure must not discard them), but a
+    # fresh investigation must not read its own predecessor's conclusions as
+    # evidence — keep them out of the staged copy.
+    stale_rca_outputs = (
+        trail_path,
+        partial_path,
+        rca_dir / f"rca_report_{_topic_slug(seed['topic'])}.md",
+        rca_dir / "rca_report.md",
+    )
+    staged_root = _stage_evidence_copy(result_root, exclude=stale_rca_outputs)
     # The trail is written incrementally so a hung/failed step or synthesis
     # call never discards completed Q/A work — --resynthesize can resume from
     # it. It is written to a .partial file promoted over the previous trail

