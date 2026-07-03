@@ -7379,6 +7379,55 @@ def test_why_renders_generic_failure_root_cause_chain():
     assert _failure_root_cause_chain(base_run, with_run) == []
 
 
+def test_predicted_failure_message_requires_failure_expressing_cue():
+    from benchmark.harness.reports._events import predicted_failure_message
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    def message(text):
+        return json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": text}})
+
+    failing_command = command(
+        "python3 job.py --num-clients 3",
+        output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+        exit_code=1,
+    )
+
+    # A success prediction that merely names the subject with an expectation
+    # verb must not be flagged as a known-doomed execution.
+    optimistic_events = "\n".join(
+        [
+            message("I expect torch is installed, so the simulation should run end to end."),
+            failing_command,
+        ]
+    )
+    assert predicted_failure_message(optimistic_events) is None
+
+    # A message that predicts the failure itself is still reported, with the
+    # prediction quoted alongside the terminal error.
+    doomed_events = "\n".join(
+        [
+            message("Running anyway, but this will fail because torch is not installed."),
+            failing_command,
+        ]
+    )
+    doomed = predicted_failure_message(doomed_events)
+    assert doomed is not None
+    assert doomed["quote"] == "Running anyway, but this will fail because torch is not installed."
+    assert "ModuleNotFoundError: No module named 'torch'" in doomed["error"]
+
+
 def test_why_suppresses_root_cause_chain_when_run_recovers():
     from benchmark.harness.reports.insights._why import _failure_root_cause_chain
 
