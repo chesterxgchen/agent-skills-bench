@@ -993,9 +993,10 @@ def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = ()) 
     RCA exists to explain a with-skills regression — a failure, slowdown, extra
     tokens, or a structure regression. This fires it automatically right after
     the report so the explanation lands in benchmark_insights.md with no manual
-    step. It uses the container sandbox by default (safer over attacker-authored
-    evidence). Best-effort: it never fails the run, skips cleanly when no
-    investigator agent/image is available, and BENCHMARK_AUTO_RCA=0 disables it.
+    step. It requires the container sandbox: the evidence is attacker-authored,
+    so the investigator must never run unsandboxed on the host. Best-effort: it
+    never fails the run, skips cleanly when no investigator image is built, and
+    BENCHMARK_AUTO_RCA=0 disables it.
     """
 
     if os.environ.get("BENCHMARK_AUTO_RCA", "1") == "0":
@@ -1006,7 +1007,10 @@ def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = ()) 
     if not targets:
         return
     try:
-        agent_name, invoker = resolve_invoker(None, sandbox="auto")
+        # sandbox="docker" is a hard requirement here, not a preference: with
+        # "auto", resolve_invoker falls back to the host CLI when no image is
+        # built, which would run the agent unsandboxed over captured evidence.
+        agent_name, invoker = resolve_invoker(None, sandbox="docker")
     except SystemExit as exc:
         emit(f"Auto-RCA skipped: {exc}", logs=logs, stderr=True)
         return
