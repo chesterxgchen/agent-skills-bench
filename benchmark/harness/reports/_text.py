@@ -142,16 +142,17 @@ _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 #: Generic execution prefixes stripped before the `bash -lc`/`sh -c` unwrap so
 #: the wrapped inner command is recovered on the same key as its unprefixed
 #: spelling. Value-taking wrappers consume their options plus, for
-#: `timeout`/`gtimeout`, a DURATION operand; `command` consumes its own boolean
-#: options (`-p`/`-v`/`-V`). This substrate stays SDK-neutral: only generic
-#: wrappers live here.
+#: `timeout`/`gtimeout`, a DURATION operand; `command` is stripped only in its
+#: executing forms (plain or `-p`) — `command -v`/`-V` merely locate/describe
+#: the operand, so those forms are left intact. This substrate stays
+#: SDK-neutral: only generic wrappers live here.
 _PREFIX_VALUE_OPTIONS = {
     "env": frozenset({"-u", "--unset"}),
     "sudo": frozenset({"-u", "--user", "-g", "--group"}),
     "timeout": frozenset({"-k", "-s", "--kill-after", "--signal"}),
     "gtimeout": frozenset({"-k", "-s", "--kill-after", "--signal"}),
 }
-_COMMAND_BUILTIN_OPTIONS = frozenset({"-p", "-v", "-V"})
+_COMMAND_BUILTIN_OPTION_RE = re.compile(r"-[pvV]+")
 
 
 def _strip_execution_prefix_tokens(tokens: list[str]) -> list[str]:
@@ -166,9 +167,14 @@ def _strip_execution_prefix_tokens(tokens: list[str]) -> list[str]:
             index += 1
             continue
         if name == "command":
-            index += 1
-            while index < len(tokens) and tokens[index] in _COMMAND_BUILTIN_OPTIONS:
-                index += 1
+            lookahead = index + 1
+            while lookahead < len(tokens) and _COMMAND_BUILTIN_OPTION_RE.fullmatch(tokens[lookahead]):
+                if "v" in tokens[lookahead] or "V" in tokens[lookahead]:
+                    # `command -v python job.py` only locates/describes
+                    # `python`; nothing executes, so this is not a prefix.
+                    return tokens[index:]
+                lookahead += 1
+            index = lookahead
             continue
         if name in _PREFIX_VALUE_OPTIONS:
             value_options = _PREFIX_VALUE_OPTIONS[name]

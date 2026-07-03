@@ -510,10 +510,11 @@ _WRAPPER_VALUE_OPTIONS = {
     "gtimeout": frozenset({"-k", "-s", "--kill-after", "--signal"}),
 }
 
-#: Wrappers whose operands are the real command with no value-taking options,
-#: only boolean flags of their own (`command -pvV argv`); `nohup`/`time` take
-#: no options at all.
-_COMMAND_BUILTIN_OPTIONS = frozenset({"-p", "-v", "-V"})
+#: `command`'s own option cluster (`-p`, `-v`, `-V`, combinable as `-pv`).
+#: Only the plain and `-p` forms execute their operand; `-v`/`-V` merely
+#: locate or describe it, so those forms are command inspections, not
+#: execution prefixes. `nohup`/`time` take no options at all.
+_COMMAND_BUILTIN_OPTION_RE = re.compile(r"-[pvV]+")
 
 
 def _strip_execution_prefix(tokens: list[str]) -> list[str]:
@@ -534,9 +535,14 @@ def _strip_execution_prefix(tokens: list[str]) -> list[str]:
             index += 1
             continue
         if name == "command":
-            index += 1
-            while index < len(tokens) and tokens[index] in _COMMAND_BUILTIN_OPTIONS:
-                index += 1
+            lookahead = index + 1
+            while lookahead < len(tokens) and _COMMAND_BUILTIN_OPTION_RE.fullmatch(tokens[lookahead]):
+                if "v" in tokens[lookahead] or "V" in tokens[lookahead]:
+                    # `command -v python job.py` only locates/describes
+                    # `python`; nothing executes, so this is not a prefix.
+                    return tokens[index:]
+                lookahead += 1
+            index = lookahead
             continue
         if name in _WRAPPER_VALUE_OPTIONS:
             value_options = _WRAPPER_VALUE_OPTIONS[name]
@@ -724,6 +730,11 @@ def _parse_stage(tokens: list[str], operator_after: str) -> Invocation | None:
     ):
         kind = "pip_install"
     elif executable in FILE_INSPECTION_COMMANDS:
+        kind = "inspection"
+    elif executable == "command":
+        # Executing forms (`command argv`, `command -p argv`) were stripped as
+        # prefixes above; a surviving `command` head is the `-v`/`-V` lookup
+        # form, which describes its operand without running it.
         kind = "inspection"
     else:
         kind = "other"
@@ -1164,9 +1175,12 @@ _MAKE_NO_EXECUTE_SHORT_FLAGS = frozenset("nqt")
 _MAKE_NO_EXECUTE_LONG_OPTIONS = frozenset({"--just-print", "--dry-run", "--recon", "--question", "--touch"})
 
 #: ``make`` options whose separate value must not read as a target (``make -C
-#: examples -f build.mk simulate``). ``-j``/``-l`` take optional values, so a
-#: detached number is conservatively consumed rather than counted as a target.
-_MAKE_VALUE_SHORT_OPTIONS = frozenset({"-C", "-f", "-I", "-o", "-W", "-E", "-j", "-l"})
+#: examples -f build.mk simulate``). ``-j``/``-l`` (``--jobs``,
+#: ``--load-average``/``--max-load``) take *optional* values: make consumes a
+#: detached argument only when it is numeric (``make -j 4 simulate``), so in
+#: ``make -j simulate`` the ``simulate`` target still runs.
+_MAKE_VALUE_SHORT_OPTIONS = frozenset({"-C", "-f", "-I", "-o", "-W", "-E"})
+_MAKE_OPTIONAL_VALUE_SHORT_OPTIONS = frozenset({"-j", "-l"})
 _MAKE_VALUE_LONG_OPTIONS = frozenset(
     {
         "--directory",
@@ -1179,9 +1193,10 @@ _MAKE_VALUE_LONG_OPTIONS = frozenset(
         "--what-if",
         "--assume-new",
         "--eval",
-        "--load-average",
     }
 )
+_MAKE_OPTIONAL_VALUE_LONG_OPTIONS = frozenset({"--jobs", "--load-average", "--max-load"})
+_MAKE_NUMERIC_VALUE_RE = re.compile(r"\d+(?:\.\d+)?")
 
 
 def _make_invocation_runs_simulate(invocation: Invocation) -> bool:
@@ -1194,15 +1209,22 @@ def _make_invocation_runs_simulate(invocation: Invocation) -> bool:
 
     runs_simulate = False
     skip_value = False
+    skip_numeric_value = False
     for token in invocation.args:
         if skip_value:
             skip_value = False
             continue
+        if skip_numeric_value:
+            skip_numeric_value = False
+            if _MAKE_NUMERIC_VALUE_RE.fullmatch(token):
+                continue
         if token.startswith("--"):
             name = token.partition("=")[0]
             if name in _MAKE_NO_EXECUTE_LONG_OPTIONS:
                 return False
-            skip_value = "=" not in token and name in _MAKE_VALUE_LONG_OPTIONS
+            if "=" not in token:
+                skip_value = name in _MAKE_VALUE_LONG_OPTIONS
+                skip_numeric_value = name in _MAKE_OPTIONAL_VALUE_LONG_OPTIONS
             continue
         if token.startswith("-") and len(token) > 1:
             option = f"-{token[1]}"
@@ -1211,6 +1233,12 @@ def _make_invocation_runs_simulate(invocation: Invocation) -> bool:
                 # `-ftraining.mk`) or in the next token (`-C dir`); that value
                 # must NOT be scanned char-by-char for no-execute letters.
                 skip_value = len(token) == 2
+                continue
+            if option in _MAKE_OPTIONAL_VALUE_SHORT_OPTIONS:
+                # Optional-value options take their value attached (`-j4`) or
+                # as a detached NUMBER (`-j 4`); a detached word (`make -j
+                # simulate`) is a target, not the option's value.
+                skip_numeric_value = len(token) == 2
                 continue
             # A genuine flag cluster (`-nq`, `-kn`): any no-execute letter
             # disqualifies the whole stage.
