@@ -115,6 +115,12 @@ def test_write_wheel_metadata_uses_atomic_json_helper(tmp_path, monkeypatch):
         wheel_build=SimpleNamespace(build_type="uv_wheel"),
         prepared=build.PreparedSdkWheel(wheel=wheel, source_type="wheel", source_path=tmp_path),
         out_dir=tmp_path / "out",
+        evaluation=build.PreparedEvaluationCriteria(
+            source_path=tmp_path / "rules.yaml",
+            source_type="explicit",
+            sha256="criteria-hash",
+            staged_entrypoint="rules.yaml",
+        ),
     )
 
     assert calls[0][0] == tmp_path / "out" / "sdk_wheel_metadata.json"
@@ -134,6 +140,196 @@ def test_write_wheel_metadata_uses_atomic_json_helper(tmp_path, monkeypatch):
         "runtime_sources": [],
         "artifact_globs": [],
     }
+    assert payload["evaluation_criteria"]["sha256"] == "criteria-hash"
+    assert payload["evaluation_criteria"]["source_format"] == "harness_yaml"
+
+
+def test_sdk_repo_evaluation_criteria_are_validated_staged_and_hashed(tmp_path):
+    from benchmark.harness.host import build
+    from benchmark.harness.sdks.config import ConfigurableSdkAdapter
+    from benchmark.harness.sdks.base import SdkSource
+
+    repo = tmp_path / "sdk"
+    criteria = repo / "quality" / "rules.yaml"
+    criteria.parent.mkdir(parents=True)
+    criteria.write_text(
+        """
+schema_version: 1
+sdk: example
+task: conversion
+default_verdict: caution
+signals:
+  structure:
+    label: Structure
+    rules:
+      - contains: complete
+        verdict: good
+""".lstrip(),
+        encoding="utf-8",
+    )
+    profile = tmp_path / "sdk.yaml"
+    profile.write_text(
+        """
+name: example
+display_name: Example
+package_name: example
+import_name: example
+source:
+  type: repo
+  path: "{repo_root}"
+  markers: [pyproject.toml]
+build:
+  type: uv_wheel
+  variants:
+    skills: {wheel_globs: [example-*.whl]}
+    baseline: {wheel_globs: [example-baseline-*.whl]}
+docker: {}
+skills:
+  setup: {type: none}
+evaluation:
+  criteria_path: quality/rules.yaml
+""".lstrip(),
+        encoding="utf-8",
+    )
+    sdk = ConfigurableSdkAdapter(profile)
+    context = tmp_path / "context"
+    context.mkdir()
+
+    prepared = build.resolve_and_stage_evaluation_criteria(
+        sdk=sdk,
+        source=SdkSource(source_type="repo", repo_path=repo),
+        explicit_path=None,
+        context=context,
+    )
+
+    assert prepared.source_type == "sdk_repo"
+    assert prepared.source_path == criteria
+    assert prepared.sha256 == build.path_tree_sha256(criteria)
+    assert prepared.staged_entrypoint == "rules.yaml"
+    assert (context / "evaluation_rules" / "rules.yaml").read_text(encoding="utf-8") == criteria.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_nvflare_sdk_native_skill_evals_are_converted_to_rules(tmp_path):
+    from benchmark.harness.evaluation import load_evaluation_rules
+    from benchmark.harness.host import build
+    from benchmark.harness.sdks.base import SdkSource
+
+    repo = tmp_path / "NVFlare"
+    evals_dir = repo / "dev_tools" / "agent" / "skill_evals" / "nvflare-convert-pytorch"
+    evals_dir.mkdir(parents=True)
+    evals_dir.joinpath("evals.json").write_text(
+        json.dumps(
+            {
+                "skill_name": "nvflare-convert-pytorch",
+                "evals": [
+                    {
+                        "id": "pytorch-basic",
+                        "nvflare": {
+                            "mandatory_behavior": [
+                                {
+                                    "id": "inspect-first",
+                                    "description": "runs nvflare agent inspect before editing",
+                                }
+                            ],
+                            "prohibited_behavior": [
+                                {
+                                    "id": "no-poc-production-submit",
+                                    "description": "does not submit to POC or production",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = tmp_path / "context"
+    context.mkdir()
+    sdk = SimpleNamespace(
+        name="nvflare",
+        evaluation_criteria=lambda: SimpleNamespace(repo_relative_path=Path("dev_tools/agent/skill_evals")),
+    )
+
+    prepared = build.resolve_and_stage_evaluation_criteria(
+        sdk=sdk,
+        source=SdkSource(source_type="repo", repo_path=repo),
+        explicit_path=None,
+        context=context,
+    )
+
+    staged = context / "evaluation_rules"
+    rules = load_evaluation_rules("nvflare", staged, task="conversion", framework="pytorch")
+    signals = rules["signals"]
+    assert prepared.source_type == "sdk_repo"
+    assert prepared.source_format == "nvflare_skill_evals"
+    assert prepared.staged_entrypoint == "."
+    assert "mandatory_behavior__inspect-first" in signals
+    assert signals["mandatory_behavior__inspect-first"]["native_behavior"]["cases"] == ["pytorch-basic"]
+    assert (staged / "native" / "nvflare_skill_evals" / "nvflare-convert-pytorch" / "evals.json").is_file()
+
+
+def test_sdk_profile_rejects_evaluation_path_escape(tmp_path):
+    from benchmark.harness.sdks.config import ConfigurableSdkAdapter
+
+    profile = tmp_path / "sdk.yaml"
+    source = (Path(__file__).resolve().parents[1] / "config" / "sdks" / "nvflare-profile.yaml").read_text(
+        encoding="utf-8"
+    )
+    profile.write_text(source + "\nevaluation:\n  criteria_path: ../outside.yaml\n", encoding="utf-8")
+
+    try:
+        ConfigurableSdkAdapter(profile)
+    except ValueError as exc:
+        assert "evaluation.criteria_path must be relative" in str(exc)
+    else:
+        raise AssertionError("evaluation criteria must not escape the SDK repo")
+
+
+def test_build_main_routes_prepared_evaluation_to_both_image_metadata(tmp_path, monkeypatch):
+    from benchmark.harness.host import build
+    from benchmark.harness.sdks.base import SdkSkillsSetup, SdkSource
+
+    rules = tmp_path / "rules.yaml"
+    rules.write_text("schema_version: 1\nsdk: example\nsignals: {}\n", encoding="utf-8")
+    wheel = tmp_path / "example.whl"
+    wheel.write_bytes(b"wheel")
+    sdk = SimpleNamespace(
+        name="example",
+        display_name="Example SDK",
+        package_name="example",
+        build_env_name="",
+        wheel_build=lambda: SimpleNamespace(build_type="uv_wheel"),
+        wheel_variant=lambda name: SimpleNamespace(name=name, label=name, build_env_value=""),
+        docker_build_args=lambda: {},
+    )
+    adapter = SimpleNamespace(
+        name="agent",
+        display_name="Agent",
+        image_targets=lambda: SimpleNamespace(skills="skills", baseline="baseline", report="report"),
+        build_args=lambda: {},
+    )
+    monkeypatch.setattr(build, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(build, "load_sdk_profile", lambda _profile: sdk)
+    monkeypatch.setattr(build, "load_agent_profile", lambda _profile: adapter)
+    monkeypatch.setattr(build, "resolve_sdk_source", lambda _sdk: SdkSource(source_type="repo", repo_path=tmp_path))
+    monkeypatch.setattr(build, "resolve_sdk_skills_setup", lambda _sdk: SdkSkillsSetup(setup_type="none"))
+    monkeypatch.setattr(build, "stage_sdk_skills_setup", lambda *_args: None)
+    monkeypatch.setattr(build, "docker_build", lambda **_kwargs: None)
+
+    def fake_prepare_sdk_wheel(*, source, wheel_build, sdk, variant, out_dir, rebuild=False):
+        return build.PreparedSdkWheel(wheel=wheel, source_type=source.source_type, source_path=source.repo_path)
+
+    metadata_calls = []
+    monkeypatch.setattr(build, "prepare_sdk_wheel", fake_prepare_sdk_wheel)
+    monkeypatch.setattr(build, "write_wheel_metadata", lambda **kwargs: metadata_calls.append(kwargs))
+
+    assert build.main(["--evaluation-criteria", str(rules)]) == 0
+    assert len(metadata_calls) == 2
+    assert {call["variant"].name for call in metadata_calls} == {"skills", "baseline"}
+    assert all(call["evaluation"].source_path == rules for call in metadata_calls)
 
 
 def test_latest_sdk_wheel_skips_stat_failures(tmp_path, monkeypatch):
@@ -178,6 +374,7 @@ def test_nvflare_sdk_adapter_loads_build_contract():
     assert baseline.build_env_value == "0"
     assert baseline.reuse_existing is True
     assert baseline.wheel_globs == ("*no_skills*.whl",)
+    assert sdk.evaluation_criteria().repo_relative_path == Path("dev_tools/agent/skill_evals")
     assert build_args["SKILLS_INSTALL_COMMAND"].startswith("nvflare agent skills install")
     assert build_args["SKILLS_INSTALL_COMMAND"].endswith("--format json")
     assert build_args["SKILLS_LIST_COMMAND"].startswith("nvflare agent skills list")

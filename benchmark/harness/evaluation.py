@@ -71,7 +71,7 @@ def evaluation_sdk_dir(sdk: str):
     return resources.files(EVALUATION_RULES_PACKAGE) / "config" / "evaluation" / sdk
 
 
-def _resolve_document_ref(sdk_dir, ref: str):
+def _resolve_document_ref(sdk_dir, ref: str, shared_dir=None):
     """A ``shared:`` ref resolves from the SDK-agnostic config/evaluation/common/
     layer; a plain path resolves from the SDK's own directory. Refs must stay
     inside the rules tree — no absolute paths or parent traversal."""
@@ -80,9 +80,20 @@ def _resolve_document_ref(sdk_dir, ref: str):
     if relative.startswith(("/", "\\")) or ".." in Path(relative).parts:
         raise ValueError(f"evaluation rules ref must be a relative path inside the rules tree: {ref!r}")
     if ref.startswith(SHARED_RULES_PREFIX):
-        shared_dir = resources.files(EVALUATION_RULES_PACKAGE) / "config" / "evaluation" / "common"
+        shared_dir = shared_dir or resources.files(EVALUATION_RULES_PACKAGE) / "config" / "evaluation" / "common"
         return shared_dir / relative
     return sdk_dir / relative
+
+
+def _external_rules_dirs(sdk: str, path: Path) -> tuple[Path, Path]:
+    """Resolve either an SDK directory or a rules root containing SDK/common directories."""
+
+    if (path / "index.yaml").is_file():
+        return path, path.parent / "common"
+    sdk_dir = path / sdk
+    if (sdk_dir / "index.yaml").is_file():
+        return sdk_dir, path / "common"
+    raise ValueError(f"evaluation criteria directory must contain index.yaml or {sdk}/index.yaml: {path}")
 
 
 def _parse_document(text: str, source: str) -> dict[str, Any]:
@@ -160,9 +171,14 @@ def _load_rules_cached(
     strict_selectors: bool,
 ) -> Mapping[str, Any]:
     if path_text is not None:
-        # Explicit rules file: a single self-contained document (no composition).
-        return _parse_manifest(Path(path_text).read_text(encoding="utf-8"), path_text)
-    sdk_dir = evaluation_sdk_dir(sdk)
+        explicit = Path(path_text)
+        if explicit.is_file():
+            # Explicit rules file: a single self-contained document (no composition).
+            return _parse_manifest(explicit.read_text(encoding="utf-8"), path_text)
+        sdk_dir, shared_dir = _external_rules_dirs(sdk, explicit)
+    else:
+        sdk_dir = evaluation_sdk_dir(sdk)
+        shared_dir = resources.files(EVALUATION_RULES_PACKAGE) / "config" / "evaluation" / "common"
     manifest_resource = sdk_dir / "index.yaml"
     manifest = _parse_manifest(manifest_resource.read_text(encoding="utf-8"), str(manifest_resource))
     tasks = manifest.get("tasks") if isinstance(manifest.get("tasks"), Mapping) else {}
@@ -183,7 +199,7 @@ def _load_rules_cached(
     if not isinstance(compose_refs, list):
         compose_refs = [task_entry.get("common")] if task_entry.get("common") else []
     for ref in compose_refs:
-        document_resource = _resolve_document_ref(sdk_dir, str(ref))
+        document_resource = _resolve_document_ref(sdk_dir, str(ref), shared_dir)
         _merge_document(
             composed, _parse_document(document_resource.read_text(encoding="utf-8"), str(document_resource))
         )
@@ -206,7 +222,7 @@ def _load_rules_cached(
                     f"registered values: {sorted(map(str, values))}"
                 )
             continue
-        overlay_resource = _resolve_document_ref(sdk_dir, str(values[selected]))
+        overlay_resource = _resolve_document_ref(sdk_dir, str(values[selected]), shared_dir)
         _merge_document(composed, _parse_document(overlay_resource.read_text(encoding="utf-8"), str(overlay_resource)))
         applied[str(dimension)] = selected
     if strict_selectors and selectors:
@@ -255,12 +271,47 @@ def load_evaluation_rules(
     return copy.deepcopy(_load_rules_cached(sdk, task, selector_items, path_text, strict_selectors))
 
 
-def available_tasks(sdk: str) -> list[str]:
-    sdk_dir = evaluation_sdk_dir(sdk)
+def available_tasks(sdk: str, path: str | Path | None = None) -> list[str]:
+    if path:
+        candidate = Path(path).resolve()
+        if candidate.is_file():
+            document = _parse_manifest(candidate.read_text(encoding="utf-8"), str(candidate))
+            task = document.get("task")
+            return [str(task)] if task else []
+        sdk_dir, _shared_dir = _external_rules_dirs(sdk, candidate)
+    else:
+        sdk_dir = evaluation_sdk_dir(sdk)
     manifest_resource = sdk_dir / "index.yaml"
     manifest = _parse_manifest(manifest_resource.read_text(encoding="utf-8"), str(manifest_resource))
     tasks = manifest.get("tasks") if isinstance(manifest.get("tasks"), Mapping) else {}
     return sorted(str(name) for name in tasks)
+
+
+def validate_evaluation_rules_source(sdk: str, path: str | Path) -> None:
+    """Validate an explicit manifest/file and every declared task composition."""
+
+    candidate = Path(path).resolve()
+    if not candidate.exists():
+        raise ValueError(f"evaluation criteria path does not exist: {candidate}")
+    tasks = available_tasks(sdk, candidate)
+    if candidate.is_file():
+        load_evaluation_rules(sdk, candidate)
+        return
+    sdk_dir, _shared_dir = _external_rules_dirs(sdk, candidate)
+    manifest_path = sdk_dir / "index.yaml"
+    manifest = _parse_manifest(manifest_path.read_text(encoding="utf-8"), str(manifest_path))
+    task_entries = manifest.get("tasks") if isinstance(manifest.get("tasks"), Mapping) else {}
+    for task in tasks:
+        load_evaluation_rules(sdk, candidate, task=task)
+        entry = task_entries.get(task)
+        overlays = entry.get("overlays") if isinstance(entry, Mapping) else None
+        if not isinstance(overlays, Mapping):
+            continue
+        for dimension, values in overlays.items():
+            if not isinstance(values, Mapping):
+                continue
+            for value in values:
+                load_evaluation_rules(sdk, candidate, task=task, selectors={str(dimension): str(value)})
 
 
 def _evidence_numbers(evidence: str) -> list[float]:

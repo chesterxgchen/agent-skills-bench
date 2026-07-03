@@ -23,7 +23,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from .base import SdkAdapter, SdkSkillsSetup, SdkSource, SdkWheelBuild, SdkWheelVariant
+from .base import SdkAdapter, SdkEvaluationCriteria, SdkSkillsSetup, SdkSource, SdkWheelBuild, SdkWheelVariant
 
 
 def required_mapping(data: Mapping[str, Any], key: str, config_path: Path) -> dict[str, Any]:
@@ -98,6 +98,7 @@ class SdkConfig:
     build: dict[str, Any]
     docker: dict[str, Any]
     skills: dict[str, Any]
+    evaluation: dict[str, Any]
 
     @classmethod
     def load(cls, config_path: Path) -> "SdkConfig":
@@ -131,6 +132,14 @@ class SdkConfig:
         docker = required_mapping(data, "docker", config_path)
         skills = required_mapping(data, "skills", config_path)
         validate_skills_setup(skills, config_path)
+        evaluation = data.get("evaluation") or {}
+        if not isinstance(evaluation, dict):
+            raise ValueError(f"{config_path}: evaluation must be a mapping")
+        criteria_path = str(evaluation.get("criteria_path") or "")
+        if criteria_path:
+            criteria = Path(criteria_path)
+            if criteria.is_absolute() or ".." in criteria.parts:
+                raise ValueError(f"{config_path}: evaluation.criteria_path must be relative to the SDK repo")
         variants = required_mapping(build, "variants", config_path)
         for variant_name in ("skills", "baseline"):
             variant = required_mapping(variants, variant_name, config_path)
@@ -154,6 +163,7 @@ class SdkConfig:
             build=build,
             docker=docker,
             skills=skills,
+            evaluation=evaluation,
         )
 
 
@@ -290,6 +300,10 @@ class ConfigurableSdkAdapter(SdkAdapter):
             list_output=str(raw.get("list_output", "skills_list.json")),
             expected_source=str(raw.get("expected_source", "local_sdk_wheel")),
         )
+
+    def evaluation_criteria(self) -> SdkEvaluationCriteria:
+        path = str(self._cfg.evaluation.get("criteria_path") or "").strip()
+        return SdkEvaluationCriteria(repo_relative_path=Path(path) if path else None)
 
     def docker_build_args(self) -> dict[str, str]:
         setup = self.skills_setup(repo_root=Path(), home=Path.home())

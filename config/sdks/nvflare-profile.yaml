@@ -22,6 +22,10 @@
 # - skills.setup.install_output defaults to skills_build_install.json.
 # - skills.setup.list_output defaults to skills_list.json.
 # - skills.setup.expected_source defaults to local_sdk_wheel.
+# - evaluation.criteria_path is an optional repo-relative path to evaluation
+#   criteria. It can be a harness-compatible YAML rules file/directory; NVFLARE
+#   also supports the SDK-native dev_tools/agent/skill_evals directory. When it
+#   is absent, bin/build.sh requires --evaluation-criteria.
 
 name: nvflare
 display_name: NVIDIA FLARE
@@ -68,3 +72,6 @@ skills:
     install_output: skills_build_install.json
     list_output: skills_list.json
     expected_source: local_sdk_wheel
+
+evaluation:
+  criteria_path: dev_tools/agent/skill_evals

@@ -1706,9 +1706,29 @@ def _round_metric_progression(run: dict[str, Any]) -> str:
     return "not captured"
 
 
+def _native_behavior_profile(run: dict[str, Any]) -> dict[str, str]:
+    record = run_record(run)
+    if not isinstance(record, dict):
+        return {}
+    profile = {}
+    for category in ("mandatory_behavior", "prohibited_behavior", "optional_behavior"):
+        behaviors = record.get(category)
+        if not isinstance(behaviors, dict):
+            continue
+        for behavior_id, entry in behaviors.items():
+            if not behavior_id:
+                continue
+            if not isinstance(entry, dict):
+                entry = {}
+            status = str(entry.get("status") or "missing")
+            evidence = str(entry.get("evidence") or "No behavior evidence supplied.")
+            profile[f"{category}__{behavior_id}"] = f"status={status}; {evidence}"
+    return profile
+
+
 def conversion_quality_profile(run: dict[str, Any]) -> dict[str, str]:
     text = _workspace_text(run)
-    return {
+    profile = {
         "training_control": _detect_training_control_path(text),
         "partitioning": _detect_partitioning(text),
         "class_weighting": _detect_class_weighting(text),
@@ -1717,6 +1737,8 @@ def conversion_quality_profile(run: dict[str, Any]) -> dict[str, str]:
         "execution_model": _detect_execution_model(text),
         "metric_progression": _round_metric_progression(run),
     }
+    profile.update(_native_behavior_profile(run))
+    return profile
 
 
 def _target_framework(run: dict[str, Any] | None) -> str:
@@ -1730,13 +1752,31 @@ def _target_framework(run: dict[str, Any] | None) -> str:
     return ""
 
 
+def _evaluation_rules_path(run: dict[str, Any] | None) -> Path | None:
+    if not isinstance(run, dict):
+        return None
+    path = run.get("evaluation_rules_path")
+    candidate = Path(path) if isinstance(path, (str, Path)) else None
+    return candidate if candidate and candidate.exists() else None
+
+
+def _conversion_evaluation_rules(run: dict[str, Any] | None = None):
+    framework = _target_framework(run)
+    return load_evaluation_rules(
+        "nvflare",
+        _evaluation_rules_path(run),
+        task="conversion",
+        framework=framework or None,
+    )
+
+
 def conversion_quality_score(signal: str, value: str, run: dict[str, Any] | None = None) -> str:
     # The verdict rules are standard evaluation input (benchmark/config/evaluation/nvflare/,
     # composed as manifest -> task common -> framework overlay) applied through the
     # SDK-neutral scorer, so external tools can score the same signal profile
     # outside the reporting engine and get identical verdicts.
     framework = _target_framework(run)
-    rules = load_evaluation_rules("nvflare", task="conversion", framework=framework or None)
+    rules = _conversion_evaluation_rules(run)
     return score_signal(rules, signal, value, {"target_framework": framework})
 
 
@@ -2344,14 +2384,14 @@ CODE_QUALITY_ROWS = (
 CODE_QUALITY_CONTEXT_ROWS = (("API pattern", _api_pattern_signal),)
 
 
-def _conversion_quality_rows_from_rules() -> tuple[tuple[str, str], ...]:
+def _conversion_quality_rows_from_rules(run: dict[str, Any] | None = None) -> tuple[tuple[str, str], ...]:
     """One report row per evaluation criterion in benchmark/config/evaluation/nvflare.yaml.
 
     The rules file is the single source of truth for the criteria list: a
     criterion added there appears in the Generated Code Quality table even
     before a detector captures evidence for it (rendered as not captured)."""
 
-    signals = load_evaluation_rules("nvflare").get("signals")
+    signals = _conversion_evaluation_rules(run).get("signals")
     rows: list[tuple[str, str]] = []
     for key, entry in (signals or {}).items():
         label = entry.get("label") if isinstance(entry, dict) else None
@@ -2362,8 +2402,8 @@ def _conversion_quality_rows_from_rules() -> tuple[tuple[str, str], ...]:
 CONVERSION_QUALITY_ROWS = _conversion_quality_rows_from_rules()
 
 
-def _code_quality_points() -> dict[str, float]:
-    return verdict_points(load_evaluation_rules("nvflare"))
+def _code_quality_points(run: dict[str, Any] | None = None) -> dict[str, float]:
+    return verdict_points(_conversion_evaluation_rules(run))
 
 
 # Module-level view kept for callers/tests; sourced from the evaluation rules file.
@@ -2376,7 +2416,7 @@ def generated_code_quality_assessments(run: dict[str, Any]) -> list[tuple[str, s
         evidence = evidence_getter(run)
         rows.append((label, assessment_getter(evidence), evidence))
     profile = conversion_quality_profile(run)
-    for key, label in CONVERSION_QUALITY_ROWS:
+    for key, label in _conversion_quality_rows_from_rules(run):
         evidence = profile.get(key, "not captured")
         rows.append((label, conversion_quality_score(key, evidence, run), evidence))
     return rows
@@ -2384,13 +2424,14 @@ def generated_code_quality_assessments(run: dict[str, Any]) -> list[tuple[str, s
 
 def generated_code_quality_overall(run: dict[str, Any]) -> str:
     assessments = generated_code_quality_assessments(run)
-    known = [(status, evidence) for _, status, evidence in assessments if status in CODE_QUALITY_POINTS]
+    points_by_status = _code_quality_points(run)
+    known = [(status, evidence) for _, status, evidence in assessments if status in points_by_status]
     total = len(assessments)
     if not known:
         return "unknown: no generated-code evidence captured"
-    points = sum(CODE_QUALITY_POINTS[status] for status, _ in known)
+    points = sum(points_by_status[status] for status, _ in known)
     score_ratio = points / total
-    thresholds = overall_thresholds(load_evaluation_rules("nvflare"))
+    thresholds = overall_thresholds(_conversion_evaluation_rules(run))
     if score_ratio >= thresholds.get("good", 0.8):
         label = "good"
     elif score_ratio >= thresholds.get("caution", 0.5):
@@ -2406,10 +2447,11 @@ def generated_code_quality_score(run: dict[str, Any]) -> float | None:
     assessments = generated_code_quality_assessments(run)
     if not assessments:
         return None
-    known = [status for _, status, _ in assessments if status in CODE_QUALITY_POINTS]
+    points_by_status = _code_quality_points(run)
+    known = [status for _, status, _ in assessments if status in points_by_status]
     if not known:
         return None
-    return sum(CODE_QUALITY_POINTS[status] for status in known) / len(assessments)
+    return sum(points_by_status[status] for status in known) / len(assessments)
 
 
 # --- NVFLARE runtime-path log parsers (E3): consumed by the report plugin's

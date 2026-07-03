@@ -334,6 +334,32 @@ Then build with:
 ./bin/build.sh --sdk-profile <sdk-profile>
 ```
 
+Evaluation criteria are build inputs. Prefer an SDK-profile path relative to
+the checkout supplied by `--sdk-repo`:
+
+```yaml
+evaluation:
+  criteria_path: path/inside/sdk/repo/evaluation
+```
+
+The path may identify one self-contained YAML file, a composed rules directory
+containing `index.yaml` (or `<sdk>/index.yaml`), or an SDK-native criteria
+directory when the harness knows how to convert it. The default NVFLARE profile
+uses `dev_tools/agent/skill_evals`; build preparation converts those
+`*/evals.json` files into a captured harness rules bundle and keeps the source
+JSON alongside it for audit. Override or supply the input directly when the SDK
+profile has no repo-relative path:
+
+```bash
+./bin/build.sh \
+  --sdk-repo /path/to/sdk \
+  --evaluation-criteria /path/to/evaluation-rules
+```
+
+The build validates and hashes the resolved criteria, bakes them into both
+runtime images, and each run captures the bundle under `evaluation_rules/`.
+Report replay uses that captured copy rather than rereading the live SDK repo.
+
 Run the benchmark tests after adding the plugin:
 
 ```bash
@@ -571,6 +597,7 @@ records/agent=<agent>/model=<model>/workflow=<workflow>/job=<job>/mode=with_skil
 |-- agent_usage.json
 |-- benchmark_record.json
 |-- container_exit_code.json
+|-- evaluation_rules/
 |-- prompt.txt
 |-- prompt_metadata.json
 |-- records/
@@ -675,6 +702,8 @@ Use CLI flags for normal runs:
 | `--output-dir` | Exact output directory for this run or comparison. |
 | `--sdk-profile` | SDK build profile for `bin/build.sh`. Defaults to `nvflare-profile`. |
 | `--agent` | Agent profile name or YAML path for `bin/build.sh`. Defaults to `codex`. Also accepted as `--agent-profile`. |
+| `--sdk-repo` | SDK source checkout used for wheel builds and repo-relative evaluation criteria. |
+| `--evaluation-criteria` | Explicit evaluation criteria path; accepts harness YAML/rules directories and supported SDK-native layouts, overriding the SDK-profile repo path. |
 
 Use environment variables only for provider-native credentials or compatibility
 with older scripts:

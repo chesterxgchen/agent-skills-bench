@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -26,10 +27,14 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from ..agents.base import AgentAdapter
 from ..agents.config import ConfigurableAgentAdapter
 from ..agents.registry import DEFAULT_BENCHMARK_AGENT, load_agent_adapter
+from ..evaluation import validate_evaluation_rules_source
 from ..profile_metadata import build_profile_metadata_block
 from ..sdks.base import SdkAdapter, SdkSkillsSetup, SdkSource, SdkWheelBuild, SdkWheelVariant
 from ..sdks.capture_spec import resolve_capture_spec
@@ -53,6 +58,15 @@ class PreparedSdkWheel:
     wheel: Path
     source_type: str
     source_path: Path
+
+
+@dataclass(frozen=True)
+class PreparedEvaluationCriteria:
+    source_path: Path
+    source_type: str
+    sha256: str
+    staged_entrypoint: str
+    source_format: str = "harness_yaml"
 
 
 def looks_like_profile_path(value: str) -> bool:
@@ -114,8 +128,10 @@ def repo_has_markers(path: Path, markers: tuple[str, ...]) -> bool:
 
 
 def resolve_sdk_source(sdk: SdkAdapter) -> SdkSource:
-    source = sdk.source(repo_root=REPO_ROOT, home=Path.home())
+    source = sdk.source(repo_root=REPO_ROOT or Path(), home=Path.home())
     if source.source_type == "repo":
+        if REPO_ROOT is None:
+            raise SystemExit("SDK repo not found: pass --sdk-repo /path/to/<sdk-checkout> or set SDK_REPO.")
         if source.repo_path is None:
             raise SystemExit(f"{sdk.display_name} SDK profile source.type=repo requires source.path")
         repo = canonical_dir(source.repo_path, "SDK profile source.path")
@@ -212,8 +228,165 @@ def copy_directory_contents(src: Path, dst: Path) -> None:
             shutil.copy2(child, target)
 
 
+def nvflare_skill_eval_files(path: Path) -> list[Path]:
+    """NVFLARE SDK-native eval criteria layout: skill_evals/<skill>/evals.json."""
+
+    if not path.is_dir():
+        return []
+    return sorted(candidate for candidate in path.glob("*/evals.json") if candidate.is_file())
+
+
+def _evaluation_task_for_nvflare_skill(skill_name: str) -> str:
+    if "-convert-" in skill_name:
+        return "conversion"
+    if "-diagnose-" in skill_name:
+        return "diagnosis"
+    if skill_name.endswith("-orient") or "-orient" in skill_name:
+        return "orientation"
+    return "general"
+
+
+def _native_behavior_rules(category: str) -> list[dict[str, Any]]:
+    if category == "optional_behavior":
+        return [
+            {"contains": "status=pass", "verdict": "good"},
+            {"contains": "status=fail", "verdict": "caution"},
+            {"contains_any": ["status=missing", "status=not_applicable"], "verdict": "unknown"},
+        ]
+    return [
+        {"contains": "status=pass", "verdict": "good"},
+        {"contains_any": ["status=fail", "status=missing"], "verdict": "bad"},
+        {"contains": "status=not_applicable", "verdict": "unknown"},
+    ]
+
+
+def _native_behavior_label(category: str, description: str, behavior_id: str) -> str:
+    prefix = {
+        "mandatory_behavior": "Mandatory behavior",
+        "prohibited_behavior": "Prohibited behavior",
+        "optional_behavior": "Optional behavior",
+    }.get(category, category.replace("_", " ").title())
+    detail = description.strip() or behavior_id
+    return f"{prefix}: {detail}"
+
+
+def _load_nvflare_skill_eval_documents(path: Path) -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = []
+    for evals_path in nvflare_skill_eval_files(path):
+        try:
+            payload = json.loads(evals_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{evals_path}: invalid JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"{evals_path}: evals.json must contain a JSON object")
+        skill_name = str(payload.get("skill_name") or evals_path.parent.name)
+        evals = payload.get("evals")
+        if not isinstance(evals, list):
+            raise ValueError(f"{evals_path}: evals must be a list")
+        documents.append({"path": evals_path, "skill_name": skill_name, "evals": evals})
+    if not documents:
+        raise ValueError(f"no NVFLARE evals.json files found under {path}")
+    return documents
+
+
+def _native_nvflare_behavior_signals(documents: list[dict[str, Any]], task: str) -> dict[str, Any]:
+    signals: dict[str, Any] = {}
+    for document in documents:
+        skill_name = str(document.get("skill_name") or "")
+        if _evaluation_task_for_nvflare_skill(skill_name) != task:
+            continue
+        for eval_case in document.get("evals") or []:
+            if not isinstance(eval_case, dict):
+                continue
+            case_id = str(eval_case.get("id") or "")
+            nvflare = eval_case.get("nvflare") if isinstance(eval_case.get("nvflare"), dict) else {}
+            for category in ("mandatory_behavior", "prohibited_behavior", "optional_behavior"):
+                behaviors = nvflare.get(category) if isinstance(nvflare, dict) else None
+                if not isinstance(behaviors, list):
+                    continue
+                for behavior in behaviors:
+                    if not isinstance(behavior, dict) or not behavior.get("id"):
+                        continue
+                    behavior_id = str(behavior["id"]).strip()
+                    if not behavior_id:
+                        continue
+                    key = f"{category}__{behavior_id}"
+                    entry = signals.setdefault(
+                        key,
+                        {
+                            "label": _native_behavior_label(
+                                category,
+                                str(behavior.get("description") or ""),
+                                behavior_id,
+                            ),
+                            "native_behavior": {
+                                "category": category,
+                                "id": behavior_id,
+                                "skills": [],
+                                "cases": [],
+                            },
+                            "rules": _native_behavior_rules(category),
+                        },
+                    )
+                    metadata = entry.setdefault("native_behavior", {})
+                    if skill_name and skill_name not in metadata.setdefault("skills", []):
+                        metadata["skills"].append(skill_name)
+                    if case_id and case_id not in metadata.setdefault("cases", []):
+                        metadata["cases"].append(case_id)
+    return signals
+
+
+def _write_yaml(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def stage_nvflare_skill_evals_as_evaluation_rules(source: Path, target: Path) -> None:
+    documents = _load_nvflare_skill_eval_documents(source)
+    packaged_rules = SCRIPT_DIR / "benchmark" / "config" / "evaluation"
+    copy_directory_contents(packaged_rules, target)
+
+    native_target = target / "native" / "nvflare_skill_evals"
+    native_target.mkdir(parents=True, exist_ok=True)
+    for document in documents:
+        evals_path = document["path"]
+        relative = evals_path.relative_to(source)
+        destination = native_target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(evals_path, destination)
+
+    native_signals = _native_nvflare_behavior_signals(documents, "conversion")
+    if native_signals:
+        _write_yaml(
+            target / "nvflare" / "tasks" / "conversion" / "native_skill_evals.yaml",
+            {
+                "schema_version": 1,
+                "source_format": "nvflare_skill_evals",
+                "source_path": "native/nvflare_skill_evals",
+                "signals": native_signals,
+            },
+        )
+        index_path = target / "nvflare" / "index.yaml"
+        index = yaml.safe_load(index_path.read_text(encoding="utf-8")) or {}
+        conversion = (index.get("tasks") or {}).get("conversion") or {}
+        compose = conversion.get("compose")
+        if not isinstance(compose, list):
+            compose = [conversion.get("common")] if conversion.get("common") else []
+        native_ref = "tasks/conversion/native_skill_evals.yaml"
+        if native_ref not in compose:
+            compose.append(native_ref)
+        conversion["compose"] = compose
+        index.setdefault("tasks", {})["conversion"] = conversion
+        index.setdefault("native_sources", {})["nvflare_skill_evals"] = {
+            "path": "native/nvflare_skill_evals",
+            "skill_count": len(documents),
+            "conversion_signal_count": len(native_signals),
+        }
+        _write_yaml(index_path, index)
+
+
 def resolve_sdk_skills_setup(sdk: SdkAdapter) -> SdkSkillsSetup:
-    setup = sdk.skills_setup(repo_root=REPO_ROOT, home=Path.home())
+    setup = sdk.skills_setup(repo_root=REPO_ROOT or Path(), home=Path.home())
     if setup.setup_type == "copy":
         if setup.source_path is None:
             raise SystemExit(f"{sdk.display_name} SDK profile skills.setup.source_path is required")
@@ -239,6 +412,81 @@ def stage_sdk_skills_setup(context: Path, setup: SdkSkillsSetup) -> None:
         raise SystemExit("SDK profile skills.setup.source_path is required for copy setup")
     copy_directory_contents(setup.source_path, target)
     emit(f"Using SDK skills folder: {setup.source_path}")
+
+
+def path_tree_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    files = [path] if path.is_file() else sorted(candidate for candidate in path.rglob("*") if candidate.is_file())
+    for candidate in files:
+        relative = candidate.name if path.is_file() else candidate.relative_to(path).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        with candidate.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def resolve_and_stage_evaluation_criteria(
+    *,
+    sdk: SdkAdapter,
+    source: SdkSource,
+    explicit_path: str | None,
+    context: Path,
+) -> PreparedEvaluationCriteria:
+    if explicit_path:
+        candidate = Path(explicit_path).expanduser().resolve()
+        source_type = "explicit"
+    else:
+        relative = sdk.evaluation_criteria().repo_relative_path
+        if source.repo_path is None or relative is None:
+            raise SystemExit(
+                "Evaluation criteria not found: pass --evaluation-criteria /path/to/rules.yaml (or rules directory), "
+                "or configure evaluation.criteria_path in the SDK profile for use with --sdk-repo."
+            )
+        candidate = (source.repo_path / relative).resolve()
+        try:
+            candidate.relative_to(source.repo_path)
+        except ValueError as exc:
+            raise SystemExit(f"SDK evaluation criteria path escapes the SDK repo: {relative}") from exc
+        source_type = "sdk_repo"
+    if not candidate.exists() or not (candidate.is_file() or candidate.is_dir()):
+        raise SystemExit(f"Evaluation criteria path does not exist: {candidate}")
+    if candidate.is_symlink() or (candidate.is_dir() and any(path.is_symlink() for path in candidate.rglob("*"))):
+        raise SystemExit(f"Evaluation criteria must not contain symbolic links: {candidate}")
+
+    target = context / "evaluation_rules"
+    clean_directory(target)
+    source_format = "harness_yaml"
+    if sdk.name == "nvflare" and nvflare_skill_eval_files(candidate):
+        staged_entrypoint = "."
+        source_format = "nvflare_skill_evals"
+        try:
+            stage_nvflare_skill_evals_as_evaluation_rules(candidate, target)
+            validate_evaluation_rules_source(sdk.name, target)
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            raise SystemExit(f"Invalid evaluation criteria at {candidate}: {exc}") from exc
+    else:
+        try:
+            validate_evaluation_rules_source(sdk.name, candidate)
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            raise SystemExit(f"Invalid evaluation criteria at {candidate}: {exc}") from exc
+        if candidate.is_file():
+            staged_entrypoint = "rules.yaml"
+            shutil.copy2(candidate, target / staged_entrypoint)
+        else:
+            staged_entrypoint = "."
+            copy_directory_contents(candidate, target)
+    staged_source = target / staged_entrypoint if candidate.is_file() else target
+    prepared = PreparedEvaluationCriteria(
+        source_path=candidate,
+        source_type=source_type,
+        source_format=source_format,
+        sha256=path_tree_sha256(staged_source),
+        staged_entrypoint=staged_entrypoint,
+    )
+    emit(f"Using evaluation criteria: {candidate} ({source_type}, sha256={prepared.sha256[:12]})")
+    return prepared
 
 
 def stage_configured_wheel(
@@ -365,6 +613,7 @@ def write_wheel_metadata(
     wheel_build: SdkWheelBuild,
     prepared: PreparedSdkWheel,
     out_dir: Path,
+    evaluation: PreparedEvaluationCriteria,
 ) -> None:
     # The §4.3 identity block (schema_version, sdk_name, benchmark_profile_id,
     # report_plugin_id, capture_spec_version) is built in one place, so build
@@ -381,6 +630,13 @@ def write_wheel_metadata(
         "source_path": str(prepared.source_path),
         "source_type": prepared.source_type,
         "variant": variant.name,
+        "evaluation_criteria": {
+            "source_type": evaluation.source_type,
+            "source_format": evaluation.source_format,
+            "source_path": str(evaluation.source_path),
+            "sha256": evaluation.sha256,
+            "entrypoint": evaluation.staged_entrypoint,
+        },
         # Declarative capture spec (§4.1): generic in-container Stage-3 code
         # applies this serialized data instead of hardcoding SDK rules.
         "capture_spec": resolve_capture_spec(sdk.name).to_payload(),
@@ -408,6 +664,7 @@ def prepare_build_context() -> Path:
         (context / "dist" / "skills").mkdir(parents=True)
         (context / "dist" / "baseline").mkdir(parents=True)
         (context / "sdk_skills").mkdir(parents=True)
+        (context / "evaluation_rules").mkdir(parents=True)
         shutil.copy2(SCRIPT_DIR / "docker" / "Dockerfile", context / "Dockerfile")
         copy_harness_package(context)
         shutil.copy2(SCRIPT_DIR / "docker" / "build_context.dockerignore", context / ".dockerignore")
@@ -491,15 +748,13 @@ def main(argv: list[str] | None = None) -> int:
         "Default: reuse the existing wheel, building only when none is found.",
     )
     parser.add_argument("--no-cache", action="store_true", help="Pass --no-cache to docker build.")
+    parser.add_argument(
+        "--evaluation-criteria",
+        help="Harness evaluation YAML file or composed rules directory; overrides SDK-profile repo resolution.",
+    )
     parser.add_argument("--uv-image", default=DEFAULT_UV_IMAGE, help="uv image used as the Docker uv source stage.")
     parser.add_argument("--node-image", default=DEFAULT_NODE_IMAGE, help="Node runtime image used as the Docker base.")
     args = parser.parse_args(argv)
-
-    if REPO_ROOT is None:
-        raise SystemExit(
-            "SDK repo not found: pass --sdk-repo /path/to/<sdk-checkout> or set SDK_REPO. "
-            "The benchmark image is built from an SDK source checkout (e.g. NVFLARE)."
-        )
 
     try:
         adapter = load_agent_profile(args.agent_profile)
@@ -536,6 +791,12 @@ def main(argv: list[str] | None = None) -> int:
                 emit(f"Using SDK repo: {source.repo_path}")
             else:
                 emit("Using SDK wheels from profile.")
+            evaluation = resolve_and_stage_evaluation_criteria(
+                sdk=sdk,
+                source=source,
+                explicit_path=args.evaluation_criteria,
+                context=context,
+            )
 
             if build_skills_image:
                 skills_prepared = prepare_sdk_wheel(
@@ -553,6 +814,7 @@ def main(argv: list[str] | None = None) -> int:
                     wheel_build=wheel_build,
                     prepared=skills_prepared,
                     out_dir=context / "dist" / "skills",
+                    evaluation=evaluation,
                 )
 
             if build_baseline_image:
@@ -571,6 +833,7 @@ def main(argv: list[str] | None = None) -> int:
                     wheel_build=wheel_build,
                     prepared=baseline_prepared,
                     out_dir=context / "dist" / "baseline",
+                    evaluation=evaluation,
                 )
 
         emit(f"Docker build context: {context}")

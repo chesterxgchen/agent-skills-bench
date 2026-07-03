@@ -14,3 +14,5 @@ benchmark/**/*.pyc
 !dist/**
 !sdk_skills/
 !sdk_skills/**
+!evaluation_rules/
+!evaluation_rules/**

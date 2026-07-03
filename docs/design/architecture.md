@@ -193,6 +193,20 @@ copied into each `mode_dir`), but the durable concept is a *profile/evidence
 descriptor* — promote it to `benchmark_profile_metadata.json` long term. Readers
 should treat the **block, not the filename**, as the contract.
 
+### 4.4 Evaluation criteria input
+
+Evaluation policy follows the same capture-before-interpretation rule. An SDK
+profile may declare `evaluation.criteria_path`, relative to the checkout
+provided by `--sdk-repo`; `--evaluation-criteria` is the explicit override and
+the required source when no repo-relative path is available. Build preparation
+normalizes the source into a harness rules bundle, validates the composition,
+hashes it, and stages it into both images. Sources can be native harness YAML
+or SDK-native criteria layouts with an explicit converter; NVFLARE's
+`dev_tools/agent/skill_evals/*/evals.json` is converted this way. Stage 3
+captures the resolved bundle under each mode's `evaluation_rules/`, and Stage 4
+scores from that captured copy. Report replay therefore never rereads a mutable
+SDK checkout. Comparison modes must carry the same criteria hash.
+
 ---
 
 ## 5. Contract B — Evidence

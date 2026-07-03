@@ -55,6 +55,11 @@ class SdkWheelBuild:
     build_type: str
 
 
+@dataclass(frozen=True)
+class SdkEvaluationCriteria:
+    repo_relative_path: Path | None = None
+
+
 class SdkAdapter(ABC):
     """Contract for SDK-specific Docker build mechanics.
 
@@ -103,6 +108,11 @@ class SdkAdapter(ABC):
     @abstractmethod
     def skills_setup(self, *, repo_root: Path, home: Path) -> SdkSkillsSetup:
         raise NotImplementedError
+
+    def evaluation_criteria(self) -> SdkEvaluationCriteria:
+        """Optional SDK-repository evaluation input contract."""
+
+        return SdkEvaluationCriteria()
 
     @abstractmethod
     def docker_build_args(self) -> dict[str, str]:

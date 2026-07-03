@@ -343,6 +343,10 @@ def persist_container_runtime_metadata(config: AgentRunConfig, launch: AgentLaun
         write_json(config.result_dir / "image_build_metadata.json", build_metadata)
     if sdk_wheel_metadata:
         write_json(config.result_dir / "sdk_wheel_metadata.json", sdk_wheel_metadata)
+    evaluation_source = Path("/workspace/evaluation_rules")
+    evaluation_destination = config.result_dir / "evaluation_rules"
+    if evaluation_source.is_dir():
+        shutil.copytree(evaluation_source, evaluation_destination, dirs_exist_ok=True)
 
     runtime_path = config.result_dir / "runtime_image.json"
     runtime_metadata = load_json(runtime_path, {}) or {}

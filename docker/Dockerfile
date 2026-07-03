@@ -99,6 +99,7 @@ RUN python --version && \
 
 COPY config/ /workspace/config/
 COPY benchmark/ /workspace/benchmark/
+COPY evaluation_rules/ /workspace/evaluation_rules/
 
 # Bake agent settings before switching to non-root. Claude Code merges settings.json
 # from CLAUDE_CONFIG_DIR; placing an explicit allow list here ensures Bash and other

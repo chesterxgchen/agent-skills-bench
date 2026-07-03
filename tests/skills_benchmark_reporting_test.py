@@ -1244,10 +1244,93 @@ def test_evaluation_rules_score_profile_outside_reporting_engine(tmp_path):
     assert score_profile(load_evaluation_rules("nvflare"), loss_profile)["metric_progression"] == "good"
     rising_loss = {"metric_progression": "loss 0.5000 -> 0.9000"}
     assert score_profile(load_evaluation_rules("nvflare"), rising_loss)["metric_progression"] == "bad"
-
     profile_path = tmp_path / "profile.json"
     profile_path.write_text(json.dumps(profile), encoding="utf-8")
     assert main(["--sdk", "nvflare", "--profile", str(profile_path)]) == 0
+
+
+def test_nvflare_logic_uses_captured_evaluation_rules(tmp_path):
+    from benchmark.harness.sdks.nvflare import _logic
+
+    rules = tmp_path / "captured-rules.yaml"
+    rules.write_text(
+        """
+schema_version: 1
+sdk: nvflare
+task: conversion
+default_verdict: caution
+scoring:
+  points: {good: 1.0, bad: 0.0}
+  overall_thresholds: {good: 0.8, caution: 0.5}
+signals:
+  training_control:
+    label: Captured training policy
+    rules:
+      - contains: manual client api loop
+        verdict: bad
+""".lstrip(),
+        encoding="utf-8",
+    )
+    run = {"framework": "pytorch", "evaluation_rules_path": rules}
+
+    assert _logic.conversion_quality_score("training_control", "manual client api loop", run) == "bad"
+    assert _logic._conversion_quality_rows_from_rules(run) == (("training_control", "Captured training policy"),)
+
+
+def test_nvflare_logic_scores_native_behavior_signals_from_record(tmp_path):
+    from benchmark.harness.sdks.nvflare import _logic
+
+    rules = tmp_path / "captured-rules.yaml"
+    rules.write_text(
+        """
+schema_version: 1
+sdk: nvflare
+task: conversion
+default_verdict: caution
+scoring:
+  points: {good: 1.0, bad: 0.0}
+  overall_thresholds: {good: 0.8, caution: 0.5}
+signals:
+  mandatory_behavior__inspect-first:
+    label: "Mandatory behavior: runs inspect first"
+    rules:
+      - contains: status=pass
+        verdict: good
+      - contains_any: [status=fail, status=missing]
+        verdict: bad
+""".lstrip(),
+        encoding="utf-8",
+    )
+    run = {
+        "evaluation_rules_path": rules,
+        "record": {
+            "mandatory_behavior": {
+                "inspect-first": {"status": "pass", "evidence": "nvflare agent inspect ran before editing"}
+            }
+        },
+    }
+
+    assessment_map = {
+        label: (status, evidence) for label, status, evidence in _logic.generated_code_quality_assessments(run)
+    }
+
+    assert assessment_map["Mandatory behavior: runs inspect first"] == (
+        "good",
+        "status=pass; nvflare agent inspect ran before editing",
+    )
+
+
+def test_external_composed_evaluation_directory_uses_shared_and_sdk_layers():
+    from pathlib import Path
+
+    from benchmark.harness.evaluation import load_evaluation_rules
+
+    rules_root = Path(__file__).resolve().parents[1] / "benchmark" / "config" / "evaluation"
+    rules = load_evaluation_rules("nvflare", rules_root, task="conversion", framework="pytorch")
+
+    assert "partitioning" in rules["signals"]  # shared conversion layer
+    assert "execution_model" in rules["signals"]  # NVFLARE layer
+    assert rules["selectors"] == {"framework": "pytorch"}
 
 
 def test_conversion_quality_rows_derive_from_evaluation_yaml():

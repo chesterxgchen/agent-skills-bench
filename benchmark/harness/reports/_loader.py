@@ -185,6 +185,14 @@ def filter_mode_console(console_text: str, mode: str) -> str:
     return "\n".join(lines)
 
 
+def captured_evaluation_rules_path(mode_dir: Path) -> Path | None:
+    metadata = load_json(mode_dir / "sdk_wheel_metadata.json", {}) or {}
+    criteria = metadata.get("evaluation_criteria") if isinstance(metadata, dict) else None
+    entrypoint = str(criteria.get("entrypoint") or ".") if isinstance(criteria, dict) else "."
+    candidate = mode_dir / "evaluation_rules" / entrypoint
+    return candidate if candidate.exists() else None
+
+
 def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
     console_text = read_text(root / "console_output.log")
     runs: dict[str, dict[str, Any]] = {}
@@ -253,6 +261,8 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             workspace_delta_path,
             expected_metric,
         )
+        sdk_metadata = load_json(mode_dir / "sdk_wheel_metadata.json", {}) if mode_dir.exists() else {}
+        evaluation_criteria = sdk_metadata.get("evaluation_criteria") if isinstance(sdk_metadata, dict) else None
         runs[mode] = {
             "available": mode_dir.exists(),
             "mode_dir": mode_dir,
@@ -280,10 +290,19 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "prompt_metadata": load_json(mode_dir / "prompt_metadata.json", {}) if mode_dir.exists() else {},
             "rca_report": _combined_rca_reports(mode_dir),
             "runtime_image": load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {},
+            "evaluation_rules_path": captured_evaluation_rules_path(mode_dir),
+            "evaluation_criteria": evaluation_criteria if isinstance(evaluation_criteria, dict) else {},
             "agent_last_message": read_text(mode_dir / "agent_last_message.txt") if mode_dir.exists() else "",
             "agent_stderr": agent_stderr_text,
             "agent_events_text": agent_events_text,
             "console_text": mode_console_text,
             "validation_metric": artifact_metric or record_metric,
         }
+    criteria_hashes = {
+        str(bundle.get("evaluation_criteria", {}).get("sha256"))
+        for bundle in runs.values()
+        if bundle.get("evaluation_criteria", {}).get("sha256")
+    }
+    if len(criteria_hashes) > 1:
+        raise ValueError(f"comparison runs captured different evaluation criteria hashes: {sorted(criteria_hashes)}")
     return runs
