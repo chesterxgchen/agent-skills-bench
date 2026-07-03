@@ -1344,12 +1344,49 @@ def _detect_metric_reporting(text: str) -> str:
     return "not captured"
 
 
+_RUN_WORKSPACE_PATH_MARKERS = ("/tmp/nvflare", "simulate_job", "simulator_workspace")
+_DATA_PATH_HINT_RE = re.compile(r"data|dataset|\.csv|\.parquet|\.npz|\.jsonl?", re.IGNORECASE)
+
+
+def _ephemeral_workspace_data_path_marker(text: str) -> str:
+    for line in text.splitlines():
+        marker = next((marker for marker in _RUN_WORKSPACE_PATH_MARKERS if marker in line), "")
+        if marker and _DATA_PATH_HINT_RE.search(line):
+            return marker
+    return ""
+
+
+def _hardcoded_absolute_data_path(text: str) -> str:
+    for match in re.finditer(r"""["'](/[^"'\s]+)["']""", text):
+        literal = match.group(1)
+        if not _DATA_PATH_HINT_RE.search(literal):
+            continue
+        prefix = text[max(0, match.start() - 48) : match.start()]
+        # An absolute path is acceptable as a configurable-arg default in simulation.
+        if re.search(r"default\s*=\s*(?:str\(\s*)?(?:Path\(\s*)?$", prefix):
+            continue
+        return literal
+    return ""
+
+
 def _detect_data_packaging(text: str) -> str:
-    if "add_file_to_clients(str(args.data_dir), dest_dir=\"data\")" in text or "add_file_to_clients(str(args.data_dir)" in text:
-        return "packages dataset into client app (`dest_dir=\"data\"`)"
+    marker = _ephemeral_workspace_data_path_marker(text)
+    if marker:
+        return f"data path points into ephemeral nvflare run workspace (`{marker}`)"
+    if "add_file_to_clients(" in text:
+        return "copies dataset into client app; clients read it from the ephemeral run workspace"
+    hardcoded = _hardcoded_absolute_data_path(text)
+    if hardcoded:
+        return f"hardcoded absolute data path in generated client code (`{hardcoded}`)"
+    if re.search(
+        r"add_argument\(\s*['\"]--data[-_](?:root|dir|path)['\"](?:(?!add_argument\().)*?\bdefault\s*=",
+        text,
+        re.DOTALL,
+    ):
+        return "configurable data_root argument with default, overridable per site, pointing at original data"
     if "--data-dir {args.data_dir.resolve()}" in text or "args.data_dir.resolve()" in text:
-        return "passes absolute workspace data path to clients"
-    if "--data-dir" in text:
+        return "passes original data path to clients via configurable data-dir argument"
+    if "--data-dir" in text or "--data-root" in text:
         return "passes data directory argument"
     return "not captured"
 
@@ -1488,9 +1525,9 @@ def conversion_quality_score(signal: str, value: str, run: dict[str, Any] | None
         if "metric dict" in text:
             return "caution"
     if signal == "data_packaging":
-        if "packages dataset into client app" in text:
+        if "configurable data_root argument" in text or "original data path" in text:
             return "good"
-        if "absolute workspace data path" in text:
+        if "ephemeral" in text or "hardcoded absolute data path" in text:
             return "bad"
         if "data directory argument" in text:
             return "caution"

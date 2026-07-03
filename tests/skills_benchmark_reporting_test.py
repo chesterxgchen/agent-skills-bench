@@ -1087,14 +1087,38 @@ recipe = FedAvgRecipe(
     assert "good: per-site loss weight from local training partition" in section
     assert "bad: fixed/global `pos_weight=0.8750402576489533` passed to clients" in section
     assert "Conversion: data packaging/path" in section
-    assert "good: packages dataset into client app" in section
-    assert "bad: passes absolute workspace data path to clients" in section
+    assert "bad: copies dataset into client app; clients read it from the ephemeral run workspace" in section
+    assert "good: passes original data path to clients via configurable data-dir argument" in section
     assert "Conversion: client execution/model exchange" in section
     assert "good: external client process runner" in section
     assert "good: in-process Client API executor" in section
     assert "Conversion: round metric progression" in section
     assert "good: AUROC 0.7305 -> 0.7449 -> 0.7573" in section
     assert "bad: AUROC 0.4860 -> 0.4860 -> 0.4860 (flat)" in section
+
+
+def test_nvflare_data_packaging_rules():
+    from benchmark.harness.sdks.nvflare._logic import _detect_data_packaging, conversion_quality_score
+
+    hardcoded = _detect_data_packaging('train_frame = pd.read_csv("/Users/agent/datasets/ames.csv")\n')
+    assert hardcoded.startswith("hardcoded absolute data path in generated client code")
+    assert conversion_quality_score("data_packaging", hardcoded) == "bad"
+
+    workspace = _detect_data_packaging(
+        'data_dir = "/tmp/nvflare/workspaces/ames/site-1/simulate_job/app_site-1/data"\n'
+    )
+    assert "ephemeral nvflare run workspace" in workspace
+    assert conversion_quality_score("data_packaging", workspace) == "bad"
+
+    packaged = _detect_data_packaging('recipe.job.add_file_to_clients(str(args.data_dir), dest_dir="data")\n')
+    assert "ephemeral run workspace" in packaged
+    assert conversion_quality_score("data_packaging", packaged) == "bad"
+
+    configurable = _detect_data_packaging(
+        'parser.add_argument("--data-root", type=Path, default=Path("/workspace/data/ames"))\n'
+    )
+    assert configurable.startswith("configurable data_root argument")
+    assert conversion_quality_score("data_packaging", configurable) == "good"
 
 
 def test_nvflare_conversion_quality_prefers_local_client_pos_weight_over_server_default(tmp_path):
