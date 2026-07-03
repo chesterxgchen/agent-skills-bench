@@ -1349,10 +1349,9 @@ def _detect_metric_reporting(text: str) -> str:
 
 _RUN_WORKSPACE_PATH_MARKERS = ("/tmp/nvflare", "simulate_job", "simulator_workspace")
 _DATA_PATH_HINT_RE = re.compile(r"data|dataset|\.csv|\.parquet|\.npz|\.jsonl?", re.IGNORECASE)
-_ADD_FILE_DATA_ARG_RE = re.compile(
-    r"\b(?:args\.)?(?:data|dataset)_(?:dir|root|path)\b",
-    re.IGNORECASE,
-)
+_DATA_IDENTIFIER_PARTS = {"data", "dataset", "datasets"}
+_DATA_PATH_IDENTIFIER_PARTS = {"dir", "directory", "root", "path"}
+_IDENTIFIER_PART_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+")
 _ADD_FILE_DATA_PATH_KWARGS = {
     "dest_dir",
     "dest_path",
@@ -1366,6 +1365,34 @@ _ADD_FILE_DATA_PATH_KWARGS = {
     "src",
     "src_path",
 }
+
+
+def _identifier_parts(identifier: str) -> list[str]:
+    parts: list[str] = []
+    for chunk in re.split(r"[^0-9A-Za-z]+", identifier):
+        if not chunk:
+            continue
+        parts.extend(match.group(0).lower() for match in _IDENTIFIER_PART_RE.finditer(chunk))
+    return parts
+
+
+def _identifier_points_at_data_path(identifier: str) -> bool:
+    parts = _identifier_parts(identifier)
+    return any(part in _DATA_IDENTIFIER_PARTS for part in parts) and any(
+        part in _DATA_PATH_IDENTIFIER_PARTS for part in parts
+    )
+
+
+def _source_identifiers_point_at_data_path(source: str) -> bool:
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        return any(token.type == tokenize.NAME and _identifier_points_at_data_path(token.string) for token in tokens)
+    except (IndentationError, SyntaxError, tokenize.TokenError):
+        pass
+    return any(
+        _identifier_points_at_data_path(match.group(0))
+        for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source)
+    )
 
 
 def _string_token_value(token_value: str) -> str:
@@ -1509,11 +1536,20 @@ def _parsed_call_source(call: str) -> ast.Call | None:
     return expression if isinstance(expression, ast.Call) else None
 
 
+def _node_identifiers_point_at_data_path(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and _identifier_points_at_data_path(child.id):
+            return True
+        if isinstance(child, ast.Attribute) and _identifier_points_at_data_path(child.attr):
+            return True
+    return False
+
+
 def _call_arg_points_at_data(call: str, node: ast.AST, *, inspect_literals: bool) -> bool:
-    source = ast.get_source_segment(call, node) or ""
-    if _ADD_FILE_DATA_ARG_RE.search(source):
+    if _node_identifiers_point_at_data_path(node):
         return True
     if inspect_literals:
+        source = ast.get_source_segment(call, node) or ""
         return any(_path_literal_points_at_data(literal) for literal in _source_string_literals(source))
     return False
 
@@ -1522,7 +1558,7 @@ def _add_file_to_clients_copies_data(text: str) -> bool:
     for call in _iter_call_sources(text, "add_file_to_clients"):
         expression = _parsed_call_source(call)
         if expression is None:
-            if _ADD_FILE_DATA_ARG_RE.search(call):
+            if _source_identifiers_point_at_data_path(call):
                 return True
             if any(_path_literal_points_at_data(literal) for literal in _source_string_literals(call)):
                 return True
@@ -1530,7 +1566,7 @@ def _add_file_to_clients_copies_data(text: str) -> bool:
         if any(_call_arg_points_at_data(call, arg, inspect_literals=True) for arg in expression.args):
             return True
         for keyword in expression.keywords:
-            if keyword.arg and _ADD_FILE_DATA_ARG_RE.search(keyword.arg):
+            if keyword.arg and _identifier_points_at_data_path(keyword.arg):
                 return True
             inspect_literals = keyword.arg in _ADD_FILE_DATA_PATH_KWARGS if keyword.arg else True
             if _call_arg_points_at_data(call, keyword.value, inspect_literals=inspect_literals):

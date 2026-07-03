@@ -1118,6 +1118,20 @@ def test_nvflare_data_packaging_rules():
     assert "ephemeral run workspace" in packaged_by_dest_dir
     assert conversion_quality_score("data_packaging", packaged_by_dest_dir) == "bad"
 
+    packaged_by_local_alias = _detect_data_packaging("recipe.job.add_file_to_clients(local_data_dir)\n")
+    assert "ephemeral run workspace" in packaged_by_local_alias
+    assert conversion_quality_score("data_packaging", packaged_by_local_alias) == "bad"
+
+    packaged_by_source_alias = _detect_data_packaging("recipe.job.add_file_to_clients(str(source_dataset_path))\n")
+    assert "ephemeral run workspace" in packaged_by_source_alias
+    assert conversion_quality_score("data_packaging", packaged_by_source_alias) == "bad"
+
+    packaged_by_client_root_alias = _detect_data_packaging(
+        "recipe.job.add_file_to_clients(Path(config.client_data_root))\n"
+    )
+    assert "ephemeral run workspace" in packaged_by_client_root_alias
+    assert conversion_quality_score("data_packaging", packaged_by_client_root_alias) == "bad"
+
     configurable = _detect_data_packaging(
         'parser.add_argument("--data-root", type=Path, default=Path("/workspace/data/ames"))\n'
     )
