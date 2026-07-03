@@ -7906,6 +7906,92 @@ def test_terminal_failure_anchor_survives_same_module_non_rerun():
     assert terminal_failure_anchor(event_timeline_from_text(recovered)) is None
 
 
+def test_bare_module_key_requires_exact_rerun_or_job_success():
+    from benchmark.harness.reports._events import event_timeline_from_text, terminal_failure_anchor
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    # When no subcommand/job target can be extracted from the failed module
+    # command (no positionals, or unparseable quoting), its key degrades to the
+    # bare module. That key matches ANY same-module invocation, so it must not
+    # count as rerun evidence — only an exact rerun or a job-success marker
+    # recovers such a failure.
+    for failed in (
+        "python3 -m nvflare.cli",
+        "python3 -m nvflare.cli simulator jobs/train -w /tmp/it's_ws",
+    ):
+        base = command(
+            failed, output="Traceback...\nModuleNotFoundError: No module named 'torch'", exit_code=1
+        )
+        non_rerun = base + "\n" + command("python3 -m nvflare.cli --help", output="usage: nvflare [-h] ...")
+        anchored = terminal_failure_anchor(event_timeline_from_text(non_rerun))
+        assert anchored is not None
+        assert "torch" in anchored[1]["display"]
+
+        exact_rerun = base + "\n" + command(failed, output="done")
+        assert terminal_failure_anchor(event_timeline_from_text(exact_rerun)) is None
+
+        job_success = base + "\n" + command("python3 -m nvflare.cli --help", output="Status: FINISHED:COMPLETED")
+        assert terminal_failure_anchor(event_timeline_from_text(job_success)) is None
+
+
+def test_attached_pip_install_reads_as_installer():
+    from benchmark.harness.reports._events import (
+        command_recovery_key,
+        event_timeline_from_text,
+        is_dependency_install_command,
+        terminal_failure_anchor,
+    )
+
+    # Python accepts the attached `-mpip` form; it is the same installer as
+    # `pip install`/`python -m pip install` for both recovery keying and
+    # dependency-install detection.
+    assert is_dependency_install_command("python3 -mpip install torch")
+    assert not is_dependency_install_command("python3 -mpippkg install")
+    assert not is_dependency_install_command("python3 -mpip show torch")
+    assert command_recovery_key("python3 -mpip install torch") == "pip install"
+    assert command_recovery_key("python3 -mpip install -r requirements.txt") == "pip install requirements.txt"
+    assert command_recovery_key("pip3 install -r requirements.txt") == "pip install requirements.txt"
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    # A failed import probe recovered by an attached-form install of the
+    # missing module must not anchor as terminal failure.
+    events = "\n".join(
+        [
+            command(
+                'python3 -c "import torch"',
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+            command("python3 -mpip install torch", output="Collecting torch\nSuccessfully installed torch-2.12.0"),
+        ]
+    )
+    assert terminal_failure_anchor(event_timeline_from_text(events)) is None
+
+
 def test_why_root_cause_chain_from_claude_tool_result_events():
     from benchmark.harness.reports._events import event_timeline_from_text
     from benchmark.harness.reports.insights._why import _failure_root_cause_chain

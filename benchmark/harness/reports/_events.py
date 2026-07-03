@@ -463,7 +463,10 @@ def _module_invocation_key_suffix(command: str, module: str) -> str:
 
 def command_recovery_key(command: str) -> str:
     command = _unwrap_shell_command(command)
-    if re.search(r"\bpip\s+install\b", command):
+    # `pip3` and the attached `-mpip` form Python accepts are the same
+    # installer as `pip`/`python -m pip`; they must share the `pip install`
+    # key rather than fall through to the interpreter/module branches.
+    if re.search(r"(?:\bpip3?|-m\s*pip3?)\s+install\b", command):
         requirements = re.search(r"-r\s+([A-Za-z0-9_./-]*requirements[A-Za-z0-9_.-]*\.txt)", command)
         return f"pip install {Path(requirements.group(1)).name}" if requirements else "pip install"
     script = re.search(r"\bpython(?:3)?\s+([A-Za-z0-9_./-]+\.py)\b", command)
@@ -669,7 +672,6 @@ def commands_for_run(run: dict[str, Any]) -> list[str]:
 
 
 _INSTALL_EXECUTABLES = {"pip", "pip3", "uv"}
-_INSTALL_SEGMENT_RE = re.compile(r"^(?:uv\s+)?pip3?\s+install\b|^python3?\s+-m\s+pip\s+install\b", re.IGNORECASE)
 
 
 def is_dependency_install_command(command: str) -> bool:
@@ -688,7 +690,8 @@ def is_dependency_install_command(command: str) -> bool:
         name = _first_command_name(stripped)
         if name in _INSTALL_EXECUTABLES and re.search(r"\bpip3?\s+install\b", stripped, re.IGNORECASE):
             return True
-        if name.startswith("python") and re.search(r"-m\s+pip3?\s+install\b", stripped, re.IGNORECASE):
+        # `\s*` covers the attached `-mpip` form Python accepts.
+        if name.startswith("python") and re.search(r"-m\s*pip3?\s+install\b", stripped, re.IGNORECASE):
             return True
     return False
 
@@ -862,7 +865,10 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     logs) do not count as recovery, so they cannot suppress a real terminal
     failure. When the failed command was itself a script/job run, installing
     the missing module alone is not recovery either: the job must be rerun
-    successfully or a job-success marker must appear.
+    successfully or a job-success marker must appear. A module-run key that
+    carries no subcommand/job target matches any same-module invocation, so it
+    is not accepted as rerun evidence — such a run recovers only via an exact
+    rerun of the failed command or a job-success marker.
     """
 
     anchor_index: int | None = None
@@ -879,11 +885,18 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
             anchor_index, signature = index, candidate
     if anchor_index is None or signature is None:
         return None
-    failed_key = command_recovery_key(str(timeline[anchor_index].get("command") or ""))
+    failed_command = str(timeline[anchor_index].get("command") or "")
+    failed_key = command_recovery_key(failed_command)
     missing_module = (
         signature["subject"].split(".")[0] if signature["kind"] in ("missing_python_module", "import_error") else ""
     )
-    failed_command_was_job_run = _command_is_python_job_run(str(timeline[anchor_index].get("command") or ""))
+    failed_command_was_job_run = _command_is_python_job_run(failed_command)
+    # A module key without a subcommand/job-target suffix (`python -m
+    # nvflare.cli`, e.g. when the failed command's tokens cannot be parsed)
+    # would match ANY later successful invocation of the same module —
+    # `--help`, another subcommand. Such a bare key is not rerun evidence;
+    # recovery then needs an exact rerun or the job-success output check below.
+    failed_key_is_bare_module = bool(re.fullmatch(r"python -m \S+", failed_key))
     for item in timeline[anchor_index + 1 :]:
         if item.get("kind") != "command":
             continue
@@ -899,9 +912,13 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
         command = str(item.get("command") or "")
         # A failed job run only recovers via another job run: broad keys (bare
         # interpreter/shell names) must not let an unrelated successful command
-        # (e.g. an import probe after an install) pass for a job rerun.
-        if command_recovery_key(command) == failed_key and (
-            not failed_command_was_job_run or _command_is_python_job_run(command)
+        # (e.g. an import probe after an install) pass for a job rerun. An
+        # exact rerun of the failed command is always rerun evidence, even
+        # when its key is a bare module key.
+        if command.strip() == failed_command.strip() or (
+            command_recovery_key(command) == failed_key
+            and not failed_key_is_bare_module
+            and (not failed_command_was_job_run or _command_is_python_job_run(command))
         ):
             return None
         if (
