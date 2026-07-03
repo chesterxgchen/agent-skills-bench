@@ -1353,6 +1353,19 @@ _ADD_FILE_DATA_ARG_RE = re.compile(
     r"\b(?:args\.)?(?:data|dataset)_(?:dir|root|path)\b",
     re.IGNORECASE,
 )
+_ADD_FILE_DATA_PATH_KWARGS = {
+    "dest_dir",
+    "dest_path",
+    "dst",
+    "dst_dir",
+    "file",
+    "file_path",
+    "path",
+    "source",
+    "source_path",
+    "src",
+    "src_path",
+}
 
 
 def _string_token_value(token_value: str) -> str:
@@ -1488,12 +1501,40 @@ def _path_literal_points_at_data(literal: str) -> bool:
     return bool(re.search(r"\.(?:csv|parquet|npz|jsonl)(?:$|[?#])", normalized))
 
 
+def _parsed_call_source(call: str) -> ast.Call | None:
+    try:
+        expression = ast.parse(call, mode="eval").body
+    except SyntaxError:
+        return None
+    return expression if isinstance(expression, ast.Call) else None
+
+
+def _call_arg_points_at_data(call: str, node: ast.AST, *, inspect_literals: bool) -> bool:
+    source = ast.get_source_segment(call, node) or ""
+    if _ADD_FILE_DATA_ARG_RE.search(source):
+        return True
+    if inspect_literals:
+        return any(_path_literal_points_at_data(literal) for literal in _source_string_literals(source))
+    return False
+
+
 def _add_file_to_clients_copies_data(text: str) -> bool:
     for call in _iter_call_sources(text, "add_file_to_clients"):
-        if _ADD_FILE_DATA_ARG_RE.search(call):
+        expression = _parsed_call_source(call)
+        if expression is None:
+            if _ADD_FILE_DATA_ARG_RE.search(call):
+                return True
+            if any(_path_literal_points_at_data(literal) for literal in _source_string_literals(call)):
+                return True
+            continue
+        if any(_call_arg_points_at_data(call, arg, inspect_literals=True) for arg in expression.args):
             return True
-        if any(_path_literal_points_at_data(literal) for literal in _source_string_literals(call)):
-            return True
+        for keyword in expression.keywords:
+            if keyword.arg and _ADD_FILE_DATA_ARG_RE.search(keyword.arg):
+                return True
+            inspect_literals = keyword.arg in _ADD_FILE_DATA_PATH_KWARGS if keyword.arg else True
+            if _call_arg_points_at_data(call, keyword.value, inspect_literals=inspect_literals):
+                return True
     return False
 
 

@@ -1114,6 +1114,10 @@ def test_nvflare_data_packaging_rules():
     assert "ephemeral run workspace" in packaged
     assert conversion_quality_score("data_packaging", packaged) == "bad"
 
+    packaged_by_dest_dir = _detect_data_packaging('recipe.job.add_file_to_clients(str(local_dir), dest_dir="data")\n')
+    assert "ephemeral run workspace" in packaged_by_dest_dir
+    assert conversion_quality_score("data_packaging", packaged_by_dest_dir) == "bad"
+
     configurable = _detect_data_packaging(
         'parser.add_argument("--data-root", type=Path, default=Path("/workspace/data/ames"))\n'
     )
