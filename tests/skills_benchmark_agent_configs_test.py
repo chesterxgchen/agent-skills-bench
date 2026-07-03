@@ -952,7 +952,7 @@ def test_codex_model_recovered_from_session_rollout_evidence(tmp_path, monkeypat
         OBSERVED_SESSION_MODEL_SOURCE,
         agent_session_file_snapshot,
         observed_agent_model_from_events_text,
-        observed_agent_model_from_session_files,
+        observed_agent_session_evidence_from_files,
     )
 
     agent_run = pytest.importorskip("benchmark.harness.container.agent_run")
@@ -968,16 +968,16 @@ def test_codex_model_recovered_from_session_rollout_evidence(tmp_path, monkeypat
     rollout_path = agent_home / "sessions" / "2026" / "07" / "03" / "rollout-2026-07-03.jsonl"
     rollout_path.parent.mkdir(parents=True)
     rollout_path.write_text(rollout_text, encoding="utf-8")
-    model, evidence = observed_agent_model_from_session_files(agent_home / "sessions")
-    assert model == "gpt-5.5"
-    assert evidence == rollout_path
+    evidence, evidence_path = observed_agent_session_evidence_from_files(agent_home / "sessions")
+    assert evidence.get("model") == "gpt-5.5"
+    assert evidence_path == rollout_path
 
     snapshot = agent_session_file_snapshot(agent_home / "sessions")
-    stale_model, stale_evidence = observed_agent_model_from_session_files(
+    stale_evidence, stale_path = observed_agent_session_evidence_from_files(
         agent_home / "sessions", previous_snapshot=snapshot
     )
-    assert stale_model == ""
-    assert stale_evidence is None
+    assert stale_evidence == {}
+    assert stale_path is None
 
     result_dir = tmp_path / "results"
     result_dir.mkdir()

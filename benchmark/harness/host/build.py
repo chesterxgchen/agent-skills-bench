@@ -241,7 +241,7 @@ def _evaluation_task_for_nvflare_skill(skill_name: str) -> str:
         return "conversion"
     if "-diagnose-" in skill_name:
         return "diagnosis"
-    if skill_name.endswith("-orient") or "-orient" in skill_name:
+    if "-orient" in skill_name:
         return "orientation"
     return "general"
 
@@ -355,6 +355,17 @@ def stage_nvflare_skill_evals_as_evaluation_rules(source: Path, target: Path) ->
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(evals_path, destination)
 
+    # Only conversion-task skills feed report signals today; say so instead of
+    # silently dropping the rest (their raw evals.json copies are still staged).
+    skipped = sorted(
+        {
+            str(document["skill_name"])
+            for document in documents
+            if _evaluation_task_for_nvflare_skill(str(document["skill_name"])) != "conversion"
+        }
+    )
+    if skipped:
+        emit(f"Evaluation criteria: no conversion signals derived for non-conversion skills: {', '.join(skipped)}")
     native_signals = _native_nvflare_behavior_signals(documents, "conversion")
     if native_signals:
         _write_yaml(

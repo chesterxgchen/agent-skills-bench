@@ -127,11 +127,9 @@ class AgentInvocationError(RuntimeError):
 # The investigator subprocess gets an allowlisted environment, not the full
 # host environment: incidental secrets (cloud keys, tokens) must not be
 # reachable from a process whose prompt embeds untrusted captured output.
-# Each invoker passes through only ITS OWN provider's variables (plus XDG_
-# config plumbing): the claude CLI has no business seeing OPENAI_/CODEX_
-# credentials and vice versa — codex's sandbox can still read its own
-# environment, so a cross-provider key there would be one prompt injection
-# away from being quoted into the report.
+# Each invoker gets only ITS OWN vendor's variables — the claude investigator
+# has no business holding OPENAI_/CODEX_ keys and vice versa, so a leak in one
+# CLI's sandbox never exposes the other vendor's credentials.
 _INVOKER_ENV_ALLOWLIST = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM")
 _CLAUDE_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_", "XDG_")
 _CODEX_ENV_PREFIXES = ("CODEX_", "OPENAI_", "XDG_")
@@ -139,7 +137,7 @@ MAX_AGENT_OUTPUT_BYTES = 2_000_000
 _STREAM_READ_CHUNK = 65_536
 
 
-def _investigator_env(prefixes: tuple[str, ...]) -> dict[str, str]:
+def _investigator_env(prefixes: tuple[str, ...] = _CLAUDE_ENV_PREFIXES + _CODEX_ENV_PREFIXES) -> dict[str, str]:
     env: dict[str, str] = {}
     for key, value in os.environ.items():
         if key in _INVOKER_ENV_ALLOWLIST or key.startswith(prefixes):
@@ -148,7 +146,10 @@ def _investigator_env(prefixes: tuple[str, ...]) -> dict[str, str]:
 
 
 def _checked_agent_run(
-    args: list[str], cwd: Path, input_text: str | None = None, env_prefixes: tuple[str, ...] = ()
+    args: list[str],
+    cwd: Path,
+    input_text: str | None = None,
+    env_prefixes: tuple[str, ...] = _CLAUDE_ENV_PREFIXES + _CODEX_ENV_PREFIXES,
 ) -> str:
     # start_new_session so a timeout kills the whole process group, not just
     # the CLI wrapper (agent CLIs spawn helpers).
@@ -218,21 +219,25 @@ def _checked_agent_run(
 
 
 def _claude_invoker(prompt: str, cwd: Path) -> str:
-    # Read-only tool allowlist scoped to the evidence root: the investigator
-    # analyzes captured evidence and must not execute commands, write files,
-    # or read outside its working directory (its prompt embeds untrusted
-    # captured output — see _UNTRUSTED_DATA_PREAMBLE). Grep/Glob take no path
-    # specifier of their own; the Read(...) allow/deny rules govern where all
-    # file-reading tools (Read, Grep, Glob) may look. The prompt goes via
+    # Read-only investigator over untrusted evidence (see
+    # _UNTRUSTED_DATA_PREAMBLE): no execution, no mutation, and — because the
+    # prompt embeds attacker-influenced captured output — no network tools
+    # (WebFetch/WebSearch are exfiltration channels) and no host-configured
+    # MCP servers (--strict-mcp-config). Claude Code permission rules cannot
+    # whitelist reads by location (deny rules are the only read restriction,
+    # and Read(//**) denies the cwd too), so reads are open except the home
+    # tree, where credentials concentrate (~/.ssh, ~/.aws, agent CLI configs);
+    # Read deny rules also gate Grep/Glob best-effort. The prompt goes via
     # stdin: the tool flags are variadic and would swallow a positional prompt.
     return _checked_agent_run(
         [
             "claude",
             "-p",
+            "--strict-mcp-config",
             "--allowedTools",
-            "Read(./**),Grep,Glob",
+            "Read,Grep,Glob",
             "--disallowedTools",
-            "Bash,Write,Edit,Read(//**),Read(~/**)",
+            "Bash,Write,Edit,NotebookEdit,WebFetch,WebSearch,Task,Read(~/**)",
         ],
         cwd,
         input_text=prompt,
@@ -241,20 +246,21 @@ def _claude_invoker(prompt: str, cwd: Path) -> str:
 
 
 def _codex_invoker(prompt: str, cwd: Path) -> str:
-    # --ignore-rules/--ephemeral keep instruction files captured into the
-    # evidence copy (AGENTS.md and friends) from steering the investigator,
-    # and --cd pins the session to the staged evidence root.
+    # codex's read-only seatbelt still allows full-disk reads and gives
+    # model-run commands the CLI's own environment by default;
+    # shell_environment_policy.inherit=core keeps the API keys this process
+    # must hold out of every command the model spawns. Residual risk: injected
+    # instructions can still quote non-home host files into the answer — the
+    # claude invoker is preferred by resolve_invoker for that reason.
     return _checked_agent_run(
         [
             "codex",
             "exec",
             "--skip-git-repo-check",
-            "--ignore-rules",
-            "--ephemeral",
-            "--cd",
-            str(cwd),
             "--sandbox",
             "read-only",
+            "-c",
+            "shell_environment_policy.inherit=core",
             "-",
         ],
         cwd,
@@ -327,20 +333,22 @@ def _stage_evidence_copy(result_root: Path) -> Path:
     into what the agent reads.
     """
 
+    # os.walk with followlinks=False, not rglob: on Python < 3.13 rglob
+    # DESCENDS INTO symlinked directories, so a planted `evidence -> /home`
+    # symlink would copy host files (reached via the link, individually not
+    # symlinks) into the staged tree — and a link cycle recurses unboundedly.
     staged_root = Path(tempfile.mkdtemp(prefix="rca_evidence_"))
     resolved_root = result_root.resolve()
     for dirpath, dirnames, filenames in os.walk(resolved_root, followlinks=False):
-        current = Path(dirpath)
-        dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
-        relative_dir = current.relative_to(resolved_root)
-        target_dir = staged_root / relative_dir
+        directory = Path(dirpath)
+        dirnames[:] = [name for name in dirnames if not (directory / name).is_symlink()]
+        target_dir = staged_root / directory.relative_to(resolved_root)
         target_dir.mkdir(parents=True, exist_ok=True)
-        for filename in filenames:
-            source = current / filename
+        for name in filenames:
+            source = directory / name
             if source.is_symlink() or not source.is_file():
                 continue
-            target = target_dir / filename
-            shutil.copyfile(source, target)
+            shutil.copyfile(source, target_dir / name)
     return staged_root
 
 
@@ -474,50 +482,61 @@ def seed_failure_context(result_root: Path, mode: str, run_id: str | None = None
     return seed
 
 
+def _summary_delta_seed(
+    result_root: Path,
+    mode: str,
+    run_id: str | None,
+    *,
+    topic: str,
+    summary_key: str,
+    describe: Callable[[str, str, float, float, float], dict[str, str]],
+) -> dict[str, Any] | None:
+    """Seed a mode-vs-base investigation from a run_summary numeric delta."""
+
+    seed = _base_seed(result_root, mode, topic, run_id)
+    base_mode = seed.get("base_mode")
+    value = _summary_number(Path(seed["mode_dir"]), summary_key)
+    base_value = _summary_number(Path(seed["base_mode_dir"]) if base_mode else None, summary_key)
+    if value is None or base_value is None or value <= base_value:
+        return None
+    seed.update(describe(mode, str(base_mode), value, base_value, value - base_value))
+    return seed
+
+
 def seed_slowdown_context(result_root: Path, mode: str, run_id: str | None = None) -> dict[str, Any] | None:
     """Seed a 'why did this run take longer' investigation from the elapsed delta."""
 
-    seed = _base_seed(result_root, mode, "slowdown", run_id)
-    base_mode = seed.get("base_mode")
-    elapsed = _summary_number(Path(seed["mode_dir"]), "elapsed_seconds")
-    base_elapsed = _summary_number(Path(seed["base_mode_dir"]) if base_mode else None, "elapsed_seconds")
-    if elapsed is None or base_elapsed is None or elapsed <= base_elapsed:
-        return None
-    delta = elapsed - base_elapsed
-    seed.update(
-        {
-            "headline": f"{mode} took {elapsed:.0f}s vs {base_elapsed:.0f}s for {base_mode} (+{delta:.0f}s)",
+    def describe(mode: str, base: str, elapsed: float, base_elapsed: float, delta: float) -> dict[str, str]:
+        return {
+            "headline": f"{mode} took {elapsed:.0f}s vs {base_elapsed:.0f}s for {base} (+{delta:.0f}s)",
             "seed_question": (
-                f"The {mode} run took {elapsed:.0f}s while {base_mode} took {base_elapsed:.0f}s (+{delta:.0f}s). "
+                f"The {mode} run took {elapsed:.0f}s while {base} took {base_elapsed:.0f}s (+{delta:.0f}s). "
                 "From the captured evidence, what operations account for the extra time — what did this run "
-                f"spend time doing that {base_mode} did not?"
+                f"spend time doing that {base} did not?"
             ),
         }
+
+    return _summary_delta_seed(
+        result_root, mode, run_id, topic="slowdown", summary_key="elapsed_seconds", describe=describe
     )
-    return seed
 
 
 def seed_token_context(result_root: Path, mode: str, run_id: str | None = None) -> dict[str, Any] | None:
     """Seed a 'why did this run use more tokens' investigation from the usage delta."""
 
-    seed = _base_seed(result_root, mode, "tokens", run_id)
-    base_mode = seed.get("base_mode")
-    tokens = _summary_number(Path(seed["mode_dir"]), "token_count")
-    base_tokens = _summary_number(Path(seed["base_mode_dir"]) if base_mode else None, "token_count")
-    if tokens is None or base_tokens is None or tokens <= base_tokens:
-        return None
-    delta = tokens - base_tokens
-    seed.update(
-        {
-            "headline": f"{mode} used {tokens:.0f} tokens vs {base_tokens:.0f} for {base_mode} (+{delta:.0f})",
+    def describe(mode: str, base: str, tokens: float, base_tokens: float, delta: float) -> dict[str, str]:
+        return {
+            "headline": f"{mode} used {tokens:.0f} tokens vs {base_tokens:.0f} for {base} (+{delta:.0f})",
             "seed_question": (
-                f"The {mode} run used {tokens:.0f} tokens while {base_mode} used {base_tokens:.0f} "
+                f"The {mode} run used {tokens:.0f} tokens while {base} used {base_tokens:.0f} "
                 f"(+{delta:.0f}). From the captured evidence (event stream, assistant turns, tool calls, files "
                 "read), what activity consumed the extra tokens — what was this run doing more of, and why?"
             ),
         }
+
+    return _summary_delta_seed(
+        result_root, mode, run_id, topic="tokens", summary_key="token_count", describe=describe
     )
-    return seed
 
 
 def seed_custom_context(result_root: Path, mode: str, question: str, run_id: str | None = None) -> dict[str, Any]:
@@ -673,10 +692,13 @@ def _write_rca_report(
     # The on-disk file is sanitized too: it may be read directly, not only
     # through the report engine's render-time sanitization.
     report_path.write_text(sanitize_agent_markdown(f"{header}\n\n{body}\n"), encoding="utf-8")
-    # The legacy single-file name would double-embed next to the per-topic file.
+    # The legacy single-file name would double-embed next to the per-topic
+    # file. Best-effort: a permissions hiccup here must not discard the
+    # investigation that just completed.
     legacy = rca_dir / "rca_report.md"
     if legacy.is_file() and legacy != report_path:
-        legacy.unlink()
+        with suppress(OSError):
+            legacy.unlink()
     return report_path
 
 
@@ -729,24 +751,19 @@ def run_investigation(
     mode_dir = _contained_mode_dir(result_root, Path(seed["mode_dir"]))
     rca_dir = mode_dir / "rca"
     rca_dir.mkdir(parents=True, exist_ok=True)
-    topic_slug = _topic_slug(seed["topic"])
-    trail_path = rca_dir / f"investigation_{topic_slug}.jsonl"
-    report_path = rca_dir / f"rca_report_{topic_slug}.md"
-    temp_trail_path = rca_dir / f".{trail_path.name}.tmp"
-    with suppress(OSError):
-        temp_trail_path.unlink()
+    trail_path = rca_dir / f"investigation_{_topic_slug(seed['topic'])}.jsonl"
+    partial_path = trail_path.with_name(trail_path.name + ".partial")
     steps: list[InvestigationStep] = []
     question = str(seed["seed_question"])
     asked = {question}
     staged_root = _stage_evidence_copy(result_root)
-    # The trail is written incrementally so a hung/failed step or synthesis call
-    # never discards completed Q/A work — --resynthesize can resume from it. A
-    # fresh trail is only published after the first completed answer, so an
-    # immediate auth/CLI failure leaves the previous trail/report intact.
-    trail_published = False
-    stream = temp_trail_path.open("w", encoding="utf-8")
+    # The trail is written incrementally so a hung/failed step or synthesis
+    # call never discards completed Q/A work — --resynthesize can resume from
+    # it. It is written to a .partial file promoted over the previous trail
+    # only once the FIRST step completes: an immediate invoker failure (auth,
+    # timeout) must leave the prior run's trail and report intact.
     try:
-        try:
+        with partial_path.open("w", encoding="utf-8") as stream:
             stream.write(json.dumps({"seed": seed, "agent": agent_name}) + "\n")
             stream.flush()
             for _ in range(max_steps):
@@ -773,13 +790,14 @@ def run_investigation(
                     + "\n"
                 )
                 stream.flush()
-                if not trail_published:
-                    stream.close()
-                    os.replace(temp_trail_path, trail_path)
-                    trail_published = True
+                if len(steps) == 1:
+                    # First completed step: this run's trail supersedes the old
+                    # one, and the report synthesized from the OLD trail must
+                    # not linger next to it. The open stream keeps writing to
+                    # the same inode after the rename.
+                    os.replace(partial_path, trail_path)
                     with suppress(OSError):
-                        report_path.unlink()
-                    stream = trail_path.open("a", encoding="utf-8")
+                        (rca_dir / f"rca_report_{_topic_slug(seed['topic'])}.md").unlink()
                 if step.conclusion or not step.next_question:
                     break
                 if step.next_question in asked:
@@ -795,6 +813,8 @@ def run_investigation(
         report_markdown = invoker(_synthesis_prompt(seed, steps), staged_root).strip()
     finally:
         shutil.rmtree(staged_root, ignore_errors=True)
+        with suppress(OSError):
+            partial_path.unlink()
     return _write_rca_report(mode_dir, seed, steps, report_markdown, agent_name)
 
 

@@ -1382,10 +1382,12 @@ def run_agent_benchmark() -> int:
         phase = "agent_exec"
         progress = ProgressWriter(config.mode, script_start, config.progress_log_path)
         sessions_dir = _agent_sessions_dir(config)
+        # Guard must match resolve_model_from_session_evidence: a blank model
+        # also triggers post-run resolution, and without a snapshot a stale
+        # rollout from a persistent agent home could be attributed to this run.
+        model_unresolved = str(config.agent_model or "").strip() in ("", UNSPECIFIED_AGENT_MODEL)
         session_snapshot = (
-            agent_session_file_snapshot(sessions_dir)
-            if sessions_dir is not None and config.agent_model == UNSPECIFIED_AGENT_MODEL
-            else None
+            agent_session_file_snapshot(sessions_dir) if sessions_dir is not None and model_unresolved else None
         )
         agent_start, agent_end, agent_exit = run_agent(config, progress, skill_exposure, agent_launch)
         elapsed_seconds = agent_end - agent_start

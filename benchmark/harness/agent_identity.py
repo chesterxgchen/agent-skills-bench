@@ -135,16 +135,17 @@ def preferred_agent_model(*candidates: tuple[Any, Any]) -> tuple[Any, Any]:
     The ``unspecified_default`` sentinel is a placeholder, not a resolution — a
     later candidate carrying a concrete model name outranks an earlier sentinel
     (e.g. a plan-time entry that predates the container's config-file lookup).
-    Falls back to the first non-empty model/source independently when no
-    candidate is resolved.
+    Fallbacks keep model and source paired: a sentinel model must never be
+    labeled with another candidate's provenance.
     """
 
     for model, source in candidates:
         if is_resolved_agent_model(model):
             return model, source
-    model = next((model for model, _ in candidates if model not in (None, "")), None)
-    source = next((source for _, source in candidates if source not in (None, "")), None)
-    return model, source
+    for model, source in candidates:
+        if model not in (None, ""):
+            return model, source
+    return next(((model, source) for model, source in candidates if source not in (None, "")), (None, None))
 
 
 def agent_session_file_snapshot(sessions_dir: Path) -> dict[str, tuple[int, int]]:
@@ -164,38 +165,51 @@ def agent_session_file_snapshot(sessions_dir: Path) -> dict[str, tuple[int, int]
     return snapshot
 
 
+def _capped_lines(path: Path):
+    """Yield complete raw JSONL lines from ``path``, reading at most
+    MAX_AGENT_EVENTS_TEXT_BYTES in total.
+
+    Agent-authored files can carry a single multi-gigabyte line; a plain
+    ``for line in stream`` buffers the whole line before any cap applies. A
+    final line truncated by the cap is dropped — a partial line must not be
+    parsed or hashed as evidence."""
+
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(MAX_AGENT_EVENTS_TEXT_BYTES)
+            truncated = len(data) == MAX_AGENT_EVENTS_TEXT_BYTES and stream.read(1) != b""
+    except OSError:
+        return
+    lines = data.splitlines(keepends=True)
+    if truncated and lines:
+        lines.pop()
+    yield from lines
+
+
 def observed_agent_session_evidence_from_path(path: Path) -> dict[str, Any]:
     """Extract a minimal, non-sensitive Codex turn-context identity record."""
 
-    bytes_read = 0
     latest_evidence: dict[str, Any] = {}
-    try:
-        with path.open("rb") as stream:
-            for raw_line in stream:
-                bytes_read += len(raw_line)
-                if bytes_read > MAX_AGENT_EVENTS_TEXT_BYTES:
-                    break
-                try:
-                    event = json.loads(raw_line)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                if not isinstance(event, dict) or event.get("type") != "turn_context":
-                    continue
-                payload = event.get("payload")
-                if not isinstance(payload, dict):
-                    continue
-                model = clean_agent_model_name(payload.get("model"))
-                if not model:
-                    continue
-                latest_evidence = {
-                    "event_type": "turn_context",
-                    "timestamp": event.get("timestamp"),
-                    "turn_id": payload.get("turn_id"),
-                    "model": model,
-                    "source_line_sha256": hashlib.sha256(raw_line).hexdigest(),
-                }
-    except OSError:
-        return {}
+    for raw_line in _capped_lines(path):
+        try:
+            event = json.loads(raw_line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(event, dict) or event.get("type") != "turn_context":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        model = clean_agent_model_name(payload.get("model"))
+        if not model:
+            continue
+        latest_evidence = {
+            "event_type": "turn_context",
+            "timestamp": event.get("timestamp"),
+            "turn_id": payload.get("turn_id"),
+            "model": model,
+            "source_line_sha256": hashlib.sha256(raw_line).hexdigest(),
+        }
     return latest_evidence
 
 
@@ -206,17 +220,13 @@ def captured_session_thread_id(events_path: Path) -> str:
     rollout filename — the strongest correlator between an invocation and its
     rollout (child/subagent sessions write their own files)."""
 
-    try:
-        with events_path.open("rb") as stream:
-            for raw_line in stream:
-                try:
-                    event = json.loads(raw_line)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                if isinstance(event, dict) and event.get("type") == "thread.started":
-                    return str(event.get("thread_id") or "")
-    except OSError:
-        return ""
+    for raw_line in _capped_lines(events_path):
+        try:
+            event = json.loads(raw_line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(event, dict) and event.get("type") == "thread.started":
+            return str(event.get("thread_id") or "")
     return ""
 
 
@@ -260,28 +270,6 @@ def observed_agent_session_evidence_from_files(
     return {}, None
 
 
-def observed_agent_model_from_session_files(
-    sessions_dir: Path,
-    max_files: int = 8,
-    *,
-    previous_snapshot: dict[str, tuple[int, int]] | None = None,
-) -> tuple[str, Path | None]:
-    """Model evidence from agent-written session rollout files (newest first).
-
-    Codex names its model only in ``CODEX_HOME/sessions`` rollout JSONL
-    (``turn_context.payload.model``) — not in its ``exec --json`` event stream —
-    so these files are the runtime evidence when no model was configured.
-    Returns the model and the rollout file it came from.
-    """
-
-    evidence, path = observed_agent_session_evidence_from_files(
-        sessions_dir,
-        previous_snapshot=previous_snapshot,
-        max_files=max_files,
-    )
-    return clean_agent_model_name(evidence.get("model")), path
-
-
 def resolve_agent_model(
     configured_model: Any,
     model_source: Any,
@@ -306,19 +294,16 @@ def resolve_agent_model_from_events_path(
     events_path: Path,
     log_path: Path | None = None,
 ) -> tuple[Any, Any]:
+    def _capped_text(path: Path | None) -> str:
+        if path is None:
+            return ""
+        try:
+            with path.open("rb") as stream:
+                return stream.read(MAX_AGENT_EVENTS_TEXT_BYTES).decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+
     configured = str(configured_model or "").strip()
     if configured and configured != UNSPECIFIED_AGENT_MODEL:
         return configured_model, model_source
-    observed = observed_agent_model_from_events_path(events_path)
-    if observed:
-        return observed, OBSERVED_AGENT_MODEL_SOURCE
-    if log_path is not None:
-        try:
-            with log_path.open("rb") as stream:
-                log_text = stream.read(MAX_AGENT_EVENTS_TEXT_BYTES).decode("utf-8", errors="replace")
-        except Exception:
-            log_text = ""
-        observed = observed_agent_model_from_log_text(log_text)
-        if observed:
-            return observed, OBSERVED_AGENT_LOG_MODEL_SOURCE
-    return configured_model, model_source
+    return resolve_agent_model(configured_model, model_source, _capped_text(events_path), _capped_text(log_path))
