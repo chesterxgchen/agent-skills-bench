@@ -722,15 +722,21 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     return anchor_index, signature
 
 
-_FAILURE_PREDICTION_CUES = (
-    "expect",
-    "will fail",
-    "would fail",
-    "will stop",
-    "stop at",
-    "known to fail",
-    "going to fail",
-    "anticipate",
+# Each cue must itself express expected failure or blockage. A bare
+# expectation verb ("expect", "anticipate") also matches predictions of
+# success ("I expect torch is installed"), so those verbs only count when a
+# failure word follows within the same sentence.
+_FAILURE_PREDICTION_CUE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\b(?:will|would|going to|known to|expected to|likely to|bound to)\s+(?:fail|stop|break|crash|error)\b",
+        r"\b(?:expect|anticipat)\w*\b[^.!?\n]{0,80}\b(?:fail\w*|error\w*|stop|break|crash\w*|blocked?|missing)\b",
+        r"\bstop at\b",
+        r"\bmissing\b",
+        r"\bblocked\b",
+        r"\bnot installed\b",
+        r"\bunavailable\b",
+    )
 )
 
 
@@ -738,8 +744,9 @@ def predicted_failure_message(events_text: str) -> dict[str, str] | None:
     """Detect a known-doomed execution in the captured event stream.
 
     Returns the agent message that predicted the terminal failure (it names the
-    failure's subject alongside an expectation cue) yet preceded running the
-    failing command anyway — a lint signal that the agent should have either
+    failure's subject alongside a cue expressing expected failure or blockage)
+    yet preceded running the failing command anyway — a lint signal that the
+    agent should have either
     resolved the blocker or skipped the command with an explicit blocker.
     """
 
@@ -753,7 +760,7 @@ def predicted_failure_message(events_text: str) -> dict[str, str] | None:
         if item["kind"] != "message":
             continue
         lowered = str(item.get("text") or "").lower()
-        if subject in lowered and any(cue in lowered for cue in _FAILURE_PREDICTION_CUES):
+        if subject in lowered and any(pattern.search(lowered) for pattern in _FAILURE_PREDICTION_CUE_PATTERNS):
             return {"quote": str(item["text"]), "error": signature["display"]}
     return None
 
