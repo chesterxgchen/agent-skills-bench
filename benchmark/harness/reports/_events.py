@@ -868,6 +868,34 @@ def _command_is_python_job_run(command: str) -> bool:
     return any(_segment_is_python_job_run(segment) for segment in _shell_command_segments(text) if segment.strip())
 
 
+def _is_bare_module_invocation(command: str, module: str) -> bool:
+    """True when a shell segment runs exactly ``python -m <module>`` and nothing more.
+
+    Verified from parsed tokens: the interpreter (any ``python``/``python3``/
+    ``python3.x`` spelling, optionally ``sh -c``-wrapped), interpreter options,
+    then ``-m <module>`` (or the attached ``-m<module>`` form) as the FINAL
+    tokens — no subcommand, job target, or trailing option. A bare module
+    recovery key can also come from a command whose tokens cannot be parsed
+    even though it really carried a job target, and the key equally matches
+    same-module non-reruns like ``--help``; token-level verification is what
+    lets a bare-key match stand in for a rerun.
+    """
+
+    for segment in _shell_command_segments(_unwrap_shell_command(command)):
+        tokens = _command_tokens(segment)
+        if not tokens or not _PYTHON_EXECUTABLE_RE.fullmatch(Path(tokens[0]).name.lower()):
+            continue
+        for index, token in enumerate(tokens[1:], start=1):
+            if token == "-m":
+                return tokens[index + 1 :] == [module]
+            if token.startswith("-m") and not token.startswith("--"):
+                return index == len(tokens) - 1 and token == f"-m{module}"
+            if token.startswith("-"):
+                continue
+            break
+    return False
+
+
 def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[str, str]] | None:
     """Last failed command with a recognized error signature, if the run never recovered.
 
@@ -881,9 +909,11 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     failure. When the failed command was itself a script/job run, installing
     the missing module alone is not recovery either: the job must be rerun
     successfully or a job-success marker must appear. A module-run key that
-    carries no subcommand/job target matches any same-module invocation, so it
-    is not accepted as rerun evidence — such a run recovers only via an exact
-    rerun of the failed command or a job-success marker.
+    carries no subcommand/job target matches any same-module invocation, so a
+    bare-key match only counts as rerun evidence when both commands verify,
+    token by token, as bare invocations of that module; otherwise such a run
+    recovers only via an exact rerun of the failed command or a job-success
+    marker.
     """
 
     anchor_index: int | None = None
@@ -909,9 +939,16 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
     # A module key without a subcommand/job-target suffix (`python -m
     # nvflare.cli`, e.g. when the failed command's tokens cannot be parsed)
     # would match ANY later successful invocation of the same module —
-    # `--help`, another subcommand. Such a bare key is not rerun evidence;
-    # recovery then needs an exact rerun or the job-success output check below.
-    failed_key_is_bare_module = bool(re.fullmatch(r"python -m \S+", failed_key))
+    # `--help`, another subcommand. A bare-key match is therefore rerun
+    # evidence only when BOTH commands verify, token by token, as genuinely
+    # bare invocations of the module — which still accepts semantically
+    # identical reruns (`python` vs `python3`, `sh -c` wrapping) that raw
+    # string equality would reject. Otherwise recovery needs an exact rerun
+    # or the job-success output check below.
+    bare_module_key = re.fullmatch(r"python -m (\S+)", failed_key)
+    failed_is_verified_bare_module_run = bool(bare_module_key) and _is_bare_module_invocation(
+        failed_command, bare_module_key.group(1)
+    )
     for item in timeline[anchor_index + 1 :]:
         if item.get("kind") != "command":
             continue
@@ -930,11 +967,16 @@ def terminal_failure_anchor(timeline: list[dict[str, Any]]) -> tuple[int, dict[s
         # (e.g. an import probe after an install) pass for a job rerun. An
         # exact rerun of the failed command is always rerun evidence, even
         # when its key is a bare module key.
-        if command.strip() == failed_command.strip() or (
-            command_recovery_key(command) == failed_key
-            and not failed_key_is_bare_module
-            and (not failed_command_was_job_run or _command_is_python_job_run(command))
-        ):
+        key_match_is_rerun = command_recovery_key(command) == failed_key and (
+            not failed_command_was_job_run or _command_is_python_job_run(command)
+        )
+        if bare_module_key:
+            key_match_is_rerun = (
+                key_match_is_rerun
+                and failed_is_verified_bare_module_run
+                and _is_bare_module_invocation(command, bare_module_key.group(1))
+            )
+        if command.strip() == failed_command.strip() or key_match_is_rerun:
             return None
         if (
             missing_module

@@ -7961,6 +7961,48 @@ def test_bare_module_key_requires_exact_rerun_or_job_success():
         assert terminal_failure_anchor(event_timeline_from_text(job_success)) is None
 
 
+def test_bare_module_key_accepts_normalized_bare_rerun():
+    from benchmark.harness.reports._events import event_timeline_from_text, terminal_failure_anchor
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    traceback = "Traceback...\nModuleNotFoundError: No module named 'torch'"
+
+    # A genuinely bare failed module invocation recovers via a semantically
+    # identical bare rerun even when the command strings differ: interpreter
+    # spelling (`python` vs `python3`) and `sh -c` wrapping are normalization
+    # noise, not different commands.
+    for failed, rerun in (
+        ("python -m nvflare.cli", "python3 -m nvflare.cli"),
+        ('bash -lc "python3 -m nvflare.cli"', "python3 -m nvflare.cli"),
+        ("python3 -m nvflare.cli", 'sh -c "python -m nvflare.cli"'),
+    ):
+        events = command(failed, output=traceback, exit_code=1) + "\n" + command(rerun, output="done")
+        assert terminal_failure_anchor(event_timeline_from_text(events)) is None, (failed, rerun)
+
+    # A bare key that only exists because the failed command's tokens cannot
+    # be parsed (it really carried a subcommand/job target) still refuses a
+    # bare same-module run as rerun evidence.
+    unparseable = "python3 -m nvflare.cli simulator jobs/train -w /tmp/it's_ws"
+    events = command(unparseable, output=traceback, exit_code=1) + "\n" + command(
+        "python3 -m nvflare.cli", output="usage: nvflare [-h] ..."
+    )
+    anchored = terminal_failure_anchor(event_timeline_from_text(events))
+    assert anchored is not None
+    assert "torch" in anchored[1]["display"]
+
+
 def test_attached_pip_install_reads_as_installer():
     from benchmark.harness.reports._events import (
         command_recovery_key,
