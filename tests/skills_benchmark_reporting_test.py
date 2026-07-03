@@ -8586,9 +8586,8 @@ def test_rca_structure_topic_needs_a_peer_mode(tmp_path):
     assert seed_structure_context(tmp_path, "with_skills") is None
 
 
-def test_rca_auto_does_not_fire_structure(tmp_path):
+def _two_mode_root(tmp_path):
     from benchmark.harness.common import write_json
-    from benchmark.harness.rca import resolve_seed
 
     for mode in ("with_skills", "without_skills"):
         d = tmp_path / "records" / f"mode={mode}"
@@ -8603,8 +8602,70 @@ def test_rca_auto_does_not_fire_structure(tmp_path):
             ]
         },
     )
-    # No failure/slowdown/tokens delta and structure is excluded from auto, so
-    # auto finds nothing to investigate rather than always running structure.
+
+
+def test_rca_auto_skips_structure_without_a_persisted_regression(tmp_path):
+    from benchmark.harness.rca import resolve_seed
+
+    _two_mode_root(tmp_path)
+    # No failure/slowdown/tokens delta and no quality_summary.json, so auto
+    # finds nothing rather than always running a structure investigation.
+    assert resolve_seed(tmp_path, "with_skills", "auto", None) is None
+
+
+def test_persist_quality_summary_writes_structure_scores(tmp_path, monkeypatch):
+    import json as json_module
+    from types import SimpleNamespace
+
+    from benchmark.harness.reports import benchmark_insights
+    from benchmark.harness.sdks import report_registry
+    from benchmark.harness.sdks.report_plugin import StructureSignal
+
+    scores = {"with_skills": 33.3, "without_skills": 100.0}
+    fake_plugin = SimpleNamespace(
+        score_structure=lambda run: StructureSignal(score=scores.get(run.get("mode"))),
+    )
+    monkeypatch.setattr(report_registry, "resolve_from_result_root", lambda root: fake_plugin)
+    monkeypatch.setattr(benchmark_insights, "_as_run_evidence", lambda run: run)
+
+    written = benchmark_insights.persist_quality_summary(
+        tmp_path, {"with_skills": {"mode": "with_skills"}, "without_skills": {"mode": "without_skills"}}
+    )
+    assert written == scores
+    persisted = json_module.loads((tmp_path / "quality_summary.json").read_text(encoding="utf-8"))
+    assert persisted["structure_score"] == scores
+
+
+def test_persist_quality_summary_writes_nothing_without_scores(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from benchmark.harness.reports import benchmark_insights
+    from benchmark.harness.sdks import report_registry
+    from benchmark.harness.sdks.report_plugin import StructureSignal
+
+    monkeypatch.setattr(
+        report_registry,
+        "resolve_from_result_root",
+        lambda root: SimpleNamespace(score_structure=lambda run: StructureSignal()),
+    )
+    monkeypatch.setattr(benchmark_insights, "_as_run_evidence", lambda run: run)
+    assert benchmark_insights.persist_quality_summary(tmp_path, {"with_skills": {"mode": "with_skills"}}) == {}
+    assert not (tmp_path / "quality_summary.json").exists()
+
+
+def test_rca_auto_fires_structure_when_persisted_score_regressed(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resolve_seed
+
+    _two_mode_root(tmp_path)
+    # The host persisted a worse structure score for with_skills than the peer.
+    write_json(tmp_path / "quality_summary.json", {"structure_score": {"with_skills": 33.3, "without_skills": 100.0}})
+    seed = resolve_seed(tmp_path, "with_skills", "auto", None)
+    assert seed is not None
+    assert seed["topic"] == "structure"
+
+    # When with_skills is NOT worse, auto still skips structure.
+    write_json(tmp_path / "quality_summary.json", {"structure_score": {"with_skills": 100.0, "without_skills": 100.0}})
     assert resolve_seed(tmp_path, "with_skills", "auto", None) is None
 
 

@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -964,6 +965,11 @@ def write_benchmark_reports(result_root: Path, *, logs: Iterable[Path] = ()) -> 
 
         try:
             runs = benchmark_insights.collect_benchmark_runs(result_root)
+            # Persist per-mode SDK quality scores so the SDK-agnostic RCA loop
+            # can auto-gate a structure regression; best-effort, never blocks
+            # the report.
+            with suppress(Exception):
+                benchmark_insights.persist_quality_summary(result_root, runs)
             (result_root / "benchmark_insights.md").write_text(
                 benchmark_insights.benchmark_report(result_root, runs),
                 encoding="utf-8",

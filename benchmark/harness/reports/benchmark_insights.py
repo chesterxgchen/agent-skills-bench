@@ -532,6 +532,35 @@ def _executive_summary_section(
     return "\n".join(summary_lines)
 
 
+def persist_quality_summary(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) -> dict[str, float]:
+    """Write per-mode SDK quality scores to a host-owned root sidecar.
+
+    Structure scoring is SDK-specific, but downstream SDK-agnostic tooling (the
+    RCA loop, which never imports SDK plugins) needs the number to gate on a
+    regression. This persists it once, at report time, from the resolved plugin
+    — outside the container-writable mode dirs. Returns the ``structure_score``
+    map written ({} when the plugin supplies none, e.g. the null plugin)."""
+
+    from ..common import write_json
+    from ..sdks.report_registry import resolve_from_result_root
+
+    plugin = resolve_from_result_root(root)
+    scores: dict[str, float] = {}
+    for mode in mode_names(BENCHMARK_RUNS):
+        run = runs.get(mode)
+        if run is None:
+            continue
+        try:
+            score = plugin.score_structure(_as_run_evidence(run)).score
+        except Exception:
+            score = None
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            scores[mode] = float(score)
+    if scores:
+        write_json(root / "quality_summary.json", {"structure_score": scores})
+    return scores
+
+
 def benchmark_report(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) -> str:
     # Resolve the SDK report plugin once by captured identity (§4.2): absent id ->
     # null plugin (Inversion 3). Imported lazily to avoid a module-load import cycle

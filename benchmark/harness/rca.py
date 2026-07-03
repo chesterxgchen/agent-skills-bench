@@ -732,11 +732,31 @@ _TOPIC_SEEDERS: dict[str, Callable[..., dict[str, Any] | None]] = {
     "structure": seed_structure_context,
 }
 
-# ``auto`` scans these in order — a deterministic delta gates each. ``structure``
-# is intentionally excluded: it has no cheap numeric gate here (structure
-# scoring is SDK-specific), so it is an explicit ``--topic structure`` choice
-# rather than something ``auto`` fires on every run.
+# ``auto`` scans these in order, each gated by a deterministic delta read from
+# captured artifacts. ``structure`` is handled separately after this list: it
+# has no cheap numeric gate in this SDK-agnostic loop, so auto fires it only
+# when the host-persisted quality_summary.json shows a real regression (see
+# resolve_seed / _structure_regressed).
 _AUTO_TOPICS = ("failure", "slowdown", "tokens")
+
+
+def _structure_regressed(result_root: Path, mode: str) -> bool:
+    """True when ``mode``'s persisted structure score is below its peer's.
+
+    Reads the host-written ``quality_summary.json`` (see
+    ``benchmark_insights.persist_quality_summary``) so the SDK-agnostic auto
+    loop can gate a structure investigation without importing SDK scoring."""
+
+    summary = load_json(result_root / "quality_summary.json", {}) or {}
+    scores = summary.get("structure_score") if isinstance(summary, dict) else None
+    if not isinstance(scores, dict):
+        return False
+    peer = _other_mode(result_root, mode)
+    mode_score = scores.get(mode)
+    peer_score = scores.get(peer) if peer else None
+    if not isinstance(mode_score, (int, float)) or not isinstance(peer_score, (int, float)):
+        return False
+    return mode_score < peer_score
 
 
 def resolve_seed(
@@ -749,6 +769,10 @@ def resolve_seed(
             seed = _TOPIC_SEEDERS[name](result_root, mode, run_id)
             if seed is not None:
                 return seed
+        # Structure has no cheap numeric gate inside this SDK-agnostic loop, so
+        # auto fires it only when the persisted score shows a real regression.
+        if _structure_regressed(result_root, mode):
+            return seed_structure_context(result_root, mode, run_id)
         return None
     seeder = _TOPIC_SEEDERS.get(topic)
     return seeder(result_root, mode, run_id) if seeder else None
