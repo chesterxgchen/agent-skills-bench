@@ -7793,6 +7793,32 @@ def test_module_job_recovery_key_is_module_specific():
     assert command_recovery_key("python3 -m pip install -r requirements.txt") == "pip install requirements.txt"
 
 
+def test_module_key_long_option_value_consumption_is_nvflare_specific():
+    from benchmark.harness.reports._events import command_recovery_key
+
+    # Only nvflare's long options are known to take separate values. Other
+    # modules commonly use boolean long flags (`--rebuild`, `--no-cache`,
+    # `--no-agent-auth-mount`); assuming those consume the next token would
+    # drop the real positional from the key, collapsing different commands
+    # onto the same bare-module key.
+    assert (
+        command_recovery_key("python3 -m benchmark.harness.host.build --no-cache wheel")
+        == "python -m benchmark.harness.host.build wheel"
+    )
+    assert command_recovery_key("python3 -m some.tool --rebuild build target") != command_recovery_key(
+        "python3 -m some.tool --rebuild clean target"
+    )
+    # nvflare's own boolean long flags must not eat the following positional
+    # either.
+    assert command_recovery_key("python3 -m nvflare.cli simulator --debug jobs/train") == command_recovery_key(
+        "python3 -m nvflare.cli simulator jobs/train"
+    )
+    assert (
+        command_recovery_key("python3 -m nvflare.cli provision --ui_tool -p project.yml")
+        == "python -m nvflare.cli provision"
+    )
+
+
 def test_attached_module_form_keys_on_module_and_reads_as_job_run():
     from benchmark.harness.reports._events import (
         _command_is_python_job_run,

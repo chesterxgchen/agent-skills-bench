@@ -419,11 +419,31 @@ def command_succeeded(event: dict[str, Any]) -> bool:
     )
 
 
-#: Long options that never take a separate value; every other bare ``--flag``
-#: is assumed to consume the next token so an option value cannot occupy the
-#: subcommand/job-target slots of a module recovery key.
-_BOOLEAN_LONG_OPTIONS = frozenset(
-    {"--debug", "--force", "--help", "--no-color", "--quiet", "--verbose", "--version", "--yes"}
+#: NVFLARE long options that never take a separate value (zero-argument
+#: argparse actions in the nvflare CLIs, plus common built-ins). For nvflare
+#: modules every other bare ``--flag`` takes a separate value, so it is
+#: assumed to consume the next token — otherwise an option value could occupy
+#: the subcommand/job-target slots of a module recovery key. That assumption
+#: is nvflare-specific: it must not extend to other ``python -m`` CLIs, whose
+#: boolean long flags (``--rebuild``, ``--no-cache``, ...) cannot be
+#: enumerated here and would otherwise swallow the following positional.
+_NVFLARE_BOOLEAN_LONG_OPTIONS = frozenset(
+    {
+        "--clean",
+        "--debug",
+        "--force",
+        "--help",
+        "--no-color",
+        "--prepare",
+        "--quiet",
+        "--start",
+        "--stop",
+        "--ui_tool",
+        "--verbose",
+        "--version",
+        "--with_debug",
+        "--yes",
+    }
 )
 
 
@@ -438,6 +458,10 @@ def _module_invocation_key_suffix(command: str, module: str) -> str:
     reduce to their basename so relative/absolute rerun paths still match.
     """
 
+    # Only nvflare's option semantics are known here (all long options except
+    # a fixed boolean set take a separate value). Other modules keep the
+    # conservative reading: a bare long option is a boolean flag.
+    module_is_nvflare = module.split(".", 1)[0] == "nvflare"
     for segment in _shell_command_segments(command):
         tokens = _command_tokens(segment)
         module_end = None
@@ -457,12 +481,18 @@ def _module_invocation_key_suffix(command: str, module: str) -> str:
                 skip_value = False
                 continue
             if token.startswith("--"):
-                # `--flag=value` carries its value inline. A bare long option
-                # is assumed to take the next token as its value (nvflare's
-                # long options all do) unless it is a known boolean flag —
-                # otherwise `--workspace /tmp/ws` would let `ws` steal the
-                # job-target slot from the actual positional.
-                skip_value = "=" not in token and token not in _BOOLEAN_LONG_OPTIONS
+                # `--flag=value` carries its value inline. For nvflare
+                # modules a bare long option takes the next token as its
+                # value (nvflare's long options all do) unless it is a known
+                # boolean flag — otherwise `--workspace /tmp/ws` would let
+                # `ws` steal the job-target slot from the actual positional.
+                # For any other module the option set is unknown and boolean
+                # long flags are common, so a bare long option consumes
+                # nothing — assuming a value would let `--rebuild target`
+                # drop the real positional target from the key.
+                skip_value = (
+                    module_is_nvflare and "=" not in token and token not in _NVFLARE_BOOLEAN_LONG_OPTIONS
+                )
                 continue
             if token.startswith("-"):
                 # Short alphabetic options (`-w ws`, `-gpu 0`) consume the
