@@ -7298,3 +7298,54 @@ def test_report_generators_write_two_mode_outputs(tmp_path, monkeypatch):
         "agent_activity.json": 2,
         "agent_usage.json": 2,
     }
+
+
+def test_why_renders_generic_failure_root_cause_chain():
+    from benchmark.harness.reports.insights._why import _failure_root_cause_chain
+
+    def command(cmd, output="", exit_code=0):
+        return json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": cmd,
+                    "aggregated_output": output,
+                    "exit_code": exit_code,
+                },
+            }
+        )
+
+    def message(text):
+        return json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": text}})
+
+    with_events = "\n".join(
+        [
+            command("sed -n '1,280p' /workspace/.codex/skills/shared/references/dependency-install.md"),
+            message("I expect full simulation to stop at the dependency gate since torch is missing."),
+            command("python3 -m py_compile client.py job.py"),
+            command(
+                "python3 job.py --num-clients 3",
+                output="Traceback...\nModuleNotFoundError: No module named 'torch'",
+                exit_code=1,
+            ),
+        ]
+    )
+    base_events = "\n".join(
+        [
+            command("python3 -m pip install -r requirements-train.txt"),
+            command("python3 job.py", output="workflow Finished", exit_code=0),
+        ]
+    )
+    with_run = _ev({"available": True, "label": "With skills", "agent_events_text": with_events})
+    base_run = _ev({"available": True, "label": "No skills baseline", "agent_events_text": base_events})
+
+    chain = "\n".join(_failure_root_cause_chain(with_run, base_run))
+    assert "Root-cause chain (auto-extracted from With skills events)" in chain
+    assert "ModuleNotFoundError: No module named 'torch'" in chain
+    assert "dependency gate" in chain
+    assert "No command that would remediate" in chain
+    assert "pip install -r requirements-train.txt" in chain
+
+    # A run whose commands all succeed produces no chain.
+    assert _failure_root_cause_chain(base_run, with_run) == []

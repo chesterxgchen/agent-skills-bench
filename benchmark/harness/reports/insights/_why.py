@@ -27,6 +27,8 @@ from .._events import (
     as_number,
     fmt_seconds,
     fmt_seconds_with_unit,
+    inline_code_text,
+    is_dependency_install_command,
     truncate,
     run_activity,
 )
@@ -253,25 +255,31 @@ def _event_text_items(run: RunEvidence) -> list[str]:
             continue
         message = payload.get("message")
         content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, list):
-            continue
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "text":
-                text = str(item.get("text") or "").strip()
-                if text:
-                    items.append(text)
-            elif item.get("type") == "tool_result":
-                text = str(item.get("content") or "").strip()
-                if text:
-                    items.append(text)
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "text":
+                    text = str(item.get("text") or "").strip()
+                    if text:
+                        items.append(text)
+                elif item.get("type") == "tool_result":
+                    text = str(item.get("content") or "").strip()
+                    if text:
+                        items.append(text)
         result = payload.get("tool_use_result")
         if isinstance(result, dict):
             for key in ("stdout", "stderr", "content"):
                 text = str(result.get(key) or "").strip()
                 if text:
                     items.append(text)
+        # Codex stream shape: item.completed events carry agent_message/reasoning
+        # text on payload.item.text.
+        codex_item = payload.get("item")
+        if isinstance(codex_item, dict) and codex_item.get("type") in ("agent_message", "reasoning"):
+            text = str(codex_item.get("text") or "").strip()
+            if text:
+                items.append(text)
     return items
 
 
@@ -859,6 +867,164 @@ def _comparison_failure_explanation(
     return lines
 
 
+def _run_event_timeline(run: RunEvidence) -> list[dict[str, Any]]:
+    """Ordered command/message items from the captured event stream (any agent shape)."""
+
+    items: list[dict[str, Any]] = []
+    for line in str(run.agent_events_text or "").splitlines():
+        try:
+            payload = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        codex_item = payload.get("item")
+        if isinstance(codex_item, dict):
+            if codex_item.get("type") == "command_execution" and payload.get("type") == "item.completed":
+                items.append(
+                    {
+                        "kind": "command",
+                        "command": str(codex_item.get("command") or ""),
+                        "output": str(codex_item.get("aggregated_output") or ""),
+                        "exit_code": codex_item.get("exit_code"),
+                    }
+                )
+            elif codex_item.get("type") in ("agent_message", "reasoning"):
+                text = str(codex_item.get("text") or "").strip()
+                if text:
+                    items.append({"kind": "message", "text": text})
+            continue
+        message = payload.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            for entry in content:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("type") == "text" and str(entry.get("text") or "").strip():
+                    items.append({"kind": "message", "text": str(entry["text"]).strip()})
+                elif entry.get("type") == "tool_use" and isinstance(entry.get("input"), dict):
+                    command = str(entry["input"].get("command") or "")
+                    if command:
+                        items.append({"kind": "command", "command": command, "output": "", "exit_code": None})
+        result = payload.get("tool_use_result")
+        if isinstance(result, dict) and items and items[-1]["kind"] == "command":
+            items[-1]["output"] = "\n".join(
+                str(result.get(key) or "") for key in ("stdout", "stderr") if result.get(key)
+            )
+    return items
+
+
+# Error-class taxonomy for the generic RCA chain: how to read a failure signature
+# out of command output, and which command class would have remediated it. Data,
+# not narrative — extending RCA coverage means adding a row here.
+_ERROR_SIGNATURES: tuple[tuple[str, str], ...] = (
+    (r"ModuleNotFoundError: No module named ['\"]?([A-Za-z0-9_.]+)['\"]?", "missing_python_module"),
+    (r"ImportError: cannot import name ['\"]?([A-Za-z0-9_.]+)['\"]?", "import_error"),
+    (r"(?:FileNotFoundError|No such file or directory)[:\s]+['\"]?([\w./-]+)", "missing_file"),
+    (r"([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)): ([^\n]{1,120})", "exception"),
+)
+
+_REMEDIAL_COMMAND_CHECKS = {
+    "missing_python_module": is_dependency_install_command,
+}
+
+
+def _error_signature(output: str) -> dict[str, str] | None:
+    for pattern, kind in _ERROR_SIGNATURES:
+        match = re.search(pattern, output)
+        if match:
+            subject = match.group(1)
+            display = match.group(0).splitlines()[0]
+            return {"kind": kind, "subject": subject, "display": display}
+    return None
+
+
+def _rca_terms(signature: dict[str, str], anchor_command: str) -> set[str]:
+    """Search terms derived from the failure itself — nothing situation-specific."""
+
+    terms = {signature["subject"].split(".")[0].lower()}
+    terms.update(word.lower() for word in re.findall(r"[A-Za-z_][A-Za-z0-9_-]{3,}", signature["display"])[:4])
+    script = re.search(r"([\w-]+\.py)", anchor_command)
+    if script:
+        terms.add(script.group(1).lower())
+    return {term for term in terms if term not in {"module", "named", "error", "exception"}}
+
+
+def _timeline_item_display(item: dict[str, Any]) -> str:
+    if item["kind"] == "command":
+        exit_code = item.get("exit_code")
+        exit_phrase = f", exit {exit_code}" if exit_code is not None else ""
+        return f"ran `{inline_code_text(item.get('command'), 110)}`{exit_phrase}"
+    return f"agent: {markdown_cell(truncate(str(item.get('text') or ''), 220))}"
+
+
+def _failure_root_cause_chain(with_run: RunEvidence, base_run: RunEvidence) -> list[str]:
+    """Auto-extracted root-cause chain for the failing run's terminal error.
+
+    Fully evidence-derived: the failure signature is read from the failed
+    command's own output, the search terms come from that signature, and every
+    chain entry is a verbatim command or agent statement that mentions those
+    terms. No situation-specific narrative is encoded here.
+    """
+
+    timeline = _run_event_timeline(with_run)
+    anchor_index: int | None = None
+    signature: dict[str, str] | None = None
+    for index, item in enumerate(timeline):
+        if item["kind"] != "command":
+            continue
+        candidate = _error_signature(str(item.get("output") or ""))
+        if candidate and item.get("exit_code") not in (0,):
+            anchor_index, signature = index, candidate
+    if anchor_index is None or signature is None:
+        return []
+    anchor = timeline[anchor_index]
+    terms = _rca_terms(signature, str(anchor.get("command") or ""))
+    chain: list[dict[str, Any]] = []
+    for item in timeline[:anchor_index]:
+        haystack = " ".join(
+            str(item.get(key) or "") for key in ("command", "text", "output")
+        ).lower()
+        if any(term in haystack for term in terms):
+            chain.append(item)
+    with_label = with_run.label or "With skills"
+    base_label = base_run.label or "No skills baseline"
+    lines = [
+        f"**Root-cause chain (auto-extracted from {with_label} events)**",
+        "",
+        f"Terminal failure: `{inline_code_text(anchor.get('command'), 110)}` -> `{markdown_cell(signature['display'])}`. "
+        f"Evidence mentioning {', '.join(f'`{term}`' for term in sorted(terms))} before the failure:",
+        "",
+    ]
+    for index, item in enumerate(chain[-8:], start=1):
+        lines.append(f"{index}. {_timeline_item_display(item)}")
+    remedial_check = _REMEDIAL_COMMAND_CHECKS.get(signature["kind"])
+    if remedial_check is not None:
+        ran = [
+            item
+            for item in timeline
+            if item["kind"] == "command" and remedial_check(str(item.get("command") or ""))
+        ]
+        if ran:
+            lines.append(
+                f"- A remedial command ran but did not prevent the failure: "
+                f"`{inline_code_text(ran[-1].get('command'), 110)}`."
+            )
+        else:
+            lines.append(f"- No command that would remediate `{signature['display']}` ran at any point in this run.")
+        base_remedial = [
+            item
+            for item in _run_event_timeline(base_run)
+            if item["kind"] == "command" and remedial_check(str(item.get("command") or ""))
+        ]
+        if base_remedial:
+            lines.append(
+                f"- {base_label} contrast: it ran `{inline_code_text(base_remedial[0].get('command'), 110)}` "
+                "before its job run."
+            )
+    return lines
+
+
 def _root_cause_lead(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext | None = None) -> list[str]:
     """Ranked, concrete root-cause bullets that LEAD the Why section.
 
@@ -992,6 +1158,9 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
             lines.extend([*root_causes, ""])
     if quality_explanation:
         lines.extend([*quality_explanation, ""])
+    root_cause_chain = _failure_root_cause_chain(with_run, base_run)
+    if root_cause_chain:
+        lines.extend([*root_cause_chain, ""])
     slowdown_table = _slowdown_reason_table(
         with_run,
         base_run,
