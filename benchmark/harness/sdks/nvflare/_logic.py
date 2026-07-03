@@ -1349,10 +1349,16 @@ _DATA_PATH_HINT_RE = re.compile(r"data|dataset|\.csv|\.parquet|\.npz|\.jsonl?", 
 
 
 def _ephemeral_workspace_data_path_marker(text: str) -> str:
+    # Only quoted path expressions count — source headers and comments routinely
+    # mention simulate_job/runtime workspace paths without reading data from them.
     for line in text.splitlines():
-        marker = next((marker for marker in _RUN_WORKSPACE_PATH_MARKERS if marker in line), "")
-        if marker and _DATA_PATH_HINT_RE.search(line):
-            return marker
+        if line.lstrip().startswith("#"):
+            continue
+        for match in re.finditer(r"""["']([^"']*)["']""", line):
+            literal = match.group(1)
+            marker = next((marker for marker in _RUN_WORKSPACE_PATH_MARKERS if marker in literal), "")
+            if marker and _DATA_PATH_HINT_RE.search(literal):
+                return marker
     return ""
 
 
@@ -1373,7 +1379,7 @@ def _detect_data_packaging(text: str) -> str:
     marker = _ephemeral_workspace_data_path_marker(text)
     if marker:
         return f"data path points into ephemeral nvflare run workspace (`{marker}`)"
-    if "add_file_to_clients(" in text:
+    if re.search(r"add_file_to_clients\([^)]*data", text, re.IGNORECASE):
         return "copies dataset into client app; clients read it from the ephemeral run workspace"
     hardcoded = _hardcoded_absolute_data_path(text)
     if hardcoded:

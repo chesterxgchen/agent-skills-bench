@@ -1120,6 +1120,18 @@ def test_nvflare_data_packaging_rules():
     assert configurable.startswith("configurable data_root argument")
     assert conversion_quality_score("data_packaging", configurable) == "good"
 
+    header_only = _detect_data_packaging(
+        "# runtime_workspaces/ames/site-1/simulate_job/app_site-1/custom/datamodule.py\n"
+        'parser.add_argument("--data-root", type=Path, default=Path("/workspace/data/ames"))\n'
+    )
+    assert header_only.startswith("configurable data_root argument")
+
+    non_data_packaging = _detect_data_packaging(
+        'recipe.job.add_file_to_clients("requirements.txt")\n'
+        'parser.add_argument("--data-root", type=Path, default=Path("/workspace/data/ames"))\n'
+    )
+    assert non_data_packaging.startswith("configurable data_root argument")
+
 
 def test_nvflare_conversion_quality_prefers_local_client_pos_weight_over_server_default(tmp_path):
     from benchmark.harness.modes import WITH_SKILLS_MODE
