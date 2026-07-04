@@ -64,6 +64,19 @@ def test_capture_flags_nothing_with_empty_spec(tmp_path):
     assert _final_structure_names(manifest) == set()
 
 
+def test_capture_includes_content_of_unchanged_structure_files(tmp_path):
+    # baseline == workspace, so NOTHING is "changed" — the structure file is
+    # reused as-is (the nested-conversion case: FL wrapper added, train.py kept).
+    # Its CONTENT must still be captured so quality detectors can scan it.
+    manifest_path = _capture(tmp_path, ("client.py",))
+    manifest = load_json(manifest_path, {})
+    assert manifest.get("changed_files") == []
+    entry = next(e for e in manifest["final_structure_files"] if Path(e["path"]).name == "client.py")
+    assert entry.get("artifact_path"), "unchanged structure file must have captured content"
+    content = (tmp_path / "delta" / entry["artifact_path"]).read_text(encoding="utf-8")
+    assert content == "x = 1\n"
+
+
 # --- EvidenceCaptureSpec serialization + resolution -------------------------
 
 
@@ -87,6 +100,9 @@ def test_nvflare_spec_matches_prior_hardcoded_values():
         "client.py",
         "model.py",
         "job.py",
+        # train.py: capture the reused training source so quality detectors can
+        # scan it even when a nested conversion leaves it unchanged.
+        "train.py",
         "prepare_data.py",
         "download_data.py",
     )

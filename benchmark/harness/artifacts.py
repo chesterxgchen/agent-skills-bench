@@ -262,6 +262,8 @@ def capture_workspace_delta(
                     )
 
     structure_names = {name.lower() for name in structure_file_names}
+    changed_paths = {str(item.get("path")) for item in changed_files}
+    final_source_root = delta_root / "final_source"
     final_files: list[dict[str, Any]] = []
     final_structure_files: list[dict[str, Any]] = []
     for rel, meta in sorted(current_files.items()):
@@ -269,7 +271,21 @@ def capture_workspace_delta(
         if len(final_files) < WORKSPACE_MAX_FINAL_FILES:
             final_files.append(entry)
         if Path(rel).name.lower() in structure_names:
-            final_structure_files.append(entry)
+            structure_entry = dict(entry)
+            if rel in changed_paths:
+                # Content already copied under changed_files/; point at it.
+                structure_entry["artifact_path"] = (changed_root / rel).relative_to(delta_root).as_posix()
+            else:
+                # Capture the CONTENT of an unchanged structure file too, so
+                # quality detectors can scan generated code a conversion reuses
+                # without modifying (e.g. a nested FL wrapper that keeps the
+                # original train.py). Without this, only changed files are
+                # scannable and reused source reads as "not captured".
+                dst = final_source_root / rel
+                copied = copy_limited(workspace_root / rel, dst, copied_state, skipped_files)
+                if copied is not None:
+                    structure_entry["artifact_path"] = dst.relative_to(delta_root).as_posix()
+            final_structure_files.append(structure_entry)
     manifest = {
         "schema_version": "2",
         "delta_scope": delta_scope,

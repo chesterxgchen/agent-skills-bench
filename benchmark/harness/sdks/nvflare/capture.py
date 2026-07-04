@@ -26,7 +26,7 @@ from __future__ import annotations
 from ..capture_spec import EvidenceCaptureSpec
 
 NVFLARE_CAPTURE_SPEC = EvidenceCaptureSpec(
-    structure_file_names=("client.py", "model.py", "job.py", "prepare_data.py", "download_data.py"),
+    structure_file_names=("client.py", "model.py", "job.py", "train.py", "prepare_data.py", "download_data.py"),
     runtime_sources=(("runtime_workspaces", "/tmp/nvflare/workspaces"),),
     # FL-specific evidence whose exact in-workspace path varies by job/run:
     # the simulator/server/client console logs and the federated job configs.
