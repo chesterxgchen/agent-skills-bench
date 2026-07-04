@@ -16,9 +16,10 @@ attacker-authored. The investigator needs working tools — shell, file
 reads/searches, and the ability to write/run small analysis scripts — so it
 does NOT run read-only, but it no longer gets the blanket bypass flags either:
 
-- **claude (sandboxed):** explicit `--allowedTools Bash,Read,Grep,Glob,Write,
-  Edit` instead of `--dangerously-skip-permissions`; `WebFetch`/`WebSearch`/
-  `Task` disallowed, `--strict-mcp-config`. Residual: Bash children inherit
+- **claude (sandboxed):** explicit
+  `--allowedTools Bash,Read,Grep,Glob,Write,Edit` instead of
+  `--dangerously-skip-permissions`; `WebFetch`/`WebSearch`/`Task` disallowed,
+  `--strict-mcp-config`. Residual: Bash children inherit
   the CLI env (claude has no shell env policy), so an injected shell command
   can still reach `ANTHROPIC_API_KEY` and the network.
 - **codex (sandboxed):** `--sandbox workspace-write` (scratch under /tmp; the
