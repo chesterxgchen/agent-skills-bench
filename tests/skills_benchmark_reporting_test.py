@@ -8909,22 +8909,33 @@ def test_rca_codex_invoker_isolates_session_from_instruction_files(monkeypatch, 
     assert ["--cd", str(tmp_path)] == codex_args[codex_args.index("--cd") : codex_args.index("--cd") + 2]
 
 
-def test_rca_cli_permissions_are_full_in_sandbox_locked_on_host():
+def test_rca_cli_grants_shell_in_sandbox_but_never_blanket_bypass():
     from benchmark.harness import rca
 
     # HOST: reads are unconfined, so the investigator is locked to read-only
     # analysis (no exec/network/MCP).
     host_claude = rca._claude_cli_args("/x", sandboxed=False)
     assert "--disallowedTools" in host_claude and "--dangerously-skip-permissions" not in host_claude
+    assert "Bash" not in host_claude[host_claude.index("--allowedTools") + 1]
     host_codex = rca._codex_cli_args("/x", sandboxed=False)
     assert "read-only" in host_codex and "--dangerously-bypass-approvals-and-sandbox" not in host_codex
 
-    # CONTAINER: the container is the boundary, so the investigator runs with
-    # the SAME full permissions as the benchmarked agent — not crippled.
+    # CONTAINER: the mount confines reads, so the investigator gets working
+    # tools (shell, searches, scratch writes for analysis scripts) — but never
+    # the blanket bypass flags: the container still holds the vendor API key
+    # and network egress for the model API, so the direct network tools stay
+    # disallowed and codex's own sandbox/env policy stays on.
     box_claude = rca._claude_cli_args("/evidence", sandboxed=True)
-    assert "--dangerously-skip-permissions" in box_claude and "--disallowedTools" not in box_claude
+    assert "--dangerously-skip-permissions" not in box_claude and "bypassPermissions" not in box_claude
+    assert "--strict-mcp-config" in box_claude
+    assert "Bash" in box_claude[box_claude.index("--allowedTools") + 1]
+    disallowed = box_claude[box_claude.index("--disallowedTools") + 1]
+    assert "WebFetch" in disallowed and "WebSearch" in disallowed and "Task" in disallowed
     box_codex = rca._codex_cli_args("/evidence", sandboxed=True)
-    assert "--dangerously-bypass-approvals-and-sandbox" in box_codex and "read-only" not in box_codex
+    assert "--dangerously-bypass-approvals-and-sandbox" not in box_codex
+    assert "workspace-write" in box_codex
+    assert "shell_environment_policy.inherit=core" in box_codex
+    assert "sandbox_workspace_write.network_access=false" in box_codex
     # Captured instruction files (AGENTS.md) still must not steer the investigator.
     assert "--ignore-rules" in box_codex and "--ephemeral" in box_codex
 

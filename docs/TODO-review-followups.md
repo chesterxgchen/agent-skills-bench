@@ -8,19 +8,25 @@ review is merged to `main`.
 
 ## 4. RCA container egress is unrestricted (security, residual)
 
-**Status:** Open (accepted residual, matches benchmark posture).
+**Status:** Open (mitigated at the CLI layer; egress allowlist still pending).
 
-The RCA investigator now runs in the container with full benchmark-parity
-permissions (`--dangerously-skip-permissions` / `--dangerously-bypass-
-approvals-and-sandbox`) because the container confines the filesystem to the
-read-only evidence mount + the vendor API key. But the container keeps network
-egress (needed for the model API), and the evidence is attacker-authored — so
-an injected instruction could in principle exfil the mounted evidence or the
-API key over the network via a tool call.
+The RCA container keeps network egress (needed for the model API) and holds
+the vendor API key in the CLI env, while the mounted evidence is
+attacker-authored. The investigator needs working tools — shell, file
+reads/searches, and the ability to write/run small analysis scripts — so it
+does NOT run read-only, but it no longer gets the blanket bypass flags either:
 
-This is the **same posture the benchmark run itself accepts** (the benchmarked
-agent also runs bypass-sandbox with network + key in its container), so it is a
-consistent residual, not a new hole.
+- **claude (sandboxed):** explicit `--allowedTools Bash,Read,Grep,Glob,Write,
+  Edit` instead of `--dangerously-skip-permissions`; `WebFetch`/`WebSearch`/
+  `Task` disallowed, `--strict-mcp-config`. Residual: Bash children inherit
+  the CLI env (claude has no shell env policy), so an injected shell command
+  can still reach `ANTHROPIC_API_KEY` and the network.
+- **codex (sandboxed):** `--sandbox workspace-write` (scratch under /tmp; the
+  evidence mount is read-only at the filesystem level) with
+  `sandbox_workspace_write.network_access=false` and
+  `shell_environment_policy.inherit=core`, instead of
+  `--dangerously-bypass-approvals-and-sandbox` — spawned commands get neither
+  the key nor network.
 
 **Proper fix (if we want to close it):** apply a network policy to the RCA
 container that allows egress only to the model API endpoint(s) — e.g. a

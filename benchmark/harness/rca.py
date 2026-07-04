@@ -235,14 +235,19 @@ _CONTAINER_EVIDENCE_DIR = "/evidence"
 
 
 def _claude_cli_args(cwd: str, *, sandboxed: bool) -> list[str]:
-    # ``sandboxed`` (container): the container IS the boundary — only the
-    # read-only evidence tree and the vendor API key are inside it — so the
-    # investigator runs with the SAME full permissions as the benchmarked agent
-    # (bypassPermissions / --dangerously-skip-permissions). Restricting tools
-    # here would only cripple the analysis without adding safety. Residual: the
-    # container keeps network egress for the model API, so an injected
-    # WebFetch could still exfil the mounted evidence / API key — the same
-    # posture the benchmark run itself accepts.
+    # ``sandboxed`` (container): the container confines READS — only the
+    # read-only evidence tree is mounted — so the investigator gets working
+    # tools (shell, file reads/searches, scratch writes for analysis scripts;
+    # the evidence mount itself is read-only, scratch goes to /tmp) via an
+    # explicit allowlist. It does NOT get a blanket
+    # --dangerously-skip-permissions: the container keeps network egress for
+    # the model API and holds the vendor key in the CLI env, so full bypass
+    # would hand prompt-injected evidence ready-made exfiltration tools.
+    # WebFetch/WebSearch/Task stay disallowed and --strict-mcp-config drops
+    # host MCP servers. Residual: Bash children inherit the CLI env, so an
+    # injected shell command could still reach the key/evidence + egress —
+    # closing that needs a container egress allowlist (see
+    # docs/TODO-review-followups.md item 4).
     #
     # HOST path (not sandboxed): reads are NOT confined (Claude deny rules can't
     # whitelist a cwd — Read(//**) denies the cwd too, and Grep/Glob aren't
@@ -251,7 +256,15 @@ def _claude_cli_args(cwd: str, *, sandboxed: bool) -> list[str]:
     # variadic and would swallow a positional prompt). ``cwd`` is unused —
     # claude uses its process/-w working dir.
     if sandboxed:
-        return ["claude", "-p", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions"]
+        return [
+            "claude",
+            "-p",
+            "--strict-mcp-config",
+            "--allowedTools",
+            "Bash,Read,Grep,Glob,Write,Edit",
+            "--disallowedTools",
+            "WebFetch,WebSearch,Task",
+        ]
     return [
         "claude",
         "-p",
@@ -264,17 +277,30 @@ def _claude_cli_args(cwd: str, *, sandboxed: bool) -> list[str]:
 
 
 def _codex_cli_args(cwd: str, *, sandboxed: bool) -> list[str]:
-    # ``sandboxed`` (container): full permissions like the benchmark run
-    # (--dangerously-bypass-approvals-and-sandbox) — the container confines the
-    # filesystem, so an in-container seatbelt is redundant. HOST path: keep
-    # codex's read-only sandbox and shell_environment_policy.inherit=core (which
-    # keeps the API keys out of model-spawned commands), since a host process
-    # is otherwise unconfined. Either way --ignore-rules/--ephemeral keep
-    # instruction files captured into the evidence (AGENTS.md and friends) from
-    # steering the investigator, and --cd pins the session to the evidence root.
+    # BOTH paths keep codex's own sandbox and
+    # shell_environment_policy.inherit=core (vendor keys stay out of every
+    # model-spawned command): the Docker container confines reads, but it
+    # still has network egress for the model API and OPENAI_API_KEY in the CLI
+    # env, so --dangerously-bypass-approvals-and-sandbox would let
+    # prompt-injected evidence exfil both through a spawned shell.
+    # ``sandboxed`` (container) upgrades read-only to workspace-write so the
+    # investigator can write and run analysis scripts (the evidence mount
+    # stays read-only at the filesystem level; scratch goes to /tmp), with the
+    # sandbox's command network access pinned off. HOST path stays fully
+    # read-only — a host process is otherwise unconfined. Either way
+    # --ignore-rules/--ephemeral keep instruction files captured into the
+    # evidence (AGENTS.md and friends) from steering the investigator, and
+    # --cd pins the session to the evidence root.
     args = ["codex", "exec", "--skip-git-repo-check", "--ignore-rules", "--ephemeral", "--cd", cwd]
     if sandboxed:
-        args.append("--dangerously-bypass-approvals-and-sandbox")
+        args += [
+            "--sandbox",
+            "workspace-write",
+            "-c",
+            "shell_environment_policy.inherit=core",
+            "-c",
+            "sandbox_workspace_write.network_access=false",
+        ]
     else:
         args += ["--sandbox", "read-only", "-c", "shell_environment_policy.inherit=core"]
     args.append("-")
