@@ -22,9 +22,11 @@ evaluation criterion directly — the same idea as ``rca.py``, applied to the
 code-quality criteria list.
 
 Flow: ``build_eval_prompt`` renders the criteria (key + description) into a
-prompt; the agent runs read-only over a staged, symlink-free copy of the
-result root (reusing ``rca``'s container sandbox and invoker) and returns one
-``{"key", "verdict", "evidence"}`` per criterion; ``parse_eval_assessments``
+prompt; the agent runs read-only inside a staged, symlink-free copy of the
+result root (reusing ``rca``'s container sandbox and invoker), with the
+selected run's record directory as its working directory so it only sees the
+evaluated mode's captured code, and returns one ``{"key", "verdict",
+"evidence"}`` per criterion; ``parse_eval_assessments``
 validates it against the requested keys; the result is persisted to
 ``<mode_dir>/code_quality_assessment.json``. The report reads that when
 present and falls back to the detectors otherwise.
@@ -38,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from .common import write_json
-from .rca import AgentInvoker, _captured_block, _stage_evidence_copy
+from .rca import AgentInvoker, _captured_block, _contained_mode_dir, _stage_evidence_copy
 from .reports._loader import mode_dir_for_benchmark
 
 # The verdict vocabulary the report scores (mirrors the evaluation rules'
@@ -58,7 +60,8 @@ def build_eval_prompt(criteria: list[dict[str, str]], mode: str) -> str:
     criteria_block = _captured_block(json.dumps(criteria, indent=2))
     return (
         "You are evaluating the QUALITY of code an AI agent generated while converting a training "
-        f"job to NVIDIA FLARE (run mode: {mode}). The generated code is in your working directory "
+        f"job to NVIDIA FLARE (run mode: {mode}). Your working directory is the captured record of "
+        "exactly that run — judge only the code in it "
         "(look under workspace_delta/ — changed_files/, final_source/, runtime_artifacts/ — for the "
         "Python the agent produced or reused: client.py, job.py, model.py, train.py, aggregator, "
         "config_fed_*.json, etc.). Read the actual code; do not guess.\n\n"
@@ -80,30 +83,39 @@ def build_eval_prompt(criteria: list[dict[str, str]], mode: str) -> str:
 def parse_eval_assessments(raw: str, criteria: list[dict[str, str]]) -> dict[str, dict[str, str]]:
     """Extract ``{key: {verdict, evidence}}`` from the agent output.
 
-    Tolerates prose around the JSON array; keeps only requested keys; normalizes
-    unknown/invalid verdicts to ``unknown``. Criteria the agent omitted are left
-    out (the report renders them as not captured)."""
+    Tolerates prose around the JSON array, but only counts arrays whose objects
+    actually carry a verdict for a requested key: agents often echo the criteria
+    list (key + description, no verdict) before answering, and such an echo must
+    not turn into ``unknown`` verdicts that override the report's detector
+    fallback. The LAST verdict-bearing array wins (the answer follows any echo);
+    entries without a verdict are ignored; only requested keys are kept;
+    unrecognized verdict words normalize to ``unknown``. Criteria the agent
+    omitted are left out (the report renders them as not captured)."""
 
     requested = {str(item.get("key")) for item in criteria if item.get("key")}
     decoder = json.JSONDecoder()
-    items: list[Any] = []
+    items: list[dict[str, Any]] = []
     index = raw.find("[")
     while index != -1:
         try:
-            payload, _end = decoder.raw_decode(raw, index)
+            payload, end = decoder.raw_decode(raw, index)
         except json.JSONDecodeError:
             index = raw.find("[", index + 1)
             continue
-        if isinstance(payload, list) and payload:
-            items = payload
-            break
-        index = raw.find("[", index + 1)
+        entries = [
+            item
+            for item in payload
+            if isinstance(item, dict)
+            and str(item.get("key") or "") in requested
+            and str(item.get("verdict") or "").strip()
+        ]
+        if entries:
+            items = entries
+        index = raw.find("[", end)
     assessments: dict[str, dict[str, str]] = {}
     for item in items:
-        if not isinstance(item, dict):
-            continue
-        key = str(item.get("key") or "")
-        if key not in requested or key in assessments:
+        key = str(item.get("key"))
+        if key in assessments:
             continue
         verdict = str(item.get("verdict") or "").strip().lower()
         if verdict not in _VERDICTS:
@@ -122,16 +134,24 @@ def evaluate_code_quality(
 ) -> Path | None:
     """Run the evaluation agent over the captured code and persist its verdicts.
 
-    Returns the written assessment path, or ``None`` when there are no criteria
-    or the agent produced no usable verdicts."""
+    Returns the written assessment path, or ``None`` when there are no criteria,
+    the selected run has no captured record directory, or the agent produced no
+    usable verdicts."""
 
     criteria = [c for c in criteria if c.get("key")]
     if not criteria:
         return None
-    mode_dir = mode_dir_for_benchmark(result_root, mode)
+    mode_dir = _contained_mode_dir(result_root, mode_dir_for_benchmark(result_root, mode))
     staged_root = _stage_evidence_copy(result_root)
+    # The staged copy holds EVERY mode's record, and the prompt points the agent
+    # at workspace_delta/ relative to its cwd — so the invoker must run from the
+    # selected run's record directory (records/.../mode=<mode>), not the root,
+    # or the agent can read the other mode's code and judge the wrong run.
+    staged_mode_dir = staged_root / mode_dir.resolve().relative_to(result_root.resolve())
     try:
-        raw = invoker(build_eval_prompt(criteria, mode), staged_root)
+        if not staged_mode_dir.is_dir():
+            return None
+        raw = invoker(build_eval_prompt(criteria, mode), staged_mode_dir)
     finally:
         shutil.rmtree(staged_root, ignore_errors=True)
     assessments = parse_eval_assessments(raw, criteria)
