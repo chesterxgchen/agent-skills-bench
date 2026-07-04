@@ -151,6 +151,8 @@ def evaluate_code_quality(
     try:
         if not staged_mode_dir.is_dir():
             return None
+        # One call, no timeout (see rca._checked_agent_run): the agent reads the
+        # code once and judges every criterion, running as long as it needs.
         raw = invoker(build_eval_prompt(criteria, mode), staged_mode_dir)
     finally:
         shutil.rmtree(staged_root, ignore_errors=True)
