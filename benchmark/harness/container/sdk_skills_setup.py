@@ -49,11 +49,15 @@ def run_command(command: str, output_path: Path) -> None:
     with output_path.open("w", encoding="utf-8") as stream:
         try:
             # Developer-trusted: install_command comes from the SDK profile baked into the image at build time.
-            subprocess.run(["/bin/bash", "-c", command], check=True, stdout=stream)
+            # stdout -> the JSON output file; stderr captured so a failure reason is surfaced at the error
+            # instead of scrolling away in the build log.
+            subprocess.run(["/bin/bash", "-c", command], check=True, stdout=stream, stderr=subprocess.PIPE, text=True)
         except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            detail = f"\nCaptured stderr:\n{stderr[-2000:]}" if stderr else " (no stderr captured)"
             raise SystemExit(
                 f"skills.setup command failed with exit code {exc.returncode}: {command}. "
-                f"Captured stdout: {output_path}"
+                f"Captured stdout: {output_path}{detail}"
             ) from exc
 
 
