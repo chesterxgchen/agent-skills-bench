@@ -71,7 +71,7 @@ Quick view of the same evidence shown in the chart below.
 | Total tokens | 12.0k | 15.0k | +25% |
 | Commands | 4 | 5 | +25% |
 | Structure score | 0% | 0% | +0 pts |
-| Code quality | 50% | 50% | +0 pts |
+| Code quality | 57% | 57% | +0 pts |
 | Metrics (AUROC) | NA | NA | missing |
 
 <svg xmlns="http://www.w3.org/2000/svg" width="1180" height="728" viewBox="0 0 1180 728">
@@ -136,10 +136,10 @@ Quick view of the same evidence shown in the chart below.
 <line x1="602.0" y1="628" x2="863.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <line x1="602.0" y1="483" x2="602.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
 <rect x="682.5" y="483.0" width="38.0" height="145.0" fill="#16a34a" rx="3"/>
-<text x="701.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">50%</text>
+<text x="701.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">57%</text>
 <text x="701.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">No skills</text>
 <rect x="744.5" y="483.0" width="38.0" height="145.0" fill="#2563eb" rx="3"/>
-<text x="763.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">50%</text>
+<text x="763.5" y="476.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111827">57%</text>
 <text x="763.5" y="647" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#374151">With skills</text>
 <text x="887.0" y="406.0" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#111827">Metrics (AUROC)</text>
 <line x1="887.0" y1="628" x2="1148.0" y2="628" stroke="#d1d5db" stroke-width="1"/>
@@ -281,7 +281,7 @@ These are evidence signals for interpreting generated-code, runtime, maintenance
 
 | Evidence signal | No skills baseline | With skills |
 |---|---|---|
-| Overall code quality signal | caution: 7.5/15 evidence points; 8/15 scored, 7 unknown | caution: 7.5/15 evidence points; 8/15 scored, 7 unknown |
+| Overall code quality signal | caution: 8.5/15 evidence points; 9/15 scored, 6 unknown | caution: 8.5/15 evidence points; 9/15 scored, 6 unknown |
 | Client data split/use | good: site-aware, explicit sharding, validation data referenced | good: site-aware, explicit sharding, validation data referenced |
 | Loss/optimizer lifecycle | good: loss/optimizer built outside FL loop | good: loss/optimizer built outside FL loop |
 | Data/DataLoader lifecycle | good: data loaded before FL loop, DataLoader built before FL loop | good: data loaded before FL loop, DataLoader built before FL loop |
@@ -296,7 +296,7 @@ These are evidence signals for interpreting generated-code, runtime, maintenance
 | Conversion: data packaging/path | unknown: not captured | unknown: not captured |
 | Conversion: round metric progression | unknown: not captured | unknown: not captured |
 | Conversion: client training/control path | good: manual Client API loop | good: manual Client API loop |
-| Conversion: client execution/model exchange | unknown: not captured | unknown: not captured |
+| Conversion: client execution/model exchange | good: recipe-based job (FedAvgRecipe) | good: recipe-based job (FedAvgRecipe) |
 | API pattern | context: Client API loop pattern | context: Client API loop pattern |
 
 Dependency policy note: accelerator-capable framework installs are valid for accelerator-backed training jobs but can dominate benchmark wall time when uncached. CPU-only framework installs are faster, but they should only be treated as comparable when the benchmark is intentionally CPU-only.

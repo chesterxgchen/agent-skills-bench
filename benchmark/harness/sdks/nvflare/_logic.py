@@ -1627,6 +1627,14 @@ def _detect_data_packaging(text: str) -> str:
     return "not captured"
 
 
+_RECIPE_ENV_MARKERS = (
+    (r"\bSimEnv\b|\bSimulatorEnv\b", "simulator env"),
+    (r"\bPocEnv\b", "POC env"),
+    (r"\bProdEnv\b|\bProductionEnv\b", "production env"),
+    (r"\bExecEnv\b", "exec env"),
+)
+
+
 def _detect_execution_model(text: str) -> str:
     if "launch_external_process=False" in text:
         details = ["in-process Client API executor"]
@@ -1637,6 +1645,21 @@ def _detect_execution_model(text: str) -> str:
         return "; ".join(details)
     if "launch_external_process=True" in text:
         return "external client process runner"
+    # Recipe API (newer NVFLARE): the client execution mode is a recipe/env
+    # default, so there is no launch_external_process flag to read — the launch
+    # style lives in the Recipe + its environment (SimEnv/PocEnv/ProdEnv). A
+    # detector that only looked for the legacy flag reported "not captured" for
+    # these (correct) recipe-based conversions.
+    recipe = re.search(r"\b(\w*Recipe)\b", text)
+    if recipe or "nvflare.recipe" in text or re.search(r"\brecipe\.execute\b", text):
+        name = recipe.group(1) if recipe else "Recipe"
+        env = next((label for pattern, label in _RECIPE_ENV_MARKERS if re.search(pattern, text)), "")
+        details = [f"recipe-based job ({name})" + (f" via {env}" if env else "")]
+        if "ExchangeFormat.PYTORCH" in text:
+            details.append("PyTorch exchange format")
+        if "TransferType.FULL" in text:
+            details.append("full parameter transfer")
+        return "; ".join(details)
     return "not captured"
 
 

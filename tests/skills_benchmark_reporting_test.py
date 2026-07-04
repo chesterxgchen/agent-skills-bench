@@ -1369,6 +1369,34 @@ recipe = FedAvgRecipe(
     assert "bad: AUROC 0.4860 -> 0.4860 -> 0.4860 (flat)" in section
 
 
+def test_execution_model_detects_both_legacy_and_recipe_conversions():
+    from benchmark.harness.evaluation import load_evaluation_rules, score_signal
+    from benchmark.harness.sdks.nvflare._logic import _detect_execution_model
+
+    # Legacy explicit-launcher style (e.g. gpt-5.5's manual job.py).
+    legacy = "executor = ClientAPILauncherExecutor(launch_external_process=True)"
+    assert _detect_execution_model(legacy) == "external client process runner"
+
+    # Recipe API style (e.g. gpt-5.6's fl_job.py): no launch flag; the launch
+    # mode is a recipe/env default. Must be captured, not "not captured".
+    recipe = (
+        "from nvflare.app_opt.pt.recipes import FedAvgRecipe\n"
+        "from nvflare.recipe import SimEnv\n"
+        "from nvflare.client.config import ExchangeFormat, TransferType\n"
+        "recipe = FedAvgRecipe(exchange_format=ExchangeFormat.PYTORCH)\n"
+        "recipe.execute(SimEnv(num_clients=2))\n"
+    )
+    detected = _detect_execution_model(recipe)
+    assert "recipe-based job (FedAvgRecipe)" in detected and "simulator env" in detected
+    assert _detect_execution_model("print('no fl job here')") == "not captured"
+
+    # Both conversion styles score good under the packaged rules — the report
+    # serves both models, not just the legacy one.
+    rules = load_evaluation_rules("nvflare", task="conversion")
+    assert score_signal(rules, "execution_model", "external client process runner", {}) == "good"
+    assert score_signal(rules, "execution_model", detected, {}) == "good"
+
+
 def test_evaluation_rules_score_profile_outside_reporting_engine(tmp_path):
     from benchmark.harness.evaluation import load_evaluation_rules, main, score_profile
 

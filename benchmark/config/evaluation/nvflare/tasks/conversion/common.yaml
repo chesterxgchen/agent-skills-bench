@@ -27,5 +27,5 @@ signals:
   execution_model:
     label: "Conversion: client execution/model exchange"
     rules:
-      - contains_any: ["external client process", "in-process client api executor"]
+      - contains_any: ["external client process", "in-process client api executor", "recipe-based job"]
         verdict: good
