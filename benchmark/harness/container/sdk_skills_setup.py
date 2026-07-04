@@ -46,19 +46,24 @@ def run_command(command: str, output_path: Path) -> None:
     if not command:
         raise SystemExit("skills.setup.type=command requires SKILLS_INSTALL_COMMAND")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as stream:
-        try:
-            # Developer-trusted: install_command comes from the SDK profile baked into the image at build time.
-            # stdout -> the JSON output file; stderr captured so a failure reason is surfaced at the error
-            # instead of scrolling away in the build log.
-            subprocess.run(["/bin/bash", "-c", command], check=True, stdout=stream, stderr=subprocess.PIPE, text=True)
-        except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or "").strip()
-            detail = f"\nCaptured stderr:\n{stderr[-2000:]}" if stderr else " (no stderr captured)"
-            raise SystemExit(
-                f"skills.setup command failed with exit code {exc.returncode}: {command}. "
-                f"Captured stdout: {output_path}{detail}"
-            ) from exc
+    # Capture BOTH streams: a failing command may report to stdout (e.g. a
+    # `--format json` error payload) rather than stderr, and the stdout stream
+    # is otherwise persisted to the JSON output file where a failed build layer
+    # hides it. Persist stdout to the file as before, but surface both on error.
+    # Developer-trusted: the command comes from the SDK profile baked at build time.
+    result = subprocess.run(["/bin/bash", "-c", command], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    output_path.write_text(result.stdout or "", encoding="utf-8")
+    if result.returncode != 0:
+        captured = "\n".join(
+            f"{name}:\n{text.strip()[-2000:]}"
+            for name, text in (("stdout", result.stdout or ""), ("stderr", result.stderr or ""))
+            if text.strip()
+        )
+        detail = f"\nCaptured output:\n{captured}" if captured else " (no output captured)"
+        raise SystemExit(
+            f"skills.setup command failed with exit code {result.returncode}: {command}. "
+            f"Captured stdout: {output_path}{detail}"
+        )
 
 
 def visible_files(path: Path) -> list[str]:

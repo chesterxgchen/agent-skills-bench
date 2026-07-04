@@ -860,26 +860,38 @@ def test_container_sdk_skills_setup_visible_files_skips_symlinks(tmp_path):
 
 
 def test_container_sdk_skills_setup_run_command_uses_non_login_shell(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
     from benchmark.harness.container import sdk_skills_setup
 
     calls = []
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
 
     monkeypatch.setattr(sdk_skills_setup.subprocess, "run", fake_run)
 
-    sdk_skills_setup.run_command("example-sdk skills list", tmp_path / "out.json")
+    out = tmp_path / "out.json"
+    sdk_skills_setup.run_command("example-sdk skills list", out)
 
     assert calls[0][0] == ["/bin/bash", "-c", "example-sdk skills list"]
-    assert calls[0][1]["check"] is True
+    # Both streams captured so a failure reason is never lost.
+    assert calls[0][1]["stdout"] is sdk_skills_setup.subprocess.PIPE
+    assert calls[0][1]["stderr"] is sdk_skills_setup.subprocess.PIPE
+    # stdout is still persisted to the output file.
+    assert out.read_text(encoding="utf-8") == '{"ok": true}'
 
 
 def test_container_sdk_skills_setup_run_command_reports_failures(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
     from benchmark.harness.container import sdk_skills_setup
 
     def fake_run(command, **_kwargs):
-        raise sdk_skills_setup.subprocess.CalledProcessError(returncode=17, cmd=command)
+        # A command that fails by writing to stdout (e.g. a --format json error
+        # payload) and nothing to stderr — the case that showed only "exit 1".
+        return SimpleNamespace(returncode=17, stdout='{"error": "boom on stdout"}', stderr="")
 
     monkeypatch.setattr(sdk_skills_setup.subprocess, "run", fake_run)
 
@@ -893,6 +905,8 @@ def test_container_sdk_skills_setup_run_command_reports_failures(tmp_path, monke
     assert "skills.setup command failed with exit code 17" in message
     assert "example-sdk skills install" in message
     assert str(tmp_path / "install.json") in message
+    # The stdout error payload is surfaced even though stderr was empty.
+    assert "boom on stdout" in message
 
 
 def test_host_common_all_is_curated():
