@@ -1634,6 +1634,93 @@ _RECIPE_ENV_MARKERS = (
     (r"\bExecEnv\b", "exec env"),
 )
 
+_RECIPE_ENV_CLASS_NAMES = frozenset({"SimEnv", "SimulatorEnv", "PocEnv", "ProdEnv", "ProductionEnv", "ExecEnv"})
+
+
+def _called_name(node: ast.Call) -> str:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
+def _call_receives_recipe_env(node: ast.Call) -> bool:
+    for value in list(node.args) + [keyword.value for keyword in node.keywords]:
+        for child in ast.walk(value):
+            if isinstance(child, ast.Name) and child.id in _RECIPE_ENV_CLASS_NAMES:
+                return True
+            if isinstance(child, ast.Attribute) and child.attr in _RECIPE_ENV_CLASS_NAMES:
+                return True
+    return False
+
+
+def _execution_receiver_is_recipe(func: ast.Attribute, recipe_vars: set[str]) -> bool:
+    receiver = func.value
+    if isinstance(receiver, ast.Name):
+        return receiver.id in recipe_vars or "recipe" in receiver.id.lower()
+    if isinstance(receiver, ast.Attribute):
+        return "recipe" in receiver.attr.lower()
+    if isinstance(receiver, ast.Call):
+        return _called_name(receiver).endswith("Recipe")
+    return False
+
+
+def _recipe_job_evidence(text: str) -> tuple[str, bool]:
+    """(recipe class name, executed) parsed from Python syntax.
+
+    A bare `*Recipe` token, `nvflare.recipe` import, or a comment mention is
+    not evidence of a recipe-based job. `executed` is True only when a recipe
+    is actually run: an `execute`/`export` call on a recipe (a name bound to a
+    recipe constructor, a recipe-named receiver, or a chained `*Recipe(...)`
+    call), or an `execute`/`export` call handed an explicit
+    SimEnv/PocEnv/ProdEnv environment.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return _recipe_job_evidence_unparsed(text)
+    recipe_name = ""
+    recipe_vars: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _called_name(node).endswith("Recipe"):
+            recipe_name = recipe_name or _called_name(node)
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and _called_name(node.value).endswith("Recipe")
+        ):
+            recipe_vars.update(target.id for target in node.targets if isinstance(target, ast.Name))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in ("execute", "export"):
+            continue
+        if _execution_receiver_is_recipe(node.func, recipe_vars) or _call_receives_recipe_env(node):
+            return recipe_name or "Recipe", True
+    return recipe_name, False
+
+
+def _recipe_job_evidence_unparsed(text: str) -> tuple[str, bool]:
+    """Fallback when the concatenated sources do not parse as one module:
+    verify individual call expressions instead of trusting bare tokens."""
+
+    recipe_name = ""
+    for match in re.finditer(r"\b(\w*Recipe)\s*\(", text):
+        name = match.group(1)
+        if any(_parsed_call_source(call) is not None for call in _iter_call_sources(text, name)):
+            recipe_name = name
+            break
+    if not recipe_name:
+        return "", False
+    env_names = "|".join(sorted(_RECIPE_ENV_CLASS_NAMES))
+    executed = bool(
+        re.search(r"\b\w*[Rr]ecipe\w*\s*\.\s*(?:execute|export)\s*\(", text)
+        or re.search(rf"\.\s*(?:execute|export)\s*\(\s*(?:\w+\s*=\s*)?(?:{env_names})\s*\(", text)
+    )
+    return recipe_name, executed
+
 
 def _detect_execution_model(text: str) -> str:
     if "launch_external_process=False" in text:
@@ -1649,10 +1736,11 @@ def _detect_execution_model(text: str) -> str:
     # default, so there is no launch_external_process flag to read — the launch
     # style lives in the Recipe + its environment (SimEnv/PocEnv/ProdEnv). A
     # detector that only looked for the legacy flag reported "not captured" for
-    # these (correct) recipe-based conversions.
-    recipe = re.search(r"\b(\w*Recipe)\b", text)
-    if recipe or "nvflare.recipe" in text or re.search(r"\brecipe\.execute\b", text):
-        name = recipe.group(1) if recipe else "Recipe"
+    # these (correct) recipe-based conversions. Only a recipe that is actually
+    # constructed and run counts — an unused import, comment mention, or
+    # constructor-only stub is not a client execution model.
+    name, executed = _recipe_job_evidence(text)
+    if executed:
         env = next((label for pattern, label in _RECIPE_ENV_MARKERS if re.search(pattern, text)), "")
         details = [f"recipe-based job ({name})" + (f" via {env}" if env else "")]
         if "ExchangeFormat.PYTORCH" in text:

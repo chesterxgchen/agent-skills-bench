@@ -205,8 +205,10 @@ def _client_source() -> str:
 
 def _job_source() -> str:
     return (
-        "from nvflare.app_opt.pt.recipes.fedavg import FedAvgRecipe\n\n"
+        "from nvflare.app_opt.pt.recipes.fedavg import FedAvgRecipe\n"
+        "from nvflare.recipe import SimEnv\n\n"
         "recipe = FedAvgRecipe(name='ames_fedavg', min_clients=3, num_rounds=3)\n"
+        "recipe.execute(SimEnv(num_clients=3))\n"
     )
 
 

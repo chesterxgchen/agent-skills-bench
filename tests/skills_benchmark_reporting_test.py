@@ -1390,6 +1390,14 @@ def test_execution_model_detects_both_legacy_and_recipe_conversions():
     assert "recipe-based job (FedAvgRecipe)" in detected and "simulator env" in detected
     assert _detect_execution_model("print('no fl job here')") == "not captured"
 
+    # Partial recipe evidence must NOT be credited as an execution model: an
+    # unused import, a comment mention, or a constructor-only stub is not a
+    # constructed-and-run recipe job.
+    assert _detect_execution_model("from nvflare.app_opt.pt.recipes import FedAvgRecipe\n") == "not captured"
+    assert _detect_execution_model("# TODO: port to recipe.execute(SimEnv())\nprint('wip')\n") == "not captured"
+    stub = "from nvflare.app_opt.pt.recipes import FedAvgRecipe\nrecipe = FedAvgRecipe(min_clients=2)\n"
+    assert _detect_execution_model(stub) == "not captured"
+
     # Both conversion styles score good under the packaged rules — the report
     # serves both models, not just the legacy one.
     rules = load_evaluation_rules("nvflare", task="conversion")

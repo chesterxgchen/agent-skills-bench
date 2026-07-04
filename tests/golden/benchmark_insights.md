@@ -296,7 +296,7 @@ These are evidence signals for interpreting generated-code, runtime, maintenance
 | Conversion: data packaging/path | unknown: not captured | unknown: not captured |
 | Conversion: round metric progression | unknown: not captured | unknown: not captured |
 | Conversion: client training/control path | good: manual Client API loop | good: manual Client API loop |
-| Conversion: client execution/model exchange | good: recipe-based job (FedAvgRecipe) | good: recipe-based job (FedAvgRecipe) |
+| Conversion: client execution/model exchange | good: recipe-based job (FedAvgRecipe) via simulator env | good: recipe-based job (FedAvgRecipe) via simulator env |
 | API pattern | context: Client API loop pattern | context: Client API loop pattern |
 
 Dependency policy note: accelerator-capable framework installs are valid for accelerator-backed training jobs but can dominate benchmark wall time when uncached. CPU-only framework installs are faster, but they should only be treated as comparable when the benchmark is intentionally CPU-only.
