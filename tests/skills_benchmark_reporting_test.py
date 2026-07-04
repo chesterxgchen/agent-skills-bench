@@ -8705,6 +8705,66 @@ def test_rca_auto_fires_structure_when_persisted_score_regressed(tmp_path):
     assert resolve_seed(tmp_path, "with_skills", "auto", None) is None
 
 
+def test_rca_quality_topic_seeds_from_persisted_failed_checks(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resolve_seed, seed_quality_context
+
+    _two_mode_root(tmp_path)
+    issue = "Failed check `result_metric_scalar`: AUROC was reported, but no FL-level scalar value was found."
+    write_json(tmp_path / "quality_summary.json", {"quality_issues": {"with_skills": [issue]}})
+
+    seed = seed_quality_context(tmp_path, "with_skills")
+    assert seed is not None
+    assert seed["topic"] == "quality"
+    assert seed["quality_issues"] == [issue]
+    # The seed quotes the failed check verbatim (the symptom) and asks the
+    # open why-chain question — no cause taxonomy is prescribed.
+    assert issue in seed["headline"]
+    q = seed["seed_question"]
+    assert issue in q and "why" in q.lower() and "skill" in q
+
+    # auto prefers the failed quality check over nothing; the passing peer
+    # mode seeds no quality investigation.
+    assert resolve_seed(tmp_path, "with_skills", "auto", None)["topic"] == "quality"
+    assert seed_quality_context(tmp_path, "without_skills") is None
+    # Explicit topic dispatch resolves to the quality seeder.
+    assert resolve_seed(tmp_path, "with_skills", "quality", None)["topic"] == "quality"
+
+
+def test_rca_quality_topic_uses_the_selected_runs_issues(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resolve_seed, seed_quality_context
+
+    _multi_run_root(tmp_path)
+    issue = "Failed check `result_metric_scalar`: no FL-level scalar value was found."
+    write_json(
+        tmp_path / "quality_summary.json",
+        {
+            # The mode-level map (default run) claims an issue; only the g1 run
+            # actually has one.
+            "quality_issues": {"with_skills": [issue]},
+            "quality_issues_by_run": {"g1-with_skills": [issue]},
+        },
+    )
+    seed = resolve_seed(tmp_path, "with_skills", "auto", None, run_id="g1-with_skills")
+    assert seed is not None
+    assert seed["topic"] == "quality"
+    assert seed["quality_issues"] == [issue]
+    # The clean g2 run must not inherit the default run's issue via the mode map.
+    assert seed_quality_context(tmp_path, "with_skills", run_id="g2-with_skills") is None
+
+
+def test_rca_quality_topic_skips_mode_map_in_multi_run_roots(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import seed_quality_context
+
+    _multi_run_root(tmp_path)
+    # Only a mode-level map: in a multi-run root it reflects the default run,
+    # not the selected one, so the quality seed must not fire from it.
+    write_json(tmp_path / "quality_summary.json", {"quality_issues": {"with_skills": ["Failed check `x`."]}})
+    assert seed_quality_context(tmp_path, "with_skills", run_id="g1-with_skills") is None
+
+
 def _multi_run_root(tmp_path):
     from benchmark.harness.common import write_json
 
@@ -8797,6 +8857,91 @@ def test_persist_quality_summary_writes_run_keyed_scores(tmp_path, monkeypatch):
     persisted = json_module.loads((tmp_path / "quality_summary.json").read_text(encoding="utf-8"))
     assert persisted["structure_score_by_run"] == by_run_scores
     assert "structure_score" not in persisted
+
+
+def test_persist_quality_summary_writes_failed_check_strings(tmp_path, monkeypatch):
+    import json as json_module
+    from types import SimpleNamespace
+
+    from benchmark.harness.common import write_json
+    from benchmark.harness.reports import benchmark_insights
+    from benchmark.harness.reports.insights import _metrics, _plugin_view
+    from benchmark.harness.sdks import report_registry
+    from benchmark.harness.sdks.report_plugin import StructureSignal
+
+    _two_mode_root(tmp_path)
+    # Single run per mode, with run_ids, so the mode issues attribute to runs.
+    write_json(
+        tmp_path / "run_plan.json",
+        {
+            "entries": [
+                {"mode": "with_skills", "run_id": "run_2", "record_dir": "records/mode=with_skills"},
+                {"mode": "without_skills", "run_id": "run_1", "record_dir": "records/mode=without_skills"},
+            ]
+        },
+    )
+    issue = "Failed check `result_metric_scalar`: no FL-level scalar value was found."
+    issues_by_mode = {"with_skills": [issue], "without_skills": []}
+    fake_plugin = SimpleNamespace(score_structure=lambda run: StructureSignal())
+    monkeypatch.setattr(report_registry, "resolve_from_result_root", lambda root: fake_plugin)
+    monkeypatch.setattr(benchmark_insights, "_as_run_evidence", lambda run: run)
+    monkeypatch.setattr(_plugin_view, "_collect_plugin_evidence", lambda run, plugin=None: None)
+    monkeypatch.setattr(_metrics, "run_quality_issues", lambda run, ev=None: issues_by_mode[run.get("mode")])
+
+    benchmark_insights.persist_quality_summary(
+        tmp_path, {"with_skills": {"mode": "with_skills"}, "without_skills": {"mode": "without_skills"}}
+    )
+    persisted = json_module.loads((tmp_path / "quality_summary.json").read_text(encoding="utf-8"))
+    # Failed-check strings are persisted verbatim, per mode and attributed to
+    # the mode's single planned run; passing runs write no entry.
+    assert persisted["quality_issues"] == {"with_skills": [issue]}
+    assert persisted["quality_issues_by_run"] == {"run_2": [issue]}
+
+
+def test_persist_quality_summary_skips_run_attribution_in_multi_run_roots(tmp_path, monkeypatch):
+    import json as json_module
+    from types import SimpleNamespace
+
+    from benchmark.harness.reports import benchmark_insights
+    from benchmark.harness.reports.insights import _metrics, _plugin_view
+    from benchmark.harness.sdks import report_registry
+    from benchmark.harness.sdks.report_plugin import StructureSignal
+
+    _multi_run_root(tmp_path)
+    issue = "Failed check `result_metric_scalar`: no FL-level scalar value was found."
+    fake_plugin = SimpleNamespace(score_structure=lambda run: StructureSignal())
+    monkeypatch.setattr(report_registry, "resolve_from_result_root", lambda root: fake_plugin)
+    monkeypatch.setattr(benchmark_insights, "_as_run_evidence", lambda run: run)
+    monkeypatch.setattr(_plugin_view, "_collect_plugin_evidence", lambda run, plugin=None: None)
+    monkeypatch.setattr(_metrics, "run_quality_issues", lambda run, ev=None: [issue])
+
+    benchmark_insights.persist_quality_summary(tmp_path, {"with_skills": {"mode": "with_skills"}})
+    persisted = json_module.loads((tmp_path / "quality_summary.json").read_text(encoding="utf-8"))
+    # The full-bundle issues reflect the mode's DEFAULT run only; with two
+    # planned runs per mode they must not be attributed to either run_id.
+    assert persisted["quality_issues"] == {"with_skills": [issue]}
+    assert "quality_issues_by_run" not in persisted
+
+
+def test_persist_quality_summary_survives_issue_collection_errors(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from benchmark.harness.reports import benchmark_insights
+    from benchmark.harness.reports.insights import _plugin_view
+    from benchmark.harness.sdks import report_registry
+    from benchmark.harness.sdks.report_plugin import StructureSignal
+
+    def boom(run, plugin=None):
+        raise RuntimeError("evidence collection failed")
+
+    fake_plugin = SimpleNamespace(score_structure=lambda run: StructureSignal(score=1.0))
+    monkeypatch.setattr(report_registry, "resolve_from_result_root", lambda root: fake_plugin)
+    monkeypatch.setattr(benchmark_insights, "_as_run_evidence", lambda run: run)
+    monkeypatch.setattr(_plugin_view, "_collect_plugin_evidence", boom)
+
+    # Issue collection failing must not block the structure-score sidecar.
+    written = benchmark_insights.persist_quality_summary(tmp_path, {"with_skills": {"mode": "with_skills"}})
+    assert written == {"with_skills": 1.0}
 
 
 def test_why_embeds_agent_rca_report():

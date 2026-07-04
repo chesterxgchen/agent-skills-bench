@@ -28,10 +28,14 @@ the step budget runs out. Every step is recorded verbatim in
 The loop is topic- and SDK-independent: it reads only generic captured
 artifacts (``run_summary.json``, ``agent_events.jsonl``, ``prompt.txt``,
 ``workspace_delta/``) and never imports SDK plugins. Built-in topics seed the
-common questions — a terminal failure, "why is this run slower", "why did it
-use more tokens", and "why is this mode's converted-file structure worse than
-its peer (and was the skill's layout instruction followed)" — and
-``--question`` seeds any other investigation.
+common questions — a terminal failure, "why did a completed run fail its
+quality checks" (seeded verbatim from the persisted failed-check text), "why
+is this run slower", "why did it use more tokens", and "why is this mode's
+converted-file structure worse than its peer (and was the skill's layout
+instruction followed)" — and ``--question`` seeds any other investigation.
+Seeds name only the observed SYMPTOM; the cause taxonomy is never hardcoded —
+the agent asks the next question itself until the root cause is established,
+and the synthesis proposes the fix owner (prompt/skill/harness).
 
 Standalone usage (after a benchmark run)::
 
@@ -113,6 +117,8 @@ Rules:
 - Only claim what the evidence files show; quote them. If evidence is absent, say so in the answer.
 - Drive toward the root cause: symptom -> missing/failed action -> why that action was missing/failed
   (e.g. instruction absent, instruction present but not followed, environment constraint) -> final cause.
+- When the cause implicates guidance, identify the exact source (which skill file/section, prompt text,
+  or harness expectation) and whether following it was possible — that is what a fix proposal needs.
 - Set "conclusion" only when a further question would not change the analysis.
 """
 
@@ -743,6 +749,57 @@ def seed_token_context(result_root: Path, mode: str, run_id: str | None = None) 
     return _summary_delta_seed(result_root, mode, run_id, topic="tokens", summary_key="token_count", describe=describe)
 
 
+def seed_quality_context(result_root: Path, mode: str, run_id: str | None = None) -> dict[str, Any] | None:
+    """Seed a 'why did a completed run fail its quality checks' investigation.
+
+    Quality checks are SDK-specific, so like the structure gate this reads only
+    the host-persisted ``quality_summary.json`` (see
+    ``benchmark_insights.persist_quality_summary``) — the SDK-agnostic loop
+    never imports SDK scoring. The failed-check text is quoted verbatim as the
+    observed symptom; the harness encodes no cause taxonomy — the investigator
+    drives the why-chain from the evidence and proposes the fix owner
+    (prompt/skill/harness) in the synthesis. Prefers the selected run's
+    ``quality_issues_by_run`` entry; the per-mode ``quality_issues`` map is
+    trusted only when the mode maps to a single planned run."""
+
+    summary = load_json(result_root / "quality_summary.json", {}) or {}
+    if not isinstance(summary, dict):
+        return None
+    _mode_dir, entry = _resolve_run_selection(result_root, mode, run_id)
+    issues: Any = None
+    by_run = summary.get("quality_issues_by_run")
+    if isinstance(by_run, dict) and entry is not None and entry.get("run_id"):
+        issues = by_run.get(str(entry.get("run_id")))
+    if issues is None:
+        entry_modes = [str(item.get("mode")) for item in _plan_entries(result_root) if item.get("mode")]
+        if entry_modes.count(mode) > 1:
+            # The mode-level map reflects the default run, not the selected one.
+            return None
+        by_mode = summary.get("quality_issues")
+        issues = by_mode.get(mode) if isinstance(by_mode, dict) else None
+    texts = [str(item).strip() for item in issues if str(item or "").strip()] if isinstance(issues, list) else []
+    if not texts:
+        return None
+    seed = _base_seed(result_root, mode, "quality", run_id)
+    listed = "; ".join(texts[:3])
+    seed.update(
+        {
+            "headline": f"{mode} finished but failed quality check(s): {listed}",
+            "quality_issues": texts,
+            "seed_question": (
+                f"The {mode} run finished, but the benchmark quality gate reported: {listed}. From the "
+                "captured evidence, why did each failed check fail — what did the run actually produce and "
+                "report, and where is the gap: was the expected outcome never produced, produced but not "
+                "reported, or produced/reported somewhere the captured evidence and checks cannot see it? "
+                "Then trace that gap to its cause — for example, was the governing guidance (prompt text, a "
+                "skill instruction the agent read, or what the harness expects to capture) absent, present "
+                "but not followed, or followed in a way the checks do not observe?"
+            ),
+        }
+    )
+    return seed
+
+
 def seed_custom_context(result_root: Path, mode: str, question: str, run_id: str | None = None) -> dict[str, Any]:
     seed = _base_seed(result_root, mode, "custom", run_id)
     seed.update({"headline": question, "seed_question": question})
@@ -751,17 +808,20 @@ def seed_custom_context(result_root: Path, mode: str, question: str, run_id: str
 
 _TOPIC_SEEDERS: dict[str, Callable[..., dict[str, Any] | None]] = {
     "failure": seed_failure_context,
+    "quality": seed_quality_context,
     "slowdown": seed_slowdown_context,
     "tokens": seed_token_context,
     "structure": seed_structure_context,
 }
 
-# ``auto`` scans these in order, each gated by a deterministic delta read from
-# captured artifacts. ``structure`` is handled separately after this list: it
-# has no cheap numeric gate in this SDK-agnostic loop, so auto fires it only
-# when the host-persisted quality_summary.json shows a real regression (see
-# resolve_seed / _structure_regressed).
-_AUTO_TOPICS = ("failure", "slowdown", "tokens")
+# ``auto`` scans these in order, each gated by a deterministic observation read
+# from captured artifacts: a terminal failure first, then a persisted failed
+# quality check (a completed run whose result the gate rejected outranks a
+# speed/token delta), then the numeric deltas. ``structure`` is handled
+# separately after this list: it has no cheap numeric gate in this SDK-agnostic
+# loop, so auto fires it only when the host-persisted quality_summary.json
+# shows a real regression (see resolve_seed / _structure_regressed).
+_AUTO_TOPICS = ("failure", "quality", "slowdown", "tokens")
 
 
 def _score_number(value: Any) -> float | None:
@@ -1109,12 +1169,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--topic",
         default="auto",
-        choices=["auto", "failure", "slowdown", "tokens", "structure", "custom"],
-        help="What to investigate: a terminal failure, the elapsed-time delta, the token-usage delta, or a "
+        choices=["auto", "failure", "quality", "slowdown", "tokens", "structure", "custom"],
+        help="What to investigate: a terminal failure, a failed quality check on a completed run ('quality', "
+        "from the persisted quality_summary.json), the elapsed-time delta, the token-usage delta, or a "
         "'structure' regression (why this mode's converted-file structure is worse than its peer, and whether "
-        "the skill's layout instruction was followed). 'auto' picks the first failure/slowdown/tokens that "
-        "applies, then 'structure' when the persisted quality score shows a regression; 'custom' is explicit "
-        "(pairs with --question).",
+        "the skill's layout instruction was followed). 'auto' picks the first failure/quality/slowdown/tokens "
+        "that applies, then 'structure' when the persisted quality score shows a regression; 'custom' is "
+        "explicit (pairs with --question).",
     )
     parser.add_argument("--question", help="Free-form investigation question (overrides --topic).")
     parser.add_argument("--agent", help="Investigator agent CLI: claude or codex (default: first found on PATH)")

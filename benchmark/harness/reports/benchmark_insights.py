@@ -563,6 +563,28 @@ def _plan_entry_run_bundle(root: Path, entry: dict[str, Any]) -> dict[str, Any] 
     }
 
 
+def _run_quality_issue_texts(plugin: Any, run: RunEvidence | dict[str, Any] | None) -> list[str]:
+    """Best-effort per-run failed-check strings for the host sidecar.
+
+    The strings are whatever the report's quality gate computed, verbatim —
+    persisting them is data plumbing, not new failure rules. Only meaningful
+    for the FULL report bundles: a minimal plan-entry bundle lacks the agent
+    event stream, so re-deriving issues from it would fabricate failures (e.g.
+    ``job_execution: not_started``). Best-effort: any plugin/evidence error
+    yields [] so the sidecar write never fails a run."""
+
+    if run is None:
+        return []
+    from .insights._metrics import run_quality_issues
+    from .insights._plugin_view import _collect_plugin_evidence
+
+    try:
+        evidence = _collect_plugin_evidence(run, plugin)
+        return [text for issue in run_quality_issues(_as_run_evidence(run), evidence) if (text := str(issue).strip())]
+    except Exception:
+        return []
+
+
 def persist_quality_summary(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) -> dict[str, float]:
     """Write per-mode SDK quality scores to a host-owned root sidecar.
 
@@ -573,14 +595,18 @@ def persist_quality_summary(root: Path, runs: dict[str, RunEvidence | dict[str, 
     ``structure_score`` map, it writes ``structure_score_by_run`` keyed by
     ``run_plan.json`` run_id, so the RCA gate stays correct in result roots
     holding several runs per mode (where the per-mode map only reflects the
-    default run). Returns the ``structure_score`` map written ({} when the
-    plugin supplies none, e.g. the null plugin)."""
+    default run). It also persists each run's failed quality-check strings
+    (``quality_issues`` / ``quality_issues_by_run``, verbatim from the report's
+    quality gate) so the RCA loop can seed a symptom-driven investigation
+    without importing SDK scoring. Returns the ``structure_score`` map written
+    ({} when the plugin supplies none, e.g. the null plugin)."""
 
     from ..common import load_json, write_json
     from ..sdks.report_registry import resolve_from_result_root
 
     plugin = resolve_from_result_root(root)
     scores: dict[str, float] = {}
+    issues: dict[str, list[str]] = {}
     for mode in mode_names(BENCHMARK_RUNS):
         run = runs.get(mode)
         if run is None:
@@ -588,21 +614,41 @@ def persist_quality_summary(root: Path, runs: dict[str, RunEvidence | dict[str, 
         score = _structure_score_value(plugin, run)
         if score is not None:
             scores[mode] = score
+        issue_texts = _run_quality_issue_texts(plugin, run)
+        if issue_texts:
+            issues[mode] = issue_texts
     run_plan = load_json(root / "run_plan.json", {}) or {}
     entries = run_plan.get("entries") if isinstance(run_plan, dict) else None
+    entry_list = [entry for entry in (entries if isinstance(entries, list) else []) if isinstance(entry, dict)]
     scores_by_run: dict[str, float] = {}
-    for entry in entries if isinstance(entries, list) else []:
-        if not isinstance(entry, dict) or not entry.get("run_id"):
+    for entry in entry_list:
+        if not entry.get("run_id"):
             continue
         bundle = _plan_entry_run_bundle(root, entry)
         score = _structure_score_value(plugin, bundle) if bundle is not None else None
         if score is not None:
             scores_by_run[str(entry["run_id"])] = score
+    # Quality issues come ONLY from the full report bundles (see
+    # _run_quality_issue_texts), so a run_id entry is written only when the
+    # mode maps to a single planned run — never re-derived from the minimal
+    # plan-entry bundle, which lacks the evidence and would fabricate failures.
+    entry_mode_counts: dict[str, int] = {}
+    for entry in entry_list:
+        entry_mode_counts[str(entry.get("mode"))] = entry_mode_counts.get(str(entry.get("mode")), 0) + 1
+    issues_by_run: dict[str, list[str]] = {}
+    for entry in entry_list:
+        mode = str(entry.get("mode") or "")
+        if entry.get("run_id") and mode in issues and entry_mode_counts.get(mode) == 1:
+            issues_by_run[str(entry["run_id"])] = issues[mode]
     payload: dict[str, Any] = {}
     if scores:
         payload["structure_score"] = scores
     if scores_by_run:
         payload["structure_score_by_run"] = scores_by_run
+    if issues:
+        payload["quality_issues"] = issues
+    if issues_by_run:
+        payload["quality_issues_by_run"] = issues_by_run
     if payload:
         write_json(root / "quality_summary.json", payload)
     return scores

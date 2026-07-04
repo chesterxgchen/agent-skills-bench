@@ -990,8 +990,9 @@ def write_benchmark_reports(result_root: Path, *, logs: Iterable[Path] = ()) -> 
 def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
     """Drill into every mode the Root Cause Analysis section flags as worse.
 
-    RCA exists to explain a with-skills regression — a failure, slowdown, extra
-    tokens, or a structure regression. This fires it automatically right after
+    RCA exists to explain a with-skills regression — a failure, a failed
+    quality check on a completed run, slowdown, extra tokens, or a structure
+    regression. This fires it automatically right after
     the report so the explanation lands in benchmark_insights.md with no manual
     step. It requires the container sandbox: the evidence is attacker-authored,
     so the investigator must never run unsandboxed on the host. Best-effort: it
