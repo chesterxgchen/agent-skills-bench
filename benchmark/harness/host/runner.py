@@ -1164,8 +1164,11 @@ def run_pair(argv: list[str]) -> int:
     emit(f"Scenario summary: {result_root / 'scenario_summary.json'}", logs=logs)
     emit(f"Scenario report: {result_root / 'reports' / 'scenario_report.md'}", logs=logs)
     report_statuses = write_benchmark_reports(result_root, logs=logs)
-    autorun_code_quality_evaluations(result_root, logs=logs)
+    # RCA first: it is the priority diagnostic and must not be gated on a slow
+    # code-evaluation pass (each is best-effort and independently regenerates
+    # the report).
     autorun_rca_investigations(result_root, logs=logs)
+    autorun_code_quality_evaluations(result_root, logs=logs)
     emit_benchmark_report_paths(result_root, logs=logs)
     write_host_report_status(result_root, report_statuses)
     return (
