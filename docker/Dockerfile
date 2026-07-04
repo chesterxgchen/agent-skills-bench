@@ -74,6 +74,11 @@ ENV SKILLS_INSTALL_EXPECTED_SOURCE="${SKILLS_INSTALL_EXPECTED_SOURCE}"
 ENV JOB_INPUT_DIR=/workspace/input
 ENV TRAINING_CODE=/workspace/input
 ENV RECORDS_DIR=/tmp/agent_benchmark/records
+# uv hard-links files from its cache into site-packages by default (cache and
+# venv share a filesystem here). Some SDK skill installers reject hard-linked
+# source files (NVFLARE: "skill source must not be hard-linked"), so install
+# real copies instead. SDK-agnostic and cheap.
+ENV UV_LINK_MODE=copy
 
 WORKDIR /workspace
 RUN mkdir -p "${BENCHMARK_AGENT_HOME}" /workspace/prompts && \
