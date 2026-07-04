@@ -1099,7 +1099,15 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
         driver_base_command_seconds = _non_dependency_command_seconds(base_run)
         command_span_label = "Captured non-install command time"
 
-    if elapsed_is_slower and runtime_is_slower:
+    quality_explanation = _quality_regression_explanation(with_run, base_run, ctx)
+    # A primary result failure (the run did not produce a usable result) makes
+    # the wall-clock comparison meaningless — a run that skipped the work being
+    # "slower" is noise, not the story. Lead the section with the failure and
+    # its root-cause investigation, and suppress the slowdown timing entirely.
+    primary_failure = bool(quality_explanation)
+    if primary_failure:
+        heading = f"**Why {with_label} needs more work**:"
+    elif elapsed_is_slower and runtime_is_slower:
         heading = (
             f"**Why {with_label} is slower and has longer runtime after install** "
             f"(+{fmt_number(time_delta)}s total / +{pct}%; "
@@ -1115,8 +1123,10 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
     else:
         heading = f"**Why {with_label} needs more work**:"
     lines = [heading, ""]
-    quality_explanation = _quality_regression_explanation(with_run, base_run, ctx)
-    include_slowdown_context = elapsed_is_slower or runtime_is_slower or not quality_explanation
+    # Show slowdown timing unless the run had a primary result failure (then it
+    # is noise and the failure + RCA lead instead). Non-failure behavior is
+    # unchanged from the prior ``slower or not quality_explanation``.
+    include_slowdown_context = not primary_failure
     if include_slowdown_context:
         root_causes = _root_cause_lead(with_run, base_run, ctx)
         if root_causes:
