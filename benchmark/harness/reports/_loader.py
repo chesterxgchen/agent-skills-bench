@@ -301,6 +301,9 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "run": summary,
             "record": record,
             "container_exit": load_json(mode_dir / "container_exit_code.json", {}) if mode_dir.exists() else {},
+            "code_quality_assessment": (
+                load_json(mode_dir / "code_quality_assessment.json", {}) if mode_dir.exists() else {}
+            ),
             "usage": load_json(mode_dir / "agent_usage.json", {}) if mode_dir.exists() else {},
             "activity": load_json(mode_dir / "agent_activity.json", {}) if mode_dir.exists() else {},
             "workspace_delta": workspace_delta,

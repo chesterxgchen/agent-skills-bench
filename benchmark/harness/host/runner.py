@@ -1030,6 +1030,59 @@ def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = ()) 
         write_benchmark_reports(result_root, logs=logs)
 
 
+def autorun_code_quality_evaluations(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
+    """Have an agent judge the generated code against the criteria list.
+
+    Replaces the brittle per-code-shape detectors: an agent reads the captured
+    generated code and scores each SDK criterion, so it works whether the agent
+    wrote a manual loop or a Recipe, flat files or a nested job folder. Runs in
+    the container sandbox (attacker-authored code), regenerates the report so
+    the verdicts show in Generated Code Quality, best-effort, skips when no
+    image is built, and BENCHMARK_AUTO_CODE_EVAL=0 disables it.
+    """
+
+    if os.environ.get("BENCHMARK_AUTO_CODE_EVAL", "1") == "0":
+        return
+    from ..code_eval import evaluate_code_quality
+    from ..rca import resolve_invoker
+    from ..reports.benchmark_insights import _as_run_evidence, collect_benchmark_runs
+    from ..sdks.report_registry import resolve_from_result_root
+
+    plugin = resolve_from_result_root(result_root)
+    runs = collect_benchmark_runs(result_root)
+    targets: list[tuple[str, list[dict[str, str]]]] = []
+    for mode, bundle in runs.items():
+        if not bundle.get("available"):
+            continue
+        try:
+            criteria = plugin.code_quality_criteria(_as_run_evidence(bundle))
+        except Exception:
+            criteria = []
+        if criteria:
+            targets.append((mode, criteria))
+    if not targets:
+        return
+    try:
+        agent_name, invoker = resolve_invoker(None, sandbox="docker")
+    except SystemExit as exc:
+        emit(f"Auto code-eval skipped: {exc}", logs=logs, stderr=True)
+        return
+    modes = ", ".join(mode for mode, _ in targets)
+    emit(f"Running automatic code-quality evaluation on {modes} (set BENCHMARK_AUTO_CODE_EVAL=0 to disable)", logs=logs)
+    evaluated = False
+    for mode, criteria in targets:
+        try:
+            path = evaluate_code_quality(result_root, mode, invoker, criteria, agent_name=agent_name)
+        except Exception as exc:
+            emit(f"Auto code-eval failed for {mode}: {type(exc).__name__}: {exc}", logs=logs, stderr=True)
+            continue
+        if path is not None:
+            evaluated = True
+            emit(f"Auto code-eval ({mode}, {agent_name}): {path}", logs=logs)
+    if evaluated:
+        write_benchmark_reports(result_root, logs=logs)
+
+
 def emit_benchmark_report_paths(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
     emit(f"Benchmark insights: {result_root / 'benchmark_insights.md'}", logs=logs)
     emit(f"Metrics report: {result_root / 'metrics_report.md'}", logs=logs)
@@ -1110,6 +1163,7 @@ def run_pair(argv: list[str]) -> int:
     emit(f"Scenario summary: {result_root / 'scenario_summary.json'}", logs=logs)
     emit(f"Scenario report: {result_root / 'reports' / 'scenario_report.md'}", logs=logs)
     report_statuses = write_benchmark_reports(result_root, logs=logs)
+    autorun_code_quality_evaluations(result_root, logs=logs)
     autorun_rca_investigations(result_root, logs=logs)
     emit_benchmark_report_paths(result_root, logs=logs)
     write_host_report_status(result_root, report_statuses)

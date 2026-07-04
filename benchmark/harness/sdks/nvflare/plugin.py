@@ -240,6 +240,11 @@ class NvflareReportPlugin(ReportPlugin):
         # leaf, operating on the captured per-run bundle (run.raw).
         return StructureSignal(score=structure_score(run.raw))
 
+    def code_quality_criteria(self, run: RunEvidence) -> list[dict[str, str]]:
+        # The criteria an evaluation agent judges the captured code against —
+        # the same rule signals the report renders (delegated to _logic).
+        return _logic.code_quality_criteria(run.raw)
+
     def detect_sdk_activity(self, run: RunEvidence) -> SdkActivitySignal:
         status = job_run_status(run.raw)
         return SdkActivitySignal(detected=status == "completed", detail=status)
