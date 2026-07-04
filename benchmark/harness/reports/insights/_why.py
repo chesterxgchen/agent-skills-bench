@@ -1377,7 +1377,11 @@ def why_section(
         with_rca_embedded = True  # _why_slower embeds with_run's RCA report itself
     elif _dependency_install_slowdown_note(with_run, base_run):
         sections.append(_why_dependency_install_slower(with_run, base_run))
-    if with_tokens is not None and base_tokens is not None and with_tokens > base_tokens:
+    # Priority: a primary result failure (job didn't produce a usable result)
+    # is THE question. When it applies, slower-time (handled inside _why_slower)
+    # and more-tokens are irrelevant — a run that skipped the work using more/
+    # fewer tokens says nothing — so don't render the tokens section either.
+    if with_tokens is not None and base_tokens is not None and with_tokens > base_tokens and not quality_is_worse:
         sections.append(_why_more_tokens(with_run, base_run))
     # Agent RCA reports stand on their own: render any that no subsection embedded,
     # regardless of which Why triggers fired or which mode was investigated.
