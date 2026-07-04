@@ -36,4 +36,12 @@ NVFLARE_CAPTURE_SPEC = EvidenceCaptureSpec(
         "**/*.log",
         "**/config_fed_*.json",
     ),
+    # The NVFLARE skills' runtime-output-guidance mandates a private per-user run
+    # root (`/tmp/nvflare-<uid>/run-<random>/`) for simulation workspaces, exported
+    # jobs, and results — an unpredictable path by design, so it cannot be a fixed
+    # runtime_sources entry. Capture each matched run root (its run-manifest.json,
+    # workspace metrics, logs, and exported job config) as runtime evidence;
+    # without this, skill-compliant runs surface zero runtime artifacts and their
+    # FL result metrics cannot be graded.
+    runtime_source_globs=("/tmp/nvflare-*/run-*",),
 )

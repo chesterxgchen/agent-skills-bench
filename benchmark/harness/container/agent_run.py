@@ -956,6 +956,46 @@ def resolve_artifact_glob_sources(
     return sources
 
 
+def resolve_runtime_source_glob_dirs(
+    runtime_source_globs: tuple[str, ...],
+    *,
+    existing_sources: Iterable[tuple[str, Path]] = (),
+) -> list[tuple[str, Path]]:
+    """Resolve capture-spec ``runtime_source_globs`` to ``(label, dir)`` sources.
+
+    Complements ``resolve_artifact_glob_sources``: artifact_globs find files
+    INSIDE the run workspace, while these ABSOLUTE patterns discover runtime
+    output roots OUTSIDE it — directories whose exact names are unpredictable by
+    design, e.g. the private per-user run roots the NVFLARE skills mandate
+    (``/tmp/nvflare-<uid>/run-<random>/``). Each matched real directory becomes
+    one source labelled by its root-relative path. Results are deterministic
+    (sorted), de-duplicated against ``existing_sources``, and symlinked matches
+    are skipped; per-file symlink/size/count limits are enforced by
+    ``capture_workspace_delta`` as for every other source.
+    """
+
+    seen: set[Path] = set()
+    for _label, existing in existing_sources:
+        with suppress(OSError):
+            seen.add(Path(existing).resolve())
+    sources: list[tuple[str, Path]] = []
+    for pattern in runtime_source_globs:
+        if not pattern.startswith("/") or ".." in pattern.split("/"):
+            continue
+        for match in sorted(Path("/").glob(pattern.lstrip("/"))):
+            if not match.is_dir() or match.is_symlink():
+                continue
+            try:
+                resolved = match.resolve()
+            except OSError:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            sources.append((match.as_posix().lstrip("/"), match))
+    return sources
+
+
 def post_process(
     config: AgentRunConfig, elapsed_seconds: int, agent_exit: int, run_start_time_ns: int
 ) -> tuple[int, int]:
@@ -967,6 +1007,15 @@ def post_process(
     capture_spec = capture_spec_from_metadata(sdk_wheel_metadata)
     structure_file_names = capture_spec.structure_file_names
     runtime_sources = [(label, Path(path)) for label, path in capture_spec.runtime_sources]
+    # Absolute-glob directory sources (§4.1 S1): discover runtime output roots
+    # outside the workspace (e.g. the skills' private /tmp/nvflare-<uid>/run-*
+    # run roots) and merge them into the same capture mechanism.
+    runtime_sources.extend(
+        resolve_runtime_source_glob_dirs(
+            capture_spec.runtime_source_globs,
+            existing_sources=runtime_sources,
+        )
+    )
     # Glob-derived sources (§4.1 S1): resolve artifact_globs against the run
     # workspace and merge into the same extra_runtime_artifact_sources mechanism,
     # so capture_workspace_delta is unchanged.

@@ -145,6 +145,34 @@ def test_nvflare_spec_carries_artifact_globs():
     )
 
 
+# --- runtime_source_globs: private run roots outside the workspace ----------
+
+
+def test_runtime_source_globs_roundtrip():
+    spec = EvidenceCaptureSpec(
+        runtime_sources=(("runtime_workspaces", "/tmp/nvflare/workspaces"),),
+        runtime_source_globs=("/tmp/nvflare-*/run-*",),
+    )
+    restored = EvidenceCaptureSpec.from_payload(spec.to_payload())
+    assert restored == spec
+    assert restored.runtime_source_globs == ("/tmp/nvflare-*/run-*",)
+
+
+def test_from_payload_ignores_non_string_runtime_source_globs():
+    payload = {"runtime_source_globs": ["/tmp/nvflare-*/run-*", 7, None]}
+    assert EvidenceCaptureSpec.from_payload(payload).runtime_source_globs == ("/tmp/nvflare-*/run-*",)
+
+
+def test_legacy_payload_without_runtime_source_globs_is_empty():
+    assert EvidenceCaptureSpec.from_payload({"artifact_globs": []}).runtime_source_globs == ()
+
+
+def test_nvflare_spec_carries_runtime_source_globs():
+    # The skills' runtime-output-guidance mandates private per-user run roots
+    # (/tmp/nvflare-<uid>/run-<random>/); capture must discover them by glob.
+    assert NVFLARE_CAPTURE_SPEC.runtime_source_globs == ("/tmp/nvflare-*/run-*",)
+
+
 # --- S2: capture-spec versioning + degrade ----------------------------------
 
 
@@ -221,3 +249,57 @@ def test_resolve_artifact_glob_sources_empty_when_no_globs(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     assert resolve_artifact_glob_sources((), workspace) == []
+
+
+# --- runtime_source_globs resolution: private run roots ----------------------
+
+
+def test_resolve_runtime_source_glob_dirs_matches_run_roots(tmp_path):
+    from benchmark.harness.container.agent_run import resolve_runtime_source_glob_dirs
+
+    run_a = tmp_path / "nvflare-9999" / "run-abc123"
+    run_b = tmp_path / "nvflare-9999" / "run-def456"
+    run_a.mkdir(parents=True)
+    run_b.mkdir(parents=True)
+    (run_a / "run-manifest.json").write_text("{}\n", encoding="utf-8")
+    # A stray FILE matching the pattern must not become a source.
+    (tmp_path / "nvflare-9999" / "run-notadir").write_text("x\n", encoding="utf-8")
+
+    sources = resolve_runtime_source_glob_dirs((f"{tmp_path}/nvflare-*/run-*",))
+    assert sources == [
+        (run_a.as_posix().lstrip("/"), run_a),
+        (run_b.as_posix().lstrip("/"), run_b),
+    ]
+
+
+def test_resolve_runtime_source_glob_dirs_dedupes_against_existing(tmp_path):
+    from benchmark.harness.container.agent_run import resolve_runtime_source_glob_dirs
+
+    run_dir = tmp_path / "nvflare-9999" / "run-abc123"
+    run_dir.mkdir(parents=True)
+    sources = resolve_runtime_source_glob_dirs(
+        (f"{tmp_path}/nvflare-*/run-*",),
+        existing_sources=[("prior", run_dir)],
+    )
+    assert sources == []
+
+
+def test_resolve_runtime_source_glob_dirs_rejects_unsafe_patterns(tmp_path):
+    from benchmark.harness.container.agent_run import resolve_runtime_source_glob_dirs
+
+    run_dir = tmp_path / "nvflare-9999" / "run-abc123"
+    run_dir.mkdir(parents=True)
+    # Relative patterns and patterns with ".." segments are ignored.
+    assert resolve_runtime_source_glob_dirs(("nvflare-*/run-*",)) == []
+    assert resolve_runtime_source_glob_dirs((f"{tmp_path}/nvflare-*/../nvflare-*/run-*",)) == []
+
+
+def test_resolve_runtime_source_glob_dirs_skips_symlinked_match(tmp_path):
+    from benchmark.harness.container.agent_run import resolve_runtime_source_glob_dirs
+
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    root = tmp_path / "nvflare-9999"
+    root.mkdir()
+    (root / "run-linked").symlink_to(real)
+    assert resolve_runtime_source_glob_dirs((f"{tmp_path}/nvflare-*/run-*",)) == []

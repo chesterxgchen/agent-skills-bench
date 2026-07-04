@@ -139,6 +139,7 @@ def test_write_wheel_metadata_uses_atomic_json_helper(tmp_path, monkeypatch):
         "structure_file_names": [],
         "runtime_sources": [],
         "artifact_globs": [],
+        "runtime_source_globs": [],
     }
     assert payload["evaluation_criteria"]["sha256"] == "criteria-hash"
     assert payload["evaluation_criteria"]["source_format"] == "harness_yaml"

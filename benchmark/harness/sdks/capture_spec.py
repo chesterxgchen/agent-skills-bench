@@ -45,6 +45,12 @@ class EvidenceCaptureSpec:
     # turned into runtime artifact sources at capture time. Robustly captures
     # artifacts whose exact path is not known ahead of time (e.g. simulator logs).
     artifact_globs: tuple[str, ...] = ()
+    # ABSOLUTE glob patterns whose matched directories become runtime artifact
+    # sources at capture time. Discovers runtime output roots OUTSIDE the run
+    # workspace whose exact names are unpredictable by design — e.g. the private
+    # per-user run directories the NVFLARE skills mandate
+    # (``/tmp/nvflare-<uid>/run-<random>/``).
+    runtime_source_globs: tuple[str, ...] = ()
     # Payload format version (see CAPTURE_SPEC_VERSION). Legacy payloads without
     # a version are treated as v1.
     version: int = CAPTURE_SPEC_VERSION
@@ -55,6 +61,7 @@ class EvidenceCaptureSpec:
             "structure_file_names": list(self.structure_file_names),
             "runtime_sources": [list(source) for source in self.runtime_sources],
             "artifact_globs": list(self.artifact_globs),
+            "runtime_source_globs": list(self.runtime_source_globs),
         }
 
     @classmethod
@@ -64,6 +71,7 @@ class EvidenceCaptureSpec:
         names = payload.get("structure_file_names") or []
         sources = payload.get("runtime_sources") or []
         globs = payload.get("artifact_globs") or []
+        source_globs = payload.get("runtime_source_globs") or []
         return cls(
             structure_file_names=tuple(str(name) for name in names if isinstance(name, str)),
             runtime_sources=tuple(
@@ -72,6 +80,7 @@ class EvidenceCaptureSpec:
                 if isinstance(source, (list, tuple)) and len(source) == 2
             ),
             artifact_globs=tuple(str(pattern) for pattern in globs if isinstance(pattern, str)),
+            runtime_source_globs=tuple(str(pattern) for pattern in source_globs if isinstance(pattern, str)),
             version=_payload_version(payload),
         )
 
