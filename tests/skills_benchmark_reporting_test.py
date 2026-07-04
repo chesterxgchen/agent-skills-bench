@@ -8917,7 +8917,7 @@ def test_rca_codex_invoker_isolates_session_from_instruction_files(monkeypatch, 
     assert ["--cd", str(tmp_path)] == codex_args[codex_args.index("--cd") : codex_args.index("--cd") + 2]
 
 
-def test_rca_cli_grants_shell_in_sandbox_but_never_blanket_bypass():
+def test_rca_cli_sandbox_posture_is_runnable_and_hardened():
     from benchmark.harness import rca
 
     # HOST: reads are unconfined, so the investigator is locked to read-only
@@ -8928,22 +8928,26 @@ def test_rca_cli_grants_shell_in_sandbox_but_never_blanket_bypass():
     host_codex = rca._codex_cli_args("/x", sandboxed=False)
     assert "read-only" in host_codex and "--dangerously-bypass-approvals-and-sandbox" not in host_codex
 
-    # CONTAINER: the mount confines reads, so the investigator gets working
-    # tools (shell, searches, scratch writes for analysis scripts) — but never
-    # the blanket bypass flags: the container still holds the vendor API key
-    # and network egress for the model API, so the direct network tools stay
-    # disallowed and codex's own sandbox/env policy stays on.
+    # CONTAINER (claude): the mount confines reads, so the investigator gets
+    # working tools (shell, searches, scratch writes) via an allowlist — but
+    # never --dangerously-skip-permissions: the container still holds the vendor
+    # key + network egress, so the direct network tools stay disallowed.
     box_claude = rca._claude_cli_args("/evidence", sandboxed=True)
     assert "--dangerously-skip-permissions" not in box_claude and "bypassPermissions" not in box_claude
     assert "--strict-mcp-config" in box_claude
     assert "Bash" in box_claude[box_claude.index("--allowedTools") + 1]
     disallowed = box_claude[box_claude.index("--disallowedTools") + 1]
     assert "WebFetch" in disallowed and "WebSearch" in disallowed and "Task" in disallowed
+
+    # CONTAINER (codex): codex's own sandbox uses bubblewrap, which cannot
+    # create a user namespace inside the unprivileged container, so any
+    # --sandbox mode fails to run a command there. The container is the
+    # boundary instead, so codex bypasses its sandbox — but inherit=core still
+    # keeps the API key out of spawned commands.
     box_codex = rca._codex_cli_args("/evidence", sandboxed=True)
-    assert "--dangerously-bypass-approvals-and-sandbox" not in box_codex
-    assert "workspace-write" in box_codex
+    assert "--dangerously-bypass-approvals-and-sandbox" in box_codex
     assert "shell_environment_policy.inherit=core" in box_codex
-    assert "sandbox_workspace_write.network_access=false" in box_codex
+    assert "workspace-write" not in box_codex and "read-only" not in box_codex
     # Captured instruction files (AGENTS.md) still must not steer the investigator.
     assert "--ignore-rules" in box_codex and "--ephemeral" in box_codex
 

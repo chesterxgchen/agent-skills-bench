@@ -277,30 +277,28 @@ def _claude_cli_args(cwd: str, *, sandboxed: bool) -> list[str]:
 
 
 def _codex_cli_args(cwd: str, *, sandboxed: bool) -> list[str]:
-    # BOTH paths keep codex's own sandbox and
-    # shell_environment_policy.inherit=core (vendor keys stay out of every
-    # model-spawned command): the Docker container confines reads, but it
-    # still has network egress for the model API and OPENAI_API_KEY in the CLI
-    # env, so --dangerously-bypass-approvals-and-sandbox would let
-    # prompt-injected evidence exfil both through a spawned shell.
-    # ``sandboxed`` (container) upgrades read-only to workspace-write so the
-    # investigator can write and run analysis scripts (the evidence mount
-    # stays read-only at the filesystem level; scratch goes to /tmp), with the
-    # sandbox's command network access pinned off. HOST path stays fully
-    # read-only — a host process is otherwise unconfined. Either way
-    # --ignore-rules/--ephemeral keep instruction files captured into the
-    # evidence (AGENTS.md and friends) from steering the investigator, and
+    # Both paths keep shell_environment_policy.inherit=core so vendor keys
+    # (OPENAI_API_KEY) stay out of every model-spawned command — that is the
+    # exfil protection, and it holds regardless of sandbox mode.
+    #
+    # ``sandboxed`` (container): codex's OWN sandbox (read-only/workspace-write)
+    # uses bubblewrap, which cannot create a user namespace inside an
+    # unprivileged container ("bwrap: No permissions to create new namespace")
+    # — so any codex --sandbox mode fails to run a single command there and the
+    # investigation dies. The container itself is the boundary (only the
+    # read-only evidence tree is mounted, no host filesystem), so codex runs
+    # with --dangerously-bypass-approvals-and-sandbox (no bwrap) — NOT because
+    # bypass is safe in general, but because the container already provides the
+    # confinement codex's sandbox would. inherit=core still strips the key from
+    # spawned commands; container network egress is the residual (TODO item 4).
+    #
+    # HOST path (not sandboxed): unconfined, so keep codex's real read-only
+    # sandbox (bwrap works on the host). --ignore-rules/--ephemeral keep
+    # captured instruction files (AGENTS.md) from steering the investigator, and
     # --cd pins the session to the evidence root.
     args = ["codex", "exec", "--skip-git-repo-check", "--ignore-rules", "--ephemeral", "--cd", cwd]
     if sandboxed:
-        args += [
-            "--sandbox",
-            "workspace-write",
-            "-c",
-            "shell_environment_policy.inherit=core",
-            "-c",
-            "sandbox_workspace_write.network_access=false",
-        ]
+        args += ["--dangerously-bypass-approvals-and-sandbox", "-c", "shell_environment_policy.inherit=core"]
     else:
         args += ["--sandbox", "read-only", "-c", "shell_environment_policy.inherit=core"]
     args.append("-")

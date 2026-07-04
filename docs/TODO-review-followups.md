@@ -22,12 +22,14 @@ does NOT run read-only, but it no longer gets the blanket bypass flags either:
   `--strict-mcp-config`. Residual: Bash children inherit
   the CLI env (claude has no shell env policy), so an injected shell command
   can still reach `ANTHROPIC_API_KEY` and the network.
-- **codex (sandboxed):** `--sandbox workspace-write` (scratch under /tmp; the
-  evidence mount is read-only at the filesystem level) with
-  `sandbox_workspace_write.network_access=false` and
-  `shell_environment_policy.inherit=core`, instead of
-  `--dangerously-bypass-approvals-and-sandbox` — spawned commands get neither
-  the key nor network.
+- **codex (sandboxed):** codex's own sandbox (read-only/workspace-write) uses
+  bubblewrap, which cannot create a user namespace inside the unprivileged
+  container (`bwrap: No permissions to create new namespace`) — so any
+  `--sandbox` mode there fails to run a single command and the investigation
+  dies. The container is the boundary instead, so codex runs
+  `--dangerously-bypass-approvals-and-sandbox` (no bwrap) with
+  `shell_environment_policy.inherit=core` retained, so spawned commands still
+  don't get the API key. Container network egress remains the residual (below).
 
 **Proper fix (if we want to close it):** apply a network policy to the RCA
 container that allows egress only to the model API endpoint(s) — e.g. a
