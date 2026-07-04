@@ -255,10 +255,14 @@ def comparison_scorecard(runs: dict[str, RunEvidence], ctx: ReportContext | None
 
 
 def embedded_bar_chart(runs: dict[str, RunEvidence], ctx: ReportContext | None = None) -> str:
-    metric_name = comparable_metric_name(runs)
-    if metric_name is None and metric_names_for_runs(runs):
-        note = markdown_cell(mixed_metric_note(runs))
-        return f"<section><h3>Metrics (mixed validation metrics)</h3><p>Not comparable: {note}</p></section>"
+    comparable_name = comparable_metric_name(runs)
+    # When runs report different validation metrics only the metric panel lacks a
+    # shared scalar; time, tokens, commands, and scores stay comparable. Keep the
+    # chart and degrade just that panel: the synthetic "mixed validation metrics"
+    # name never matches a real metric, so its bars render as NA, and the header
+    # notes each run's own metric name.
+    metric_is_mixed = comparable_name is None and bool(metric_names_for_runs(runs))
+    metric_name = metric_name_for_runs(runs) if metric_is_mixed else comparable_name
     modes = list(runs)
     ctx = ctx or _report_context(runs, modes)
     metrics = benchmark_chart_metrics(runs, metric_name, ctx)
@@ -287,6 +291,11 @@ def embedded_bar_chart(runs: dict[str, RunEvidence], ctx: ReportContext | None =
         '<text x="32" y="35" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#111827">Run comparison</text>',
         '<text x="32" y="58" font-family="Arial, sans-serif" font-size="13" fill="#4b5563">Metrics are mode-local. Missing scalar results are shown as NA instead of drawing a numeric bar.</text>',
     ]
+    if metric_is_mixed:
+        note = html.escape(f"Validation metrics — Not comparable: {mixed_metric_note(runs)}")
+        lines.append(
+            f'<text x="32" y="78" font-family="Arial, sans-serif" font-size="13" fill="#b45309">{note}</text>'
+        )
     for metric_index, item in enumerate(metrics):
         row = metric_index // panel_columns
         column = metric_index % panel_columns

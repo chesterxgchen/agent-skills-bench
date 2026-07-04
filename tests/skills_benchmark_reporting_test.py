@@ -7311,6 +7311,12 @@ def test_metrics_chart_marks_mixed_metric_names_non_comparable():
     assert "Not comparable" in chart
     assert "No skills baseline: accuracy" in chart
     assert "With skills: AUROC" in chart
+    # Mixed validation metrics degrade only the metric panel; the chart itself and
+    # its comparable panels (time, tokens, commands, scores) must still render.
+    assert "<svg" in chart
+    assert "Total time seconds" in chart
+    assert "Total tokens" in chart
+    assert "Commands" in chart
     assert "| Metrics (mixed validation metrics) | accuracy 0.8123 | AUROC 0.7529 |" in table
     # The scorecard must show each run's own metric, not NA from the synthetic name.
     assert "| Metrics (mixed validation metrics) | accuracy 0.8123 | AUROC 0.7529 | not comparable |" in scorecard
