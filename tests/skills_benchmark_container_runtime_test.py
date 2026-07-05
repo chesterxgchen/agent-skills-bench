@@ -579,7 +579,7 @@ def test_stdout_tail_line_is_bounded_by_bytes():
     assert truncated.endswith("\n")
 
 
-def test_prewarm_installs_job_requirements_into_current_python(tmp_path, monkeypatch):
+def test_prewarm_installs_job_requirements_into_current_python(tmp_path, monkeypatch, capsys):
     """The prewarm set is JOB-driven: whatever requirements*.txt the job ships.
 
     No framework guess is baked into the image (a torch job and an XGBoost job
@@ -615,6 +615,14 @@ def test_prewarm_installs_job_requirements_into_current_python(tmp_path, monkeyp
     monkeypatch.setattr(agent_run.subprocess, "run", fake_run)
     agent_run.prewarm_job_dependencies(config)
 
+    # The user must see what the long pause is: an announcement, per-file
+    # start/finish lines with durations, and a total.
+    out = capsys.readouterr().out
+    assert "Dependency prewarm: installing the job's own dependencies" in out
+    assert "installing from requirements-train.txt" in out
+    assert "requirements-train.txt finished in" in out
+    assert "excluded from measured agent time" in out
+
     # Only the job's TOP-LEVEL requirements files, in deterministic order.
     assert [args[-1].rsplit("/", 1)[-1] for args in calls] == [
         "requirements-download.txt",
@@ -629,6 +637,8 @@ def test_prewarm_installs_job_requirements_into_current_python(tmp_path, monkeyp
         "requirements-train.txt",
     ]
     assert all(entry["exit_code"] == 0 for entry in payload["installs"])
+    assert isinstance(payload["total_seconds"], int)
+    assert all(isinstance(entry["duration_seconds"], int) for entry in payload["installs"])
 
 
 def test_prewarm_disabled_by_env_records_and_installs_nothing(tmp_path, monkeypatch):
@@ -650,7 +660,7 @@ def test_prewarm_disabled_by_env_records_and_installs_nothing(tmp_path, monkeypa
     agent_run.prewarm_job_dependencies(SimpleNamespace(run_input_dir=input_dir, result_dir=result_dir))
 
     payload = json.loads((result_dir / "dependency_prewarm.json").read_text(encoding="utf-8"))
-    assert payload == {"enabled": False, "installs": []}
+    assert payload == {"enabled": False, "installs": [], "total_seconds": 0}
 
 
 def test_prewarm_records_failed_install_and_continues(tmp_path, monkeypatch):

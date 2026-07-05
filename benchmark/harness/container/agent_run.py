@@ -506,7 +506,7 @@ def prepare_input_workspace(config: AgentRunConfig) -> tuple[int, int]:
 PREWARM_INSTALL_TIMEOUT_SECONDS = 1800
 
 
-def prewarm_job_dependencies(config: AgentRunConfig) -> None:
+def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | None = None) -> None:
     """Install the job's OWN requirements files before the measured agent run.
 
     Fairness needs mode-symmetry, but the dependency SET is job-driven — a
@@ -522,39 +522,69 @@ def prewarm_job_dependencies(config: AgentRunConfig) -> None:
 
     out_path = config.result_dir / "dependency_prewarm.json"
     if os.environ.get("BENCHMARK_PREWARM_JOB_DEPENDENCIES", "1") == "0":
-        write_json(out_path, {"enabled": False, "installs": []})
+        print("Dependency prewarm: disabled via BENCHMARK_PREWARM_JOB_DEPENDENCIES=0", flush=True)
+        write_json(out_path, {"enabled": False, "installs": [], "total_seconds": 0})
         return
+    prewarm_start = epoch_seconds()
     payload: dict[str, Any] = {"enabled": True, "installs": []}
     requirements = sorted(path for path in config.run_input_dir.glob("requirements*.txt") if path.is_file())
     uv = shutil.which("uv")
     if requirements and uv is None:
         payload["warning"] = "uv not found on PATH; job dependencies were not prewarmed"
+        print(f"Dependency prewarm: {payload['warning']}", flush=True)
         requirements = []
-    for path in requirements:
-        start = epoch_seconds()
-        try:
-            proc = subprocess.run(
-                [uv, "pip", "install", "--python", sys.executable, "-r", str(path)],
-                capture_output=True,
-                text=True,
-                timeout=PREWARM_INSTALL_TIMEOUT_SECONDS,
-            )
-            exit_code: int | None = proc.returncode
-            stderr_tail = proc.stderr[-2000:]
-        except subprocess.TimeoutExpired:
-            exit_code = None
-            stderr_tail = f"prewarm install timed out after {PREWARM_INSTALL_TIMEOUT_SECONDS}s"
-        except OSError as exc:
-            exit_code = None
-            stderr_tail = f"prewarm install failed to launch: {exc}"
-        payload["installs"].append(
-            {
-                "requirements": path.name,
-                "exit_code": exit_code,
-                "duration_seconds": epoch_seconds() - start,
-                "stderr_tail": stderr_tail.strip(),
-            }
+    if not requirements:
+        print("Dependency prewarm: no top-level requirements*.txt in the job input; nothing to install", flush=True)
+    else:
+        names = ", ".join(path.name for path in requirements)
+        print(
+            f"Dependency prewarm: installing the job's own dependencies before the measured agent run "
+            f"({len(requirements)} file(s): {names}). This can take several minutes for large wheels.",
+            flush=True,
         )
+    # Heartbeat on a dedicated writer (the class is one-shot); a torch-sized
+    # download is minutes of otherwise silent work.
+    if progress is not None:
+        progress.write("dependency_prewarm", "start")
+        progress.start_heartbeat("dependency_prewarm", config.progress_interval_seconds)
+    try:
+        for path in requirements:
+            print(f"Dependency prewarm: installing from {path.name} ...", flush=True)
+            start = epoch_seconds()
+            try:
+                proc = subprocess.run(
+                    [uv, "pip", "install", "--python", sys.executable, "-r", str(path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=PREWARM_INSTALL_TIMEOUT_SECONDS,
+                )
+                exit_code: int | None = proc.returncode
+                stderr_tail = proc.stderr[-2000:]
+            except subprocess.TimeoutExpired:
+                exit_code = None
+                stderr_tail = f"prewarm install timed out after {PREWARM_INSTALL_TIMEOUT_SECONDS}s"
+            except OSError as exc:
+                exit_code = None
+                stderr_tail = f"prewarm install failed to launch: {exc}"
+            duration = epoch_seconds() - start
+            outcome = f"exit {exit_code}" if exit_code is not None else stderr_tail
+            print(f"Dependency prewarm: {path.name} finished in {duration}s ({outcome})", flush=True)
+            payload["installs"].append(
+                {
+                    "requirements": path.name,
+                    "exit_code": exit_code,
+                    "duration_seconds": duration,
+                    "stderr_tail": stderr_tail.strip(),
+                }
+            )
+    finally:
+        if progress is not None:
+            progress.stop_heartbeat()
+    payload["total_seconds"] = epoch_seconds() - prewarm_start
+    if requirements:
+        print(f"Dependency prewarm: done in {payload['total_seconds']}s (excluded from measured agent time)", flush=True)
+    if progress is not None:
+        progress.write("dependency_prewarm", "finished")
     write_json(out_path, payload)
 
 
@@ -1639,7 +1669,9 @@ def run_agent_benchmark() -> int:
         write_workspace_baseline(config.run_input_dir, config.result_dir / "input_baseline_manifest.json")
         write_workspace_baseline(config.run_workspace_dir, config.result_dir / "workspace_baseline_manifest.json")
         phase = "dependency_prewarm"
-        prewarm_job_dependencies(config)
+        # Dedicated writer: ProgressWriter heartbeats are one-shot, and the
+        # agent_exec writer is constructed later for its own heartbeat.
+        prewarm_job_dependencies(config, ProgressWriter(config.mode, script_start, config.progress_log_path))
         phase = "prompt_prepare"
         prompt_start, prompt_end = prepare_prompt(config)
 
