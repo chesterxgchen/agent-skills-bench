@@ -577,3 +577,107 @@ def test_stdout_tail_line_is_bounded_by_bytes():
     assert len(truncated.encode("utf-8")) <= MAX_STDOUT_TAIL_LINE_BYTES
     assert STDOUT_TAIL_TRUNCATED_MARKER in truncated
     assert truncated.endswith("\n")
+
+
+def test_prewarm_installs_job_requirements_into_current_python(tmp_path, monkeypatch):
+    """The prewarm set is JOB-driven: whatever requirements*.txt the job ships.
+
+    No framework guess is baked into the image (a torch job and an XGBoost job
+    need different stacks; CPU-vs-GPU wheel choice belongs to the runtime
+    environment), and both modes run the same prewarm before agent_exec so
+    install time never enters the measured agent elapsed.
+    """
+
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    from benchmark.harness.container import agent_run
+
+    monkeypatch.delenv("BENCHMARK_PREWARM_JOB_DEPENDENCIES", raising=False)
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "requirements-train.txt").write_text("xgboost\npandas\n", encoding="utf-8")
+    (input_dir / "requirements-download.txt").write_text("requests\n", encoding="utf-8")
+    (input_dir / "nested").mkdir()
+    (input_dir / "nested" / "requirements.txt").write_text("ignored\n", encoding="utf-8")
+    result_dir = tmp_path / "result"
+    result_dir.mkdir()
+    config = SimpleNamespace(run_input_dir=input_dir, result_dir=result_dir)
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(agent_run.shutil, "which", lambda name: "/usr/local/bin/uv")
+    monkeypatch.setattr(agent_run.subprocess, "run", fake_run)
+    agent_run.prewarm_job_dependencies(config)
+
+    # Only the job's TOP-LEVEL requirements files, in deterministic order.
+    assert [args[-1].rsplit("/", 1)[-1] for args in calls] == [
+        "requirements-download.txt",
+        "requirements-train.txt",
+    ]
+    for args in calls:
+        assert args[:5] == ["/usr/local/bin/uv", "pip", "install", "--python", sys.executable]
+    payload = json.loads((result_dir / "dependency_prewarm.json").read_text(encoding="utf-8"))
+    assert payload["enabled"] is True
+    assert [entry["requirements"] for entry in payload["installs"]] == [
+        "requirements-download.txt",
+        "requirements-train.txt",
+    ]
+    assert all(entry["exit_code"] == 0 for entry in payload["installs"])
+
+
+def test_prewarm_disabled_by_env_records_and_installs_nothing(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from benchmark.harness.container import agent_run
+
+    monkeypatch.setenv("BENCHMARK_PREWARM_JOB_DEPENDENCIES", "0")
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "requirements-train.txt").write_text("torch\n", encoding="utf-8")
+    result_dir = tmp_path / "result"
+    result_dir.mkdir()
+    monkeypatch.setattr(
+        agent_run.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not install"))
+    )
+
+    agent_run.prewarm_job_dependencies(SimpleNamespace(run_input_dir=input_dir, result_dir=result_dir))
+
+    payload = json.loads((result_dir / "dependency_prewarm.json").read_text(encoding="utf-8"))
+    assert payload == {"enabled": False, "installs": []}
+
+
+def test_prewarm_records_failed_install_and_continues(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from benchmark.harness.container import agent_run
+
+    monkeypatch.delenv("BENCHMARK_PREWARM_JOB_DEPENDENCIES", raising=False)
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "requirements-a.txt").write_text("nope\n", encoding="utf-8")
+    (input_dir / "requirements-b.txt").write_text("also\n", encoding="utf-8")
+    result_dir = tmp_path / "result"
+    result_dir.mkdir()
+
+    def fake_run(args, **kwargs):
+        from types import SimpleNamespace as NS
+
+        if args[-1].endswith("requirements-a.txt"):
+            return NS(returncode=1, stdout="", stderr="No solution found: nope does not exist")
+        return NS(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(agent_run.shutil, "which", lambda name: "uv")
+    monkeypatch.setattr(agent_run.subprocess, "run", fake_run)
+    agent_run.prewarm_job_dependencies(SimpleNamespace(run_input_dir=input_dir, result_dir=result_dir))
+
+    payload = json.loads((result_dir / "dependency_prewarm.json").read_text(encoding="utf-8"))
+    assert [entry["exit_code"] for entry in payload["installs"]] == [1, 0]
+    assert "No solution found" in payload["installs"][0]["stderr_tail"]

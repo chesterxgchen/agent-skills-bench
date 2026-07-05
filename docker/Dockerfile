@@ -94,11 +94,13 @@ RUN printf '%s\n' \
     > /etc/profile.d/99-agent-benchmark-venv.sh && \
     /bin/bash -lc 'command -v python && python --version && python -m pip --version && pip --version'
 
-# Preinstall the framework stack IDENTICALLY in both image variants (shared
-# base layer) so dependency installation and disk-space recovery are not part
-# of the skills-vs-baseline comparison. Copied alone (before the rest of
-# config/ and the harness code) so code changes do not invalidate this large
-# cached layer. An empty file skips the install.
+# Optional build-time dependency cache, IDENTICAL in both image variants
+# (shared base layer). Empty by default: the job-driven mechanism is the
+# container's dependency prewarm (agent_run.prewarm_job_dependencies), which
+# installs the mounted job's own requirements*.txt before the measured agent
+# phase. Copied alone (before the rest of config/ and the harness code) so
+# code changes do not invalidate this potentially large cached layer. A
+# comment-only file skips the install.
 COPY config/framework-requirements.txt /workspace/config/framework-requirements.txt
 RUN if grep -qv '^\s*\(#\|$\)' /workspace/config/framework-requirements.txt; then \
         uv pip install --python /workspace/venv/bin/python -r /workspace/config/framework-requirements.txt; \

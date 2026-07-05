@@ -503,6 +503,61 @@ def prepare_input_workspace(config: AgentRunConfig) -> tuple[int, int]:
     return start, epoch_seconds()
 
 
+PREWARM_INSTALL_TIMEOUT_SECONDS = 1800
+
+
+def prewarm_job_dependencies(config: AgentRunConfig) -> None:
+    """Install the job's OWN requirements files before the measured agent run.
+
+    Fairness needs mode-symmetry, but the dependency SET is job-driven — a
+    torch job and an XGBoost job need different stacks, and wheel selection
+    (CPU vs GPU) belongs to the runtime environment, not to a baked image
+    guess. So the top-level ``requirements*.txt`` files shipped with the job
+    input are installed here, identically in BOTH modes, before ``agent_exec``
+    starts — install time and its disk pressure never enter the measured agent
+    elapsed. Best-effort: failures are recorded in ``dependency_prewarm.json``
+    and the agent can still manage dependencies itself (that cost then shows
+    in the run). Disable with ``BENCHMARK_PREWARM_JOB_DEPENDENCIES=0``.
+    """
+
+    out_path = config.result_dir / "dependency_prewarm.json"
+    if os.environ.get("BENCHMARK_PREWARM_JOB_DEPENDENCIES", "1") == "0":
+        write_json(out_path, {"enabled": False, "installs": []})
+        return
+    payload: dict[str, Any] = {"enabled": True, "installs": []}
+    requirements = sorted(path for path in config.run_input_dir.glob("requirements*.txt") if path.is_file())
+    uv = shutil.which("uv")
+    if requirements and uv is None:
+        payload["warning"] = "uv not found on PATH; job dependencies were not prewarmed"
+        requirements = []
+    for path in requirements:
+        start = epoch_seconds()
+        try:
+            proc = subprocess.run(
+                [uv, "pip", "install", "--python", sys.executable, "-r", str(path)],
+                capture_output=True,
+                text=True,
+                timeout=PREWARM_INSTALL_TIMEOUT_SECONDS,
+            )
+            exit_code: int | None = proc.returncode
+            stderr_tail = proc.stderr[-2000:]
+        except subprocess.TimeoutExpired:
+            exit_code = None
+            stderr_tail = f"prewarm install timed out after {PREWARM_INSTALL_TIMEOUT_SECONDS}s"
+        except OSError as exc:
+            exit_code = None
+            stderr_tail = f"prewarm install failed to launch: {exc}"
+        payload["installs"].append(
+            {
+                "requirements": path.name,
+                "exit_code": exit_code,
+                "duration_seconds": epoch_seconds() - start,
+                "stderr_tail": stderr_tail.strip(),
+            }
+        )
+    write_json(out_path, payload)
+
+
 def prepare_prompt(config: AgentRunConfig) -> tuple[int, int]:
     start = epoch_seconds()
     shutil.copy2(config.prompt_source, config.prompt_file_path)
@@ -1583,6 +1638,8 @@ def run_agent_benchmark() -> int:
         input_start, input_end = prepare_input_workspace(config)
         write_workspace_baseline(config.run_input_dir, config.result_dir / "input_baseline_manifest.json")
         write_workspace_baseline(config.run_workspace_dir, config.result_dir / "workspace_baseline_manifest.json")
+        phase = "dependency_prewarm"
+        prewarm_job_dependencies(config)
         phase = "prompt_prepare"
         prompt_start, prompt_end = prepare_prompt(config)
 

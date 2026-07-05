@@ -1,16 +1,13 @@
-# Framework dependencies preinstalled IDENTICALLY into the skills and baseline
-# images (shared base layer), so dependency installation — and any disk-space
-# recovery it triggers mid-run — is not part of the skills-vs-baseline
-# comparison. Empty this file to opt out; versions follow the repo's pin policy
-# (recorded at build time, not exact-pinned here).
+# OPTIONAL image-level dependency cache — EMPTY by default, and intentionally so.
 #
-# torch resolves from the CPU wheel index (the benchmark containers have no
-# GPU; CUDA wheels would add gigabytes per image); everything else falls
-# through to PyPI.
---index-url https://download.pytorch.org/whl/cpu
---extra-index-url https://pypi.org/simple
-torch
-torchmetrics
-pytorch-lightning
-pandas
-scikit-learn
+# The benchmark must not guess the job's framework (a torch job and an XGBoost
+# job need different stacks) or the wheel flavor (CPU vs GPU depends on the
+# runtime host, not the image). The job-driven mechanism is the container's
+# dependency PREWARM: before the measured agent phase starts, the harness
+# installs the job's own top-level requirements*.txt identically in both
+# modes (see benchmark.harness.container.agent_run.prewarm_job_dependencies;
+# BENCHMARK_PREWARM_JOB_DEPENDENCIES=0 disables it).
+#
+# Populate this file only to pre-bake packages into BOTH image variants as a
+# build-time cache for a fleet whose jobs are known in advance — it changes
+# where install time is paid (image build vs run prewarm), not fairness.
