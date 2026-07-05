@@ -184,6 +184,23 @@ def test_runtime_env_omits_agent_model_when_not_explicit():
     assert "BENCHMARK_AGENT_MODEL" not in env
 
 
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_runtime_env_declares_unattended_sandbox_contract(agent):
+    # The benchmark always runs unattended in a disposable sandbox container.
+    # These vars are the harness->skill contract that keeps the skill from
+    # stalling on an approval prompt that no one can answer (not_started runs).
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    class Config:
+        agent_model = "unspecified_default"
+        agent_model_was_explicit = False
+
+    env = load_agent_adapter(agent).runtime_env(Config())
+
+    assert env["AGENT_HARNESS_UNATTENDED"] == "1"
+    assert env["AGENT_HARNESS_SANDBOX"] == "disposable-container"
+
+
 def test_claude_launch_spec_omits_model_flag_when_not_explicit(tmp_path):
     from benchmark.harness.agents.base import AgentLaunchContext
     from benchmark.harness.agents.registry import load_agent_adapter
