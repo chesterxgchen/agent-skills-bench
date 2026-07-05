@@ -51,6 +51,10 @@ NVFLARE_CAPTURE_SPEC = EvidenceCaptureSpec(
     runtime_output_markers=(
         "**/simulate_job/metrics/metrics_summary.json",
         "**/simulate_job/metrics/round_metrics.jsonl",
+        # Every simulator run materializes simulate_job/meta.json, even when the
+        # job wrote no metrics files — this anchors run-root discovery (and the
+        # in-workspace runtime/source split) for metrics-less runs.
+        "**/simulate_job/meta.json",
         "**/config_fed_server.json",
         "**/config_fed_client.json",
     ),

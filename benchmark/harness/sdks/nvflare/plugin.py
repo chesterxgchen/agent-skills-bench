@@ -137,13 +137,28 @@ class NvflareReportPlugin(ReportPlugin):
         metric = run.validation_metric or {}
         name = metric.get("name") if isinstance(metric, dict) else None
         value = self._selected_scalar(metric if isinstance(metric, dict) else None)
+        # The SDK's label for the reported scalar, read verbatim from the captured
+        # metric (Inversion 2); the engine gates it to the rendered metric name.
+        value_label = metric_value_label(metric if isinstance(metric, dict) else None, None) or None
+        if value is None:
+            # No structured runtime metric artifact was captured (e.g. a run that
+            # wrote no metrics_summary.json). The server config + server log still
+            # carry the FL-level scalar in structured form: the model selector's
+            # declared key_metric and its best-value line. Still runtime evidence,
+            # never the agent's final-message self-report.
+            selected = _logic.server_selected_best_metric(run.raw, name or expected)
+            if selected:
+                name = name or selected.get("name")
+                value = selected.get("value")
+                value_label = (
+                    f"server-selected best validation {canonical_metric_name(selected.get('name'))} "
+                    f"at round {selected.get('round')} (model selector log)"
+                )
         return MetricAssessment(
             name=name,
             reported=bool(name),
             value=value if isinstance(value, (int, float)) else None,
-            # The SDK's label for the reported scalar, read verbatim from the captured
-            # metric (Inversion 2); the engine gates it to the rendered metric name.
-            value_label=metric_value_label(metric if isinstance(metric, dict) else None, None) or None,
+            value_label=value_label,
             value_authoritative=True,
             # The FL "what a good result looks like" wording for the quality gate
             # (Inversion 2): the engine renders ``pass: {gate_phrase}``.

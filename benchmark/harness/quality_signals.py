@@ -41,11 +41,14 @@ GENERIC_VALIDATION_METRIC_PATTERN = (
 # detect/surface these metrics in agent output. It does NOT constrain which metric a job
 # may require -- the job's PRIMARY metric is declared in its instruction/README and flows
 # in as data at runtime, and any unrecognized (job-specific) name is handled generically.
+# The val-prefixed variants accept a snake_case boundary too ((?:\b|_)): runtime logs
+# compound them into larger tokens (e.g. NVFLARE site logs emit `global_valid_auroc=`),
+# and `_` is a word character, so a plain \b never matches inside those tokens.
 METRIC_ALIAS_PATTERNS = {
-    "AUROC": r"\b(?:AUROC|AUC)\b|\b(?:val|valid|validation)[_-]?auroc\b",
-    "accuracy": r"\baccuracy\b|\b(?:val|valid|validation)[_-]?accuracy\b|\bacc\b",
-    "loss": r"\b(?:loss|val[_-]?loss|valid[_-]?loss|validation[_-]?loss|train[_-]?loss)\b",
-    "f1": r"\b(?:f1|f1[_-]?score|val[_-]?f1|valid[_-]?f1|validation[_-]?f1)\b",
+    "AUROC": r"\b(?:AUROC|AUC)\b|(?:\b|_)(?:val|valid|validation)[_-]?auroc\b",
+    "accuracy": r"\baccuracy\b|(?:\b|_)(?:val|valid|validation)[_-]?(?:accuracy|acc)\b|\bacc\b",
+    "loss": r"\b(?:loss|train[_-]?loss)\b|(?:\b|_)(?:val|valid|validation)[_-]?loss\b",
+    "f1": r"\b(?:f1|f1[_-]?score)\b|(?:\b|_)(?:val|valid|validation)[_-]?f1\b",
 }
 _COMMON_DL_METRIC_ALIASES = {
     "auroc": "AUROC",
@@ -211,8 +214,11 @@ def metric_values(metric_name: str, text: str) -> list[float]:
 def metric_value_entries(metric_name: str, text: str) -> list[dict[str, Any]]:
     canonical = canonical_metric_name(metric_name)
     # Common DL metrics have spelling-variant detection patterns; any other (job-specific)
-    # metric is detected generically by its own name.
-    pattern = METRIC_ALIAS_PATTERNS.get(canonical) or rf"\b{re.escape(canonical)}\b"
+    # metric is detected generically by its own name, including the val-prefixed
+    # snake_case token form runtime logs use (e.g. `global_valid_<name>=`).
+    pattern = METRIC_ALIAS_PATTERNS.get(canonical) or (
+        rf"\b{re.escape(canonical)}\b|(?:\b|_)(?:val|valid|validation)[_-]?{re.escape(canonical)}\b"
+    )
     lines = text.splitlines()
     entries: list[dict[str, Any]] = []
     consumed_lines: set[int] = set()
@@ -234,7 +240,9 @@ def metric_value_entries(metric_name: str, text: str) -> list[dict[str, Any]]:
 
 def metric_mentioned(metric_name: str, text: str) -> bool:
     canonical = canonical_metric_name(metric_name)
-    pattern = METRIC_ALIAS_PATTERNS.get(canonical, rf"\b{re.escape(canonical)}\b")
+    pattern = METRIC_ALIAS_PATTERNS.get(canonical) or (
+        rf"\b{re.escape(canonical)}\b|(?:\b|_)(?:val|valid|validation)[_-]?{re.escape(canonical)}\b"
+    )
     return re.search(pattern, text, flags=re.IGNORECASE) is not None
 
 

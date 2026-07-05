@@ -176,10 +176,24 @@ def capture_workspace_delta(
     include_runtime_artifacts: bool = True,
     extra_runtime_artifact_sources: Iterable[tuple[str, Path]] | None = None,
     structure_file_names: Iterable[str] = (),
+    exclude_source_dirs: Iterable[Path] = (),
 ) -> None:
     baseline = load_json(baseline_path)
     baseline_files = baseline.get("files") if isinstance(baseline.get("files"), dict) else {}
     delta_root.mkdir(parents=True, exist_ok=True)
+    # Runtime run/output roots living INSIDE the workspace (e.g. a skill-mandated
+    # `<workspace>/nvflare_runtime/`) are runtime evidence, not agent-generated
+    # source: they are captured wholesale under runtime_artifacts/ via
+    # extra_runtime_artifact_sources and must NOT also show up as changed/added
+    # source files. Only strict subdirectories of the workspace are honored.
+    exclude_rel_parts: list[tuple[str, ...]] = []
+    for raw in exclude_source_dirs:
+        try:
+            rel = Path(raw).resolve().relative_to(workspace_root.resolve())
+        except (OSError, ValueError):
+            continue
+        if rel.parts:
+            exclude_rel_parts.append(rel.parts)
     changed_root = delta_root / "changed_files"
     runtime_root = delta_root / "runtime_artifacts"
     copied_state = {"files": 0, "bytes": 0}
@@ -196,6 +210,8 @@ def capture_workspace_delta(
             continue
         rel_path = path.relative_to(workspace_root)
         rel = rel_path.as_posix()
+        if any(rel_path.parts[: len(parts)] == parts for parts in exclude_rel_parts):
+            continue
         if should_skip_rel(rel_path) or not is_source_like(path, include_logs=True):
             continue
         try:

@@ -1034,6 +1034,16 @@ def runtime_output_search_roots(run_workspace_dir: Path) -> list[Path]:
     return roots
 
 
+def _dir_is_under_any(path: Path, roots: set[Path]) -> bool:
+    if not roots:
+        return False
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
 def resolve_runtime_output_roots(
     runtime_output_markers: tuple[str, ...],
     search_roots: Iterable[Path],
@@ -1132,15 +1142,46 @@ def post_process(
             existing_sources=runtime_sources,
         )
     )
+    # In-workspace run roots: a skill can mandate the run/output folder INSIDE the
+    # workspace (observed: `<workspace>/nvflare_runtime/...`). Discover those by the
+    # simulate_job-scoped output markers only — an actual run leaves simulate_job
+    # output, while a config-only job export is generated source and must stay in
+    # the workspace delta. Each root is captured wholesale as a runtime source
+    # (labelled by its workspace-relative path) and EXCLUDED from the workspace
+    # source walk: runtime output is graded from runtime_artifacts/, and listing it
+    # under changed_files/ would misreport it as agent-generated source.
+    run_output_markers = tuple(
+        marker for marker in capture_spec.runtime_output_markers if "simulate_job" in marker
+    )
+    workspace_runtime_sources: list[tuple[str, Path]] = []
+    for _label, run_root in resolve_runtime_output_roots(
+        run_output_markers,
+        [config.run_workspace_dir],
+        existing_sources=runtime_sources,
+    ):
+        try:
+            rel_label = run_root.relative_to(config.run_workspace_dir).as_posix()
+        except ValueError:
+            continue
+        workspace_runtime_sources.append((rel_label, run_root))
+    runtime_sources.extend(workspace_runtime_sources)
+    workspace_runtime_roots: set[Path] = set()
+    for _label, run_root in workspace_runtime_sources:
+        with suppress(OSError):
+            workspace_runtime_roots.add(run_root.resolve())
     # Glob-derived sources (§4.1 S1): resolve artifact_globs against the run
     # workspace and merge into the same extra_runtime_artifact_sources mechanism,
-    # so capture_workspace_delta is unchanged.
+    # so capture_workspace_delta is unchanged. Skip matches inside an in-workspace
+    # run root — that whole subtree is already captured as one runtime source, and
+    # a second per-directory source would copy the same files twice.
     runtime_sources.extend(
-        resolve_artifact_glob_sources(
+        (label, source_dir)
+        for label, source_dir in resolve_artifact_glob_sources(
             capture_spec.artifact_globs,
             config.run_workspace_dir,
             existing_sources=runtime_sources,
         )
+        if not _dir_is_under_any(source_dir, workspace_runtime_roots)
     )
     input_delta_manifest = config.result_dir / "input_delta_manifest.json"
     capture_workspace_delta(
@@ -1163,6 +1204,7 @@ def post_process(
         delta_scope="agent_workspace",
         extra_runtime_artifact_sources=runtime_sources,
         structure_file_names=structure_file_names,
+        exclude_source_dirs=[run_root for _label, run_root in workspace_runtime_sources],
     )
     adapter = load_agent_adapter(config.agent)
     exit_summary = adapter.exit_summary(

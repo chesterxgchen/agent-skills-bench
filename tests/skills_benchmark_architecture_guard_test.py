@@ -620,6 +620,119 @@ def test_nvflare_runtime_log_artifact_scalar_is_plugin_accepted():
     assert benchmark_insights.metric_display(run, "AUROC", nv_ev) == "AUROC 0.7698"
 
 
+def test_server_selected_best_metric_satisfies_fl_scalar_gate(tmp_path):
+    """A metrics-less run still passes the FL-scalar gate via the model selector.
+
+    Regression: a recipe run that writes NO metrics_summary.json (only simulator
+    logs + configs) reported its AUROC in the final message and the gate failed
+    with "AUROC was reported, but no FL-level scalar value was found" — even
+    though the captured server config declares the model selector's key_metric
+    and the server log carries its selected best value. The plugin must promote
+    that structured (config name + log value) pair to the authoritative FL-level
+    scalar; the metric NAME is never grepped out of log lines, so it follows
+    whatever metric the job declares.
+    """
+
+    import json
+
+    from benchmark.harness.reports import benchmark_insights
+    from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
+
+    delta_dir = tmp_path / "workspace_delta" / "runtime_artifacts" / "nvflare_runtime"
+    config_rel = "nvflare_runtime/job_config/app/config/config_fed_server.json"
+    log_rel = "nvflare_runtime/simulation/job/server/log.txt"
+    config_path = delta_dir / "job_config" / "app" / "config" / "config_fed_server.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"components": [{"id": "model_selector", "args": {"key_metric": "auroc"}}]}),
+        encoding="utf-8",
+    )
+    log_path = delta_dir / "simulation" / "job" / "server" / "log.txt"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text(
+        "2026-07-05 03:59:24,691 - IntimeModelSelector - INFO - new best validation metric at round 1: 0.7139\n"
+        "2026-07-05 03:59:40,836 - IntimeModelSelector - INFO - new best validation metric at round 2: 0.7359736256742272\n",
+        encoding="utf-8",
+    )
+    run = _run(
+        {
+            "available": True,
+            "label": "Run",
+            "mode_dir": tmp_path,
+            "record": {
+                "quality_signals": {"job_guidance_primary_validation_metric": {"expected_primary_metric": "AUROC"}}
+            },
+            "workspace_delta": {
+                "runtime_artifacts": [
+                    {"path": config_rel, "artifact_path": f"runtime_artifacts/{config_rel}"},
+                    {"path": log_rel, "artifact_path": f"runtime_artifacts/{log_rel}"},
+                ]
+            },
+            # The agent's final-message self-report alone must NOT satisfy the gate;
+            # the plugin recovers the FL-level value from the server-side evidence.
+            "validation_metric": {
+                "name": "AUROC",
+                "source": "agent_last_message",
+                "value": 0.7359736257,
+                "value_scope": "reported_scalar",
+                "reported_values": [0.7359736257],
+                "reported_value_entries": [{"label": "Best selected global-model AUROC", "value": 0.7359736257}],
+            },
+        }
+    )
+
+    nv_ev = NvflareReportPlugin().collect(run)
+
+    assert nv_ev.metric.value == 0.7359736256742272
+    assert "round 2" in (nv_ev.metric.value_label or "")
+    # The fixture carries no job-run evidence, so only the metric checks matter here.
+    issues = benchmark_insights.run_quality_issues(run, nv_ev)
+    assert not [issue for issue in issues if "result_metric" in issue or "FL-level scalar" in issue], issues
+
+
+def test_server_selected_best_metric_rejects_mismatched_key_metric(tmp_path):
+    """The model-selector fallback must not grade a DIFFERENT metric as the result.
+
+    When the job expects AUROC but the captured server config selects models by
+    loss, the server log's best value is a loss — promoting it would report a
+    wrong-metric scalar. The gate must keep failing instead.
+    """
+
+    import json
+
+    from benchmark.harness.sdks.nvflare._logic import server_selected_best_metric
+
+    delta_dir = tmp_path / "workspace_delta" / "runtime_artifacts" / "nvflare_runtime"
+    config_path = delta_dir / "job_config" / "app" / "config" / "config_fed_server.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"components": [{"id": "model_selector", "args": {"key_metric": "loss"}}]}),
+        encoding="utf-8",
+    )
+    log_path = delta_dir / "simulation" / "job" / "server" / "log.txt"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("INFO - new best validation metric at round 2: 0.42\n", encoding="utf-8")
+    raw = {
+        "mode_dir": tmp_path,
+        "workspace_delta": {
+            "runtime_artifacts": [
+                {
+                    "path": "nvflare_runtime/job_config/app/config/config_fed_server.json",
+                    "artifact_path": "runtime_artifacts/nvflare_runtime/job_config/app/config/config_fed_server.json",
+                },
+                {
+                    "path": "nvflare_runtime/simulation/job/server/log.txt",
+                    "artifact_path": "runtime_artifacts/nvflare_runtime/simulation/job/server/log.txt",
+                },
+            ]
+        },
+    }
+
+    assert server_selected_best_metric(raw, "AUROC") == {}
+    selected = server_selected_best_metric(raw, "loss")
+    assert selected["value"] == 0.42 and selected["name"] == "loss"
+
+
 def test_plugin_selected_scalar_renders_value_in_sections_not_na():
     """F1 render-path threading: metric_display() inside the section renderers must
     receive the sidecar `ev`, so a plugin-selected summary scalar renders its VALUE,

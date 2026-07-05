@@ -43,7 +43,7 @@ from typing import Any
 
 from ...common import load_json
 from ...evaluation import load_evaluation_rules, overall_thresholds, score_signal, verdict_points
-from ...quality_signals import canonical_metric_name, metric_names_match
+from ...quality_signals import canonical_metric_name, is_plausible_metric_value, metric_names_match
 from ...reports._events import (
     _job_rerun_reason,
     _span_total_seconds,
@@ -692,6 +692,43 @@ def _server_config_key_metric(run: dict[str, Any]) -> str:
     return ""
 
 
+_BEST_VALIDATION_METRIC_RE = r"\bnew best validation metric at round\s+(\d+):\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)"
+
+
+def server_selected_best_metric(run: dict[str, Any], expected_metric: Any = None) -> dict[str, Any]:
+    """The FL-level scalar the server's model selector actually selected.
+
+    The metric NAME comes from the captured ``config_fed_server.json``
+    (``IntimeModelSelector.key_metric``) and the VALUE from the server log's
+    ``new best validation metric at round N: V`` line — both structured runtime
+    evidence, so this follows whatever metric the job declares without grepping
+    metric names out of log lines. Empty when either half is missing, when the
+    declared key_metric is a different metric than ``expected_metric``, or when
+    the value is implausible for the metric.
+    """
+
+    key_metric = _server_config_key_metric(run)
+    if not key_metric:
+        return {}
+    if expected_metric and not metric_names_match(key_metric, expected_metric):
+        return {}
+    best: tuple[int, float] | None = None
+    source_paths: list[str] = []
+    for rel_path, text in _runtime_artifact_texts(run, r"(^|/)server/log(?:_fl)?\.txt$", max_bytes=128_000):
+        for line in strip_ansi(text).splitlines():
+            best_match = re.search(_BEST_VALIDATION_METRIC_RE, line, flags=re.IGNORECASE)
+            if not best_match:
+                continue
+            candidate = (int(best_match.group(1)), float(best_match.group(2)))
+            if best is None or candidate[0] >= best[0]:
+                best = candidate
+                if rel_path not in source_paths:
+                    source_paths.append(rel_path)
+    if best is None or not is_plausible_metric_value(key_metric, best[1]):
+        return {}
+    return {"name": key_metric, "value": best[1], "round": best[0], "source_paths": source_paths}
+
+
 def recovered_runtime_metric_evidence(run: dict[str, Any]) -> str:
     """Recover non-authoritative metric context from NVFLARE server logs."""
 
@@ -702,11 +739,7 @@ def recovered_runtime_metric_evidence(run: dict[str, Any]) -> str:
     fallback_values: list[float] = []
     for _rel_path, text in _runtime_artifact_texts(run, r"(^|/)server/log(?:_fl)?\.txt$", max_bytes=128_000):
         for line in strip_ansi(text).splitlines():
-            best_match = re.search(
-                r"\bnew best validation metric at round\s+(\d+):\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)",
-                line,
-                flags=re.IGNORECASE,
-            )
+            best_match = re.search(_BEST_VALIDATION_METRIC_RE, line, flags=re.IGNORECASE)
             if best_match:
                 candidate = (int(best_match.group(1)), float(best_match.group(2)))
                 if best is None or candidate[0] >= best[0]:

@@ -424,3 +424,69 @@ def test_runtime_output_search_roots_excludes_workspace_and_dedupes(tmp_path, mo
     assert designated.resolve() in resolved and tmpdir.resolve() in resolved
     # The workspace is captured by the delta already; it must not be searched.
     assert workspace.resolve() not in resolved
+
+
+def test_in_workspace_run_root_is_runtime_evidence_not_generated_source(tmp_path):
+    """A skill-mandated run root INSIDE the workspace splits runtime from source.
+
+    Regression: the agent runs the simulation under `<workspace>/nvflare_runtime/`
+    (per the skill's instructions), and the workspace source walk swept the whole
+    run tree into changed_files/ — misreporting simulator output as agent-generated
+    source. The run root must be discovered by its output structure (simulate_job),
+    captured wholesale under runtime_artifacts/, and excluded from changed_files.
+    """
+
+    import json
+
+    from benchmark.harness.container.agent_run import resolve_runtime_output_roots
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "client.py").write_text("x = 1\n", encoding="utf-8")
+    baseline = tmp_path / "baseline.json"
+    write_workspace_baseline(workspace, baseline)
+
+    # The agent's actual source change...
+    (workspace / "job.py").write_text("job = True\n", encoding="utf-8")
+    # ...and the skill-mandated in-workspace run root with simulator output.
+    run_root = workspace / "nvflare_runtime"
+    meta = run_root / "simulation" / "job" / "site-1" / "simulate_job" / "meta.json"
+    meta.parent.mkdir(parents=True)
+    meta.write_text("{}", encoding="utf-8")
+    server_log = run_root / "simulation" / "job" / "server" / "log.txt"
+    server_log.parent.mkdir(parents=True)
+    server_log.write_text("new best validation metric at round 1: 0.7\n", encoding="utf-8")
+    exported_config = run_root / "job_config" / "app" / "config" / "config_fed_server.json"
+    exported_config.parent.mkdir(parents=True)
+    exported_config.write_text("{}", encoding="utf-8")
+
+    run_output_markers = tuple(
+        marker for marker in NVFLARE_CAPTURE_SPEC.runtime_output_markers if "simulate_job" in marker
+    )
+    workspace_runtime_sources = [
+        (root.relative_to(workspace).as_posix(), root)
+        for _label, root in resolve_runtime_output_roots(run_output_markers, [workspace])
+    ]
+    assert [label for label, _root in workspace_runtime_sources] == ["nvflare_runtime"]
+
+    manifest_path = tmp_path / "workspace_delta_manifest.json"
+    capture_workspace_delta(
+        workspace,
+        baseline,
+        tmp_path / "delta",
+        manifest_path,
+        tmp_path / "runtime",
+        delta_scope="agent_workspace",
+        extra_runtime_artifact_sources=workspace_runtime_sources,
+        structure_file_names=("client.py", "job.py"),
+        exclude_source_dirs=[root for _label, root in workspace_runtime_sources],
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    changed = [entry["path"] for entry in manifest["changed_files"]]
+    assert changed == ["job.py"], f"run-root files leaked into changed_files: {changed}"
+    assert all(not p.startswith("nvflare_runtime/") for p in [e["path"] for e in manifest["final_files"]])
+    runtime_paths = [entry["path"] for entry in manifest["runtime_artifacts"]]
+    assert "nvflare_runtime/simulation/job/server/log.txt" in runtime_paths
+    assert "nvflare_runtime/simulation/job/site-1/simulate_job/meta.json" in runtime_paths
+    assert "nvflare_runtime/job_config/app/config/config_fed_server.json" in runtime_paths
