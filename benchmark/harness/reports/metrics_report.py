@@ -29,6 +29,7 @@ from ..modes import BENCHMARK_RUNS, NO_SKILLS_MODE, WITH_SKILLS_MODE
 from ..quality_signals import canonical_metric_name, is_plausible_metric_value
 from ._context import ReportContext
 from ._loader import (
+    _combined_rca_reports,
     expected_validation_metric_name,
     filter_mode_console,
     final_record_path,
@@ -301,6 +302,12 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             "agent_stderr": read_text(mode_dir / "agent_stderr.txt") if available else "",
             "agent_events_text": agent_events_text,
             "console_text": mode_console_text,
+            # The agent-authored RCA report drives the "Agent root-cause
+            # investigation" body in why_section (_agent_rca_section reads
+            # run.raw["rca_report"]). collect_benchmark_runs attaches it too;
+            # without it here, the primary metrics report renders the RCA
+            # heading/tables but silently drops the investigation itself.
+            "rca_report": _combined_rca_reports(mode_dir) if available else "",
             "validation_metric": validation_metric or validation_metric_from_record(record),
         }
     # Render from the typed Contract B spine (Inversion 1): the shared

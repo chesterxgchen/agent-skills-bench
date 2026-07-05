@@ -920,6 +920,34 @@ def test_metrics_report_preserves_run_plan_identity_for_code_quality_scoring(tmp
     assert metric_ctx.code_quality(NO_SKILLS_MODE).score == insight_ctx.code_quality(NO_SKILLS_MODE).score
 
 
+def test_metrics_report_embeds_agent_rca_report(tmp_path):
+    # The primary metrics report must render the agent-authored RCA investigation,
+    # not just the RCA heading/tables. It loads runs via runs_by_mode_for_insights,
+    # which previously omitted rca_report (attached only by collect_benchmark_runs),
+    # so the investigation body was silently dropped from metrics_report.md.
+    from _report_fixtures import build_result_root
+
+    from benchmark.harness.modes import WITH_SKILLS_MODE
+    from benchmark.harness.reports import metrics_report
+    from benchmark.harness.reports._loader import mode_dir_for_benchmark
+
+    root = build_result_root(tmp_path / "result_root")
+    rca_dir = mode_dir_for_benchmark(root, WITH_SKILLS_MODE) / "rca"
+    rca_dir.mkdir(parents=True, exist_ok=True)
+    (rca_dir / "rca_report_quality.md").write_text(
+        "### Verdict\n\nMetrics were routed to /tmp outside the capture boundary.\n", encoding="utf-8"
+    )
+
+    metric_rows = metrics_report.collect_runs(root)
+    insight_runs = metrics_report.runs_by_mode_for_insights(root, metric_rows)
+    assert "routed to /tmp" in insight_runs[WITH_SKILLS_MODE].raw["rca_report"]
+
+    metrics_report.write_reports(root, "Synthetic Metrics")
+    metrics_markdown = (root / "metrics_report.md").read_text(encoding="utf-8")
+    assert "Agent root-cause investigation (With skills)" in metrics_markdown
+    assert "Metrics were routed to /tmp outside the capture boundary." in metrics_markdown
+
+
 def test_benchmark_target_infers_plain_pytorch_framework_from_captured_evidence(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
