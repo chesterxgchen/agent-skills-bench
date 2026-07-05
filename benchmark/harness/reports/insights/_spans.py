@@ -76,7 +76,13 @@ def _thinking_token_events(run: dict[str, Any]) -> int:
 
 
 def _assistant_turns(run: dict[str, Any]) -> int:
-    return event_type_count(run, "assistant")
+    turns = event_type_count(run, "assistant")
+    if turns:
+        return turns
+    # Codex emits no "assistant" events: its assistant messages arrive as
+    # lifecycle items of type ``agent_message``. Counting those beats reporting
+    # 0 turns for every Codex run.
+    return event_type_count(run, "agent_message")
 
 
 def _command_span_total_seconds(run: dict[str, Any]) -> float:

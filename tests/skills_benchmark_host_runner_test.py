@@ -884,7 +884,7 @@ def test_autorun_rca_investigates_regressed_modes_and_regenerates(monkeypatch):
         lambda root, mode, topic, q, run_id=None: {"topic": "auto"} if mode == "with_skills" else None,
     )
 
-    def fake_resolve_invoker(agent, sandbox="auto"):
+    def fake_resolve_invoker(agent, sandbox="auto", step_timeout_seconds=None):
         calls["sandboxes"].append(sandbox)
         return ("codex", lambda p, c: "{}")
 
@@ -933,7 +933,7 @@ def test_autorun_rca_skips_when_no_investigator_available(monkeypatch):
         rca, "resolve_seed", lambda root, mode, *a, **k: {"topic": "auto"} if mode == "with_skills" else None
     )
 
-    def no_agent(agent, sandbox="auto"):
+    def no_agent(agent, sandbox="auto", step_timeout_seconds=None):
         # Mirrors resolve_invoker under sandbox="docker" with no built image.
         assert sandbox == "docker"
         raise SystemExit("--sandbox docker requested but no built image for 'codex' was found")

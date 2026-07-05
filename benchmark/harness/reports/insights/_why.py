@@ -35,6 +35,7 @@ from .._events import (
     terminal_failure_anchor,
     truncate,
 )
+from ...infrastructure_taint import assess_infrastructure_taint
 from .._runs import run_workspace_delta
 from .._text import _command_count_display, fmt_number, markdown_cell, sanitize_agent_markdown
 from ..evidence import RunEvidence
@@ -1074,6 +1075,28 @@ def _agent_rca_section(run: RunEvidence, fallback_label: str) -> list[str]:
     ]
 
 
+def _infrastructure_taint_lines(with_run: RunEvidence, base_run: RunEvidence) -> list[str]:
+    """A leading disclaimer when either side's latency is provider-dominated.
+
+    Provider stalls, stream reconnects, and model-manager failures make the
+    elapsed-time comparison below measure the infrastructure, not the skills —
+    the same assessment that excludes these runs from winner selection.
+    """
+
+    notes = []
+    for run in (with_run, base_run):
+        taint = assess_infrastructure_taint(run.raw.get("mode_dir"), run.raw.get("activity"))
+        if taint.get("tainted"):
+            notes.append(f"- {run.label}: " + "; ".join(taint.get("reasons") or ["tainted"]))
+    if not notes:
+        return []
+    return [
+        "**Infrastructure-tainted latency — do not read the timing below as skill overhead.**",
+        "Provider stalls/reconnects dominated the flagged run(s); they are excluded from latency winner selection.",
+        *notes,
+    ]
+
+
 def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext | None = None) -> list[str]:
     with_label = with_run.label or "With skills"
     base_label = base_run.label or "No skills baseline"
@@ -1127,6 +1150,10 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
     # is noise and the failure + RCA lead instead). Non-failure behavior is
     # unchanged from the prior ``slower or not quality_explanation``.
     include_slowdown_context = not primary_failure
+    if include_slowdown_context:
+        taint_lines = _infrastructure_taint_lines(with_run, base_run)
+        if taint_lines:
+            lines.extend([*taint_lines, ""])
     if include_slowdown_context:
         root_causes = _root_cause_lead(with_run, base_run, ctx)
         if root_causes:

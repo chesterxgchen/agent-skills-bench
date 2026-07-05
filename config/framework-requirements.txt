@@ -1,0 +1,16 @@
+# Framework dependencies preinstalled IDENTICALLY into the skills and baseline
+# images (shared base layer), so dependency installation — and any disk-space
+# recovery it triggers mid-run — is not part of the skills-vs-baseline
+# comparison. Empty this file to opt out; versions follow the repo's pin policy
+# (recorded at build time, not exact-pinned here).
+#
+# torch resolves from the CPU wheel index (the benchmark containers have no
+# GPU; CUDA wheels would add gigabytes per image); everything else falls
+# through to PyPI.
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+torch
+torchmetrics
+pytorch-lightning
+pandas
+scikit-learn

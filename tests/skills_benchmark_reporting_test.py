@@ -9080,7 +9080,7 @@ def test_rca_codex_invoker_isolates_session_from_instruction_files(monkeypatch, 
 
     calls = []
 
-    def fake_checked_agent_run(args, cwd, input_text=None, env_prefixes=()):
+    def fake_checked_agent_run(args, cwd, input_text=None, env_prefixes=(), timeout_seconds=None):
         calls.append(args)
         return "{}"
 
@@ -9137,7 +9137,7 @@ def test_rca_container_invoker_confines_reads_to_mounted_evidence(monkeypatch, t
 
     calls = []
 
-    def fake_checked_agent_run(args, cwd, input_text=None, env_prefixes=()):
+    def fake_checked_agent_run(args, cwd, input_text=None, env_prefixes=(), timeout_seconds=None):
         calls.append(args)
         return "{}"
 

@@ -90,6 +90,7 @@ def parse_usage_and_activity_data(events_path: Path) -> tuple[dict[str, Any], di
     event_types_truncated = False
     command_prefixes_truncated = False
     hint_counts: Counter[str] = Counter()
+    counted_command_item_ids: set[str] = set()
     first_event_dt = None
     first_event_timestamp = None
     last_event_dt = None
@@ -179,12 +180,20 @@ def parse_usage_and_activity_data(events_path: Path) -> tuple[dict[str, Any], di
                             if isinstance(value, str):
                                 if increment_bounded_counter(event_types, value, MAX_TRACKED_EVENT_TYPES):
                                     event_types_truncated = True
+                # Lifecycle streams (Codex) emit the SAME item on start, update,
+                # and completion, each carrying the command — count one command
+                # per item id, not one per lifecycle event.
+                event_item = event.get("item") if isinstance(event, dict) else None
+                event_item_id = event_item.get("id") if isinstance(event_item, dict) else None
+                suppress_commands = isinstance(event_item_id, str) and event_item_id in counted_command_item_ids
+                commands_before = command_count
                 for item in walk(event):
                     lowered = {str(k).lower(): v for k, v in item.items()}
                     if any(k in lowered for k in ("usage", "token_usage")):
                         raw_usage_object_count += 1
                     for key, value in item.items():
-                        maybe_add_command(key, value)
+                        if not suppress_commands:
+                            maybe_add_command(key, value)
                     for key, value in lowered.items():
                         if not isinstance(value, (int, float)) or isinstance(value, bool):
                             continue
@@ -198,6 +207,8 @@ def parse_usage_and_activity_data(events_path: Path) -> tuple[dict[str, Any], di
                         elif normalized in {"output_tokens", "completion_tokens", "output_token_count"}:
                             max_output_tokens = value if max_output_tokens is None else max(max_output_tokens, value)
                             last_output_tokens = value
+                if isinstance(event_item_id, str) and command_count > commands_before:
+                    counted_command_item_ids.add(event_item_id)
 
     total_tokens = last_total_tokens
     fallback_total = None

@@ -24,6 +24,7 @@ from .agent_identity import preferred_agent_model, resolve_agent_model_from_even
 from .common import load_json
 from .common import write_json_atomic as common_write_json_atomic
 from .host_environment import host_os_display
+from .infrastructure_taint import assess_infrastructure_taint, run_is_infrastructure_tainted
 from .metric_artifacts import validation_metric_from_workspace_delta_manifest
 from .quality_signals import critical_quality_checks_failed, required_validation_metric_status
 from .reports.scenario_report import write_scenario_report
@@ -341,6 +342,12 @@ def run_summary_for_entry(
             or UNAVAILABLE_STRUCTURE_QUALITY_SIGNAL,
             "artifact_paths": entry.get("artifact_paths") or {},
             "host_os": captured_host_os,
+            # Provider stalls/reconnects make this run's latency measure the
+            # infrastructure, not the skills: winner selection skips tainted runs.
+            "infrastructure_taint": assess_infrastructure_taint(
+                artifacts["record_dir"],
+                summary.get("activity") if isinstance(summary.get("activity"), Mapping) else process_metrics.get("activity"),
+            ),
         }
     )
     if captured_host_environment:
@@ -420,8 +427,14 @@ def comparison_group_summary(
     effective_quality_gate = quality_gate or DEFAULT_QUALITY_GATE
     compared = [runs_by_id[run_id] for run_id in group.get("compared_run_ids", []) if run_id in runs_by_id]
     winner = None
+    # Infrastructure-tainted runs (provider stalls/reconnects) measure the
+    # provider, not the skills — they never compete for the latency winner.
     candidates = [
-        run for run in compared if run.get("quality_gate_passed") and is_number(run.get("agent_elapsed_seconds"))
+        run
+        for run in compared
+        if run.get("quality_gate_passed")
+        and is_number(run.get("agent_elapsed_seconds"))
+        and not run_is_infrastructure_tainted(run)
     ]
     if candidates:
         winner_run = min(
@@ -462,33 +475,60 @@ def aggregate_results(runs: list[dict[str, Any]], winner_policy: str = DEFAULT_W
             float(item["agent_elapsed_seconds"]) for item in items if is_number(item.get("agent_elapsed_seconds"))
         ]
         token_values = [float(item["token_count"]) for item in items if is_number(item.get("token_count"))]
+        # Winner eligibility is judged over CLEAN runs only: quality-passed and
+        # not infrastructure-tainted. Provider stalls/reconnects dominate a
+        # tainted run's wall-clock, so its latency says nothing about the skills.
+        clean_items = [
+            item for item in items if item.get("quality_gate_passed") and not run_is_infrastructure_tainted(item)
+        ]
+        clean_elapsed = [
+            float(item["agent_elapsed_seconds"])
+            for item in clean_items
+            if is_number(item.get("agent_elapsed_seconds"))
+        ]
+        clean_tokens = [float(item["token_count"]) for item in clean_items if is_number(item.get("token_count"))]
         aggregate[label] = {
             "run_count": len(items),
             "quality_pass_count": sum(1 for item in items if item.get("quality_gate_passed")),
             "quality_fail_count": sum(1 for item in items if not item.get("quality_gate_passed")),
+            "infrastructure_tainted_count": sum(1 for item in items if run_is_infrastructure_tainted(item)),
             "agent_elapsed_seconds": stats_for_values(elapsed_values),
             "token_count": stats_for_values(token_values),
+            "clean_agent_elapsed_seconds": stats_for_values(clean_elapsed),
+            "clean_token_count": stats_for_values(clean_tokens),
         }
     candidates = [
         (label, data)
         for label, data in aggregate.items()
-        if data["quality_pass_count"] > 0 and data["agent_elapsed_seconds"]["median"] is not None
+        if data["quality_pass_count"] > 0 and data["clean_agent_elapsed_seconds"]["median"] is not None
     ]
     winner = None
     if candidates:
         label, data = min(
             candidates,
             key=lambda item: (
-                float(item[1]["agent_elapsed_seconds"]["median"]),
-                optional_number_sort_value(item[1]["token_count"]["median"]),
+                float(item[1]["clean_agent_elapsed_seconds"]["median"]),
+                optional_number_sort_value(item[1]["clean_token_count"]["median"]),
             ),
         )
         winner = {
             "label": label,
-            "median_agent_elapsed_seconds": data["agent_elapsed_seconds"]["median"],
-            "median_token_count": data["token_count"]["median"],
+            "median_agent_elapsed_seconds": data["clean_agent_elapsed_seconds"]["median"],
+            "median_token_count": data["clean_token_count"]["median"],
+            "basis": "median over quality-passed, infrastructure-clean runs",
         }
-    effective_policy = winner_policy if winner else "no_quality_qualified_winner"
+    if winner:
+        effective_policy = winner_policy
+    elif any(
+        data["quality_pass_count"] > 0 and data["agent_elapsed_seconds"]["median"] is not None
+        for _label, data in aggregate.items()
+    ):
+        # Quality-passed latency samples exist but every one is provider-tainted:
+        # the comparison has no usable latency signal, and saying so beats
+        # crowning a winner from infrastructure noise.
+        effective_policy = "no_infrastructure_clean_winner"
+    else:
+        effective_policy = "no_quality_qualified_winner"
     return {"by_label": aggregate, "winner": winner, "winner_policy": effective_policy}
 
 

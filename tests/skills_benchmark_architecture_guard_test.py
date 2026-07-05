@@ -690,6 +690,67 @@ def test_server_selected_best_metric_satisfies_fl_scalar_gate(tmp_path):
     assert not [issue for issue in issues if "result_metric" in issue or "FL-level scalar" in issue], issues
 
 
+def test_server_selected_metric_consumed_without_any_validation_metric_payload(tmp_path):
+    """The recovered scalar must satisfy the gate even with NO validation_metric.
+
+    Regression (review #582): metric_value() gated on run.validation_metric.name
+    and never consulted the plugin sidecar when the run payload was missing, so
+    valid server config + server log evidence still failed the FL scalar gate
+    unless the agent also self-reported the metric in its final message.
+    """
+
+    import json
+
+    from benchmark.harness.reports import benchmark_insights
+    from benchmark.harness.reports.insights._metrics import metric_value
+    from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
+
+    delta_dir = tmp_path / "workspace_delta" / "runtime_artifacts" / "nvflare_runtime"
+    config_path = delta_dir / "job_config" / "app" / "config" / "config_fed_server.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"components": [{"id": "model_selector", "args": {"key_metric": "auroc"}}]}),
+        encoding="utf-8",
+    )
+    log_path = delta_dir / "simulation" / "job" / "server" / "log.txt"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("INFO - new best validation metric at round 3: 0.81\n", encoding="utf-8")
+    run = _run(
+        {
+            "available": True,
+            "label": "Run",
+            "mode_dir": tmp_path,
+            "record": {
+                "quality_signals": {"job_guidance_primary_validation_metric": {"expected_primary_metric": "AUROC"}}
+            },
+            "workspace_delta": {
+                "runtime_artifacts": [
+                    {
+                        "path": "nvflare_runtime/job_config/app/config/config_fed_server.json",
+                        "artifact_path": "runtime_artifacts/nvflare_runtime/job_config/app/config/config_fed_server.json",
+                    },
+                    {
+                        "path": "nvflare_runtime/simulation/job/server/log.txt",
+                        "artifact_path": "runtime_artifacts/nvflare_runtime/simulation/job/server/log.txt",
+                    },
+                ]
+            },
+            # No validation_metric anywhere: not self-reported, no metrics artifact.
+        }
+    )
+
+    nv_ev = NvflareReportPlugin().collect(run)
+
+    assert nv_ev.metric.name == "AUROC"
+    assert nv_ev.metric.value == 0.81
+    assert metric_value(run, "AUROC", nv_ev) == 0.81
+    assert metric_value(run, None, nv_ev) == 0.81
+    # A DIFFERENT requested metric must not be satisfied by the AUROC recovery.
+    assert metric_value(run, "accuracy", nv_ev) is None
+    issues = benchmark_insights.run_quality_issues(run, nv_ev)
+    assert not [issue for issue in issues if "result_metric" in issue or "FL-level scalar" in issue], issues
+
+
 def test_server_selected_best_metric_rejects_mismatched_key_metric(tmp_path):
     """The model-selector fallback must not grade a DIFFERENT metric as the result.
 

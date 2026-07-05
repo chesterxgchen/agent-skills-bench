@@ -116,6 +116,8 @@ def print_usage(command: str) -> None:
         "  --model NAME            Agent model to run. Required by agents without a default.\n"
         "  --workflow NAME         Workflow label for pair records. Defaults to default.\n"
         "  --job-scale NAME        Job size policy for pair. small, medium, or large.\n"
+        "  --repeats N             Repetitions per mode for pair; execution order alternates\n"
+        "                          between repeats and the winner uses per-mode medians.\n"
         "  --agent-home PATH       Host auth/config directory for the selected agent.\n"
         "  --no-agent-auth-mount   Do not mount host agent auth/config files.\n"
         "  --results-root PATH     Parent directory for generated timestamped result directories.\n"
@@ -137,6 +139,7 @@ class HostCliOptions:
     job_scale: str | None = None
     agent_home: Path | None = None
     mount_agent_auth: bool | None = None
+    repeats: int | None = None
 
 
 def _option_value(argv: list[str], index: int, option: str) -> tuple[str, int]:
@@ -160,6 +163,7 @@ def parse_host_cli_options(argv: list[str], command: str) -> HostCliOptions:
     job_scale: str | None = None
     agent_home: Path | None = None
     mount_agent_auth: bool | None = None
+    repeats: int | None = None
     index = 0
     while index < len(argv):
         arg = argv[index]
@@ -194,6 +198,16 @@ def parse_host_cli_options(argv: list[str], command: str) -> HostCliOptions:
             if job_scale is not None:
                 raise SystemExit("Expected only one --job-scale")
             job_scale = value
+        elif arg == "--repeats" or arg.startswith("--repeats="):
+            value, index = _option_value(argv, index, "--repeats")
+            if repeats is not None:
+                raise SystemExit("Expected only one --repeats")
+            try:
+                repeats = int(value)
+            except ValueError:
+                raise SystemExit("--repeats requires an integer >= 1") from None
+            if repeats < 1:
+                raise SystemExit("--repeats requires an integer >= 1")
         elif arg == "--agent-home" or arg.startswith("--agent-home="):
             value, index = _option_value(argv, index, "--agent-home")
             if agent_home is not None:
@@ -279,6 +293,7 @@ def parse_host_cli_options(argv: list[str], command: str) -> HostCliOptions:
         job_scale=job_scale,
         agent_home=agent_home,
         mount_agent_auth=mount_agent_auth,
+        repeats=repeats,
     )
 
 

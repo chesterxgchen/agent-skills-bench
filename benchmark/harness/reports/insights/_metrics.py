@@ -384,13 +384,43 @@ def _observed_metric_value(run: RunEvidence, metric_name: str | None) -> Any:
     return value if is_plausible_metric_value(name, value) else None
 
 
+def _authoritative_assessment_value(assessment: Any, metric_name: str | None) -> Any:
+    """The plugin's authoritative scalar, gated by ITS OWN metric name.
+
+    The plugin can recover both name and value from runtime evidence (e.g.
+    NVFLARE's server-config key_metric + model-selector log) even when the run
+    reported no ``validation_metric`` payload at all — the run payload must not
+    be a precondition for consuming that recovery.
+    """
+
+    if not getattr(assessment, "value_authoritative", False):
+        return None
+    name = canonical_metric_name(getattr(assessment, "name", None))
+    if not name:
+        return None
+    if metric_name is not None and name != canonical_metric_name(metric_name):
+        return None
+    value = getattr(assessment, "value", None)
+    return value if is_plausible_metric_value(name, value) else None
+
+
 def metric_value(run: RunEvidence, metric_name: str | None = None, ev: Any = None) -> Any:
+    assessment = getattr(ev, "metric", None) if ev is not None else None
     metric = run.validation_metric
     if not isinstance(metric, dict):
+        selected = _authoritative_assessment_value(assessment, metric_name)
+        if selected is not None:
+            return selected
         return _observed_metric_value(run, metric_name) if metric_name else None
     if metric_name is not None and canonical_metric_name(metric.get("name")) != canonical_metric_name(metric_name):
+        # An UNNAMED run payload must not mask a matching authoritative scalar
+        # recovered by the plugin; a payload naming a DIFFERENT metric still
+        # routes to observed artifacts.
+        if not canonical_metric_name(metric.get("name")):
+            selected = _authoritative_assessment_value(assessment, metric_name)
+            if selected is not None:
+                return selected
         return _observed_metric_value(run, metric_name)
-    assessment = getattr(ev, "metric", None) if ev is not None else None
     if getattr(assessment, "value_authoritative", False):
         selected = getattr(assessment, "value", None)
         if is_plausible_metric_value(canonical_metric_name(metric.get("name")), selected):
@@ -423,6 +453,12 @@ def _metric_value_label(run: RunEvidence, metric_name: str | None, ev: Any) -> s
     label = assessment.value_label if assessment else None
     metric = run.validation_metric if isinstance(run.validation_metric, dict) else {}
     if metric_name is not None and canonical_metric_name(metric.get("name")) != canonical_metric_name(metric_name):
+        # Match metric_value(): a missing/unnamed run payload defers to the
+        # plugin's authoritative recovery (and its label) when the names line up.
+        if not canonical_metric_name(metric.get("name")) and (
+            _authoritative_assessment_value(assessment, metric_name) is not None
+        ):
+            return label or ""
         payload = _observed_runtime_metric_payload(run, metric_name)
         return payload_metric_value_label(payload, None) if payload else ""
     if not label:

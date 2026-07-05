@@ -76,11 +76,24 @@ def _skill_reference_name_from_path(file_path: str) -> str:
     return _skill_name_from_relative_path(rel_path)
 
 
+# Shared-reference containers observed under the skills root: the visible
+# `_shared/` directory and hidden dot-dirs like `.nvflare-shared/`. A dot-dir
+# may nest a content-hash segment (`.nvflare-shared/<sha256>/references/...`).
+_SHARED_CONTAINER_RE = re.compile(r"^(?:_shared|\.[A-Za-z0-9_-]*shared)$", re.IGNORECASE)
+_HEX_SEGMENT_RE = re.compile(r"^[0-9a-f]{32,}$", re.IGNORECASE)
+
+
 def _shared_ref_from_path(file_path: str) -> str:
     rel_path = _skill_relative_path(file_path)
-    if not rel_path.startswith("_shared/"):
+    parts = PurePosixPath(rel_path).parts if rel_path else ()
+    if not parts or not _SHARED_CONTAINER_RE.match(parts[0]):
         return ""
-    return str(PurePosixPath(rel_path))
+    # Drop content-hash segments so refs display and dedupe by meaningful path.
+    cleaned = [parts[0], *(part for part in parts[1:] if not _HEX_SEGMENT_RE.match(part))]
+    if len(cleaned) < 2:
+        # The bare container (e.g. a directory listing) is not a reference read.
+        return ""
+    return str(PurePosixPath(*cleaned))
 
 
 def _skill_paths_from_text(text: str) -> list[str]:

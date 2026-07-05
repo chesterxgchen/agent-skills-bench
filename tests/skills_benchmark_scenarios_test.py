@@ -1466,3 +1466,61 @@ def test_replay_result_root_regenerates_agent_parser_artifacts(tmp_path):
     assert report_json["agent_invocation"] == "replayed"
     assert "Replay: `true`" in report_markdown
     assert "Agent invocation: `replayed`" in report_markdown
+
+
+def test_repeats_expand_alternating_rounds_with_repeat_record_dirs(tmp_path):
+    """comparison.repeats runs each mode N times, alternating execution order.
+
+    Latency comparisons need >=3 repetitions with alternated order and a median
+    winner; single-sample deltas are dominated by provider variance. The
+    repeat=NN record-dir segment keeps repetitions from sharing artifacts.
+    """
+
+    from benchmark.harness.scenarios import compile_scenario
+
+    raw = base_scenario(tmp_path)
+    raw["comparison"]["repeats"] = 3
+    run_plan = compile_scenario(raw, base_dir=tmp_path).run_plan
+    entries = run_plan["entries"]
+
+    assert run_plan["repeats"] == 3
+    assert len(entries) == 6
+    # Round 1 in declared order, round 2 reversed, round 3 declared again.
+    assert [(entry["repeat_index"], entry["mode"]) for entry in entries] == [
+        (1, "without_skills"),
+        (1, "with_skills"),
+        (2, "with_skills"),
+        (2, "without_skills"),
+        (3, "without_skills"),
+        (3, "with_skills"),
+    ]
+    record_dirs = [entry["record_dir"] for entry in entries]
+    assert all(f"/repeat={entry['repeat_index']:02d}/mode={entry['mode']}" in rd for entry, rd in zip(entries, record_dirs))
+    assert len(set(record_dirs)) == 6
+    # All repetitions compare within ONE group, so the aggregate winner uses
+    # per-mode medians across repeats.
+    group = run_plan["comparison_groups"][0]
+    assert len(group["compared_run_ids"]) == 6
+
+
+def test_single_repeat_keeps_legacy_record_layout(tmp_path):
+    from benchmark.harness.scenarios import compile_scenario
+
+    run_plan = compile_scenario(base_scenario(tmp_path), base_dir=tmp_path).run_plan
+    assert run_plan["repeats"] == 1
+    for entry in run_plan["entries"]:
+        assert entry["repeat_index"] is None
+        assert "repeat=" not in entry["record_dir"]
+
+
+def test_invalid_repeats_rejected(tmp_path):
+    import pytest
+
+    from benchmark.harness.scenario_run_plan import ScenarioValidationError
+    from benchmark.harness.scenarios import compile_scenario
+
+    for bad in (0, -1, "three", True):
+        raw = base_scenario(tmp_path)
+        raw["comparison"]["repeats"] = bad
+        with pytest.raises(ScenarioValidationError, match="comparison.repeats"):
+            compile_scenario(raw, base_dir=tmp_path)

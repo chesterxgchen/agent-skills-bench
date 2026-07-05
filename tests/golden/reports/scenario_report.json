@@ -11,6 +11,23 @@
           "min": null,
           "stddev": null
         },
+        "clean_agent_elapsed_seconds": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "clean_token_count": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "infrastructure_tainted_count": 0,
         "quality_fail_count": 1,
         "quality_pass_count": 0,
         "run_count": 1,
@@ -32,6 +49,23 @@
           "min": null,
           "stddev": null
         },
+        "clean_agent_elapsed_seconds": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "clean_token_count": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "infrastructure_tainted_count": 0,
         "quality_fail_count": 1,
         "quality_pass_count": 0,
         "run_count": 1,
@@ -59,6 +93,23 @@
           "min": null,
           "stddev": null
         },
+        "clean_agent_elapsed_seconds": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "clean_token_count": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "infrastructure_tainted_count": 0,
         "quality_fail_count": 1,
         "quality_pass_count": 0,
         "run_count": 1,
@@ -80,6 +131,23 @@
           "min": null,
           "stddev": null
         },
+        "clean_agent_elapsed_seconds": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "clean_token_count": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "stddev": null
+        },
+        "infrastructure_tainted_count": 0,
         "quality_fail_count": 1,
         "quality_pass_count": 0,
         "run_count": 1,
@@ -180,7 +248,7 @@
       "agent_model": "default",
       "agent_process_passed": null,
       "artifact_paths": {},
-      "command_count": 4,
+      "command_count": 2,
       "comparison_group_id": null,
       "comparison_type": null,
       "cost": null,
@@ -210,6 +278,12 @@
       },
       "host_os": "Ubuntu 24.04 LTS",
       "host_status": 0,
+      "infrastructure_taint": {
+        "idle_gap_threshold_seconds": 300.0,
+        "max_inter_event_gap_seconds": null,
+        "reasons": [],
+        "tainted": false
+      },
       "job_name": null,
       "job_path": null,
       "job_scale": null,
@@ -262,7 +336,7 @@
       "agent_model": "default",
       "agent_process_passed": null,
       "artifact_paths": {},
-      "command_count": 4,
+      "command_count": 2,
       "comparison_group_id": null,
       "comparison_type": null,
       "cost": null,
@@ -292,6 +366,12 @@
       },
       "host_os": "Ubuntu 24.04 LTS",
       "host_status": 0,
+      "infrastructure_taint": {
+        "idle_gap_threshold_seconds": 300.0,
+        "max_inter_event_gap_seconds": null,
+        "reasons": [],
+        "tainted": false
+      },
       "job_name": null,
       "job_path": null,
       "job_scale": null,

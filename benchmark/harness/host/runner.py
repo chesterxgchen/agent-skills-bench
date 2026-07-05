@@ -476,11 +476,15 @@ def pair_compilation_from_options(options) -> ScenarioCompilation:
     agent_entry: dict[str, object] = {"name": adapter.name}
     if model_was_explicit:
         agent_entry["models"] = [agent_model]
+    comparison: dict[str, object] = {"type": "mode_ablation", "modes": [spec.mode for spec in PAIR_RUNS]}
+    repeats = options.repeats if options.repeats is not None else int(os.environ.get("BENCHMARK_REPEATS") or 1)
+    if repeats > 1:
+        comparison["repeats"] = repeats
     raw = {
         "name": f"pair {adapter.name} {options.job_input.name}",
         "prompt": str(options.prompt_path),
         "agents": [agent_entry],
-        "comparison": {"type": "mode_ablation", "modes": [spec.mode for spec in PAIR_RUNS]},
+        "comparison": comparison,
         "workflows": [{"name": options.workflow or os.environ.get("BENCHMARK_WORKFLOW", "default")}],
         "jobs": [
             {
@@ -1010,7 +1014,7 @@ def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = ()) 
 
     if os.environ.get("BENCHMARK_AUTO_RCA", "1") == "0":
         return
-    from ..rca import resolve_invoker, resolve_seed, run_investigation
+    from ..rca import auto_diagnostic_step_timeout_seconds, resolve_invoker, resolve_seed, run_investigation
 
     targets = [spec.mode for spec in PAIR_RUNS if resolve_seed(result_root, spec.mode, "auto", None) is not None]
     if not targets:
@@ -1019,7 +1023,9 @@ def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = ()) 
         # sandbox="docker" is a hard requirement here, not a preference: with
         # "auto", resolve_invoker falls back to the host CLI when no image is
         # built, which would run the agent unsandboxed over captured evidence.
-        agent_name, invoker = resolve_invoker(None, sandbox="docker")
+        agent_name, invoker = resolve_invoker(
+            None, sandbox="docker", step_timeout_seconds=auto_diagnostic_step_timeout_seconds()
+        )
     except SystemExit as exc:
         emit(f"Auto-RCA skipped: {exc}", logs=logs, stderr=True)
         return
@@ -1053,7 +1059,7 @@ def autorun_code_quality_evaluations(result_root: Path, *, logs: Iterable[Path] 
     if os.environ.get("BENCHMARK_AUTO_CODE_EVAL", "1") == "0":
         return
     from ..code_eval import evaluate_code_quality
-    from ..rca import resolve_invoker
+    from ..rca import auto_diagnostic_step_timeout_seconds, resolve_invoker
     from ..reports.benchmark_insights import _as_run_evidence, collect_benchmark_runs
     from ..sdks.report_registry import resolve_from_result_root
 
@@ -1072,7 +1078,9 @@ def autorun_code_quality_evaluations(result_root: Path, *, logs: Iterable[Path] 
     if not targets:
         return
     try:
-        agent_name, invoker = resolve_invoker(None, sandbox="docker")
+        agent_name, invoker = resolve_invoker(
+            None, sandbox="docker", step_timeout_seconds=auto_diagnostic_step_timeout_seconds()
+        )
     except SystemExit as exc:
         emit(f"Auto code-eval skipped: {exc}", logs=logs, stderr=True)
         return

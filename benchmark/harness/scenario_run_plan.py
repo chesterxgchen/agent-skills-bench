@@ -289,6 +289,10 @@ def validate_comparison(raw: Mapping[str, Any], agents: Mapping[str, AgentSpec])
             f"comparison.type must be one of: {', '.join(sorted(COMPARISON_TYPES))}; got {comparison_type}"
         )
     resolved = dict(comparison)
+    repeats_raw = comparison.get("repeats", 1)
+    if not isinstance(repeats_raw, int) or isinstance(repeats_raw, bool) or repeats_raw < 1:
+        raise ScenarioValidationError(f"comparison.repeats must be an integer >= 1; got {repeats_raw!r}")
+    resolved["repeats"] = repeats_raw
     if comparison_type == COMPARISON_MODE_ABLATION:
         modes = [
             validate_mode(item, "comparison.modes[]") for item in as_list(comparison.get("modes"), "comparison.modes")
@@ -386,8 +390,15 @@ def record_dir_for(
     workflow_slug: str,
     job_slug: str,
     mode: str,
+    repeat_index: int | None = None,
 ) -> str:
-    return f"records/agent={agent_slug}/model={model_slug}/workflow={workflow_slug}/job={job_slug}/mode={mode}"
+    # Single-repetition plans keep the historical layout (no repeat segment) so
+    # existing result roots and tooling remain path-compatible.
+    repeat_segment = f"repeat={repeat_index:02d}/" if repeat_index is not None else ""
+    return (
+        f"records/agent={agent_slug}/model={model_slug}/workflow={workflow_slug}"
+        f"/job={job_slug}/{repeat_segment}mode={mode}"
+    )
 
 
 def model_slug_for(slugs: Mapping[str, Mapping[str, str]], agent_name: str, model_name: str) -> str:
@@ -411,6 +422,7 @@ def build_run_entry(
     mode: str,
     prompt: Mapping[str, Any],
     slugs: Mapping[str, Mapping[str, str]],
+    repeat_index: int | None = None,
 ) -> dict[str, Any]:
     spec = mode_spec(mode)
     agent_slug = slugs["agents"][agent.name]
@@ -423,9 +435,11 @@ def build_run_entry(
         workflow_slug=workflow_slug,
         job_slug=job_slug,
         mode=mode,
+        repeat_index=repeat_index,
     )
     return {
         "run_id": f"run_{sequence:05d}",
+        "repeat_index": repeat_index,
         "sequence": sequence,
         "scenario_name": scenario_name,
         "comparison_type": comparison_type,
@@ -531,6 +545,8 @@ def expand_run_plan(
     groups: list[dict[str, Any]] = []
     sequence = 0
     group_index = 0
+    repeats = comparison.get("repeats")
+    repeats = repeats if isinstance(repeats, int) and not isinstance(repeats, bool) and repeats >= 1 else 1
 
     def next_entry(**kwargs: Any) -> dict[str, Any]:
         nonlocal sequence
@@ -543,6 +559,18 @@ def expand_run_plan(
             slugs=slugs,
             **kwargs,
         )
+
+    def repeat_rounds(compared_values: list[Any]) -> list[tuple[int | None, list[Any]]]:
+        # One round per repetition, ALTERNATING the execution order of the
+        # compared sides between rounds so time-of-day / warm-cache effects do
+        # not systematically favor whichever side always ran first. Entries
+        # execute in plan sequence order.
+        if repeats == 1:
+            return [(None, list(compared_values))]
+        return [
+            (index, list(compared_values) if index % 2 == 1 else list(reversed(compared_values)))
+            for index in range(1, repeats + 1)
+        ]
 
     if comparison_type in {COMPARISON_MODE_ABLATION, COMPARISON_ONE}:
         modes = comparison.get("modes") if comparison_type == COMPARISON_MODE_ABLATION else [comparison["mode"]]
@@ -559,8 +587,10 @@ def expand_run_plan(
                                 workflow=workflow,
                                 job=job,
                                 mode=mode,
+                                repeat_index=repeat_index,
                             )
-                            for mode in modes
+                            for repeat_index, round_modes in repeat_rounds(list(modes))
+                            for mode in round_modes
                         ]
                         append_group(
                             groups=groups,
@@ -589,8 +619,10 @@ def expand_run_plan(
                         workflow=workflow,
                         job=job,
                         mode=mode,
+                        repeat_index=repeat_index,
                     )
-                    for agent_name in comparison["agents"]
+                    for repeat_index, round_agents in repeat_rounds(list(comparison["agents"]))
+                    for agent_name in round_agents
                 ]
                 append_group(
                     groups=groups,
@@ -619,8 +651,10 @@ def expand_run_plan(
                         workflow=workflow,
                         job=job,
                         mode=mode,
+                        repeat_index=repeat_index,
                     )
-                    for model in models
+                    for repeat_index, round_models in repeat_rounds(models)
+                    for model in round_models
                 ]
                 append_group(
                     groups=groups,
@@ -645,6 +679,7 @@ def expand_run_plan(
         "comparison_type": comparison_type,
         "run_count": len(entries),
         "comparison_group_count": len(groups),
+        "repeats": repeats,
         "execution": {"parallelism": 1},
         "quality_gate": dict(quality_gate),
         "winner_policy": winner_policy,
