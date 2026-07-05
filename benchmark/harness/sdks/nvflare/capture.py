@@ -36,12 +36,22 @@ NVFLARE_CAPTURE_SPEC = EvidenceCaptureSpec(
         "**/*.log",
         "**/config_fed_*.json",
     ),
-    # The NVFLARE skills' runtime-output-guidance mandates a private per-user run
-    # root (`/tmp/nvflare-<uid>/run-<random>/`) for simulation workspaces, exported
-    # jobs, and results — an unpredictable path by design, so it cannot be a fixed
-    # runtime_sources entry. Capture each matched run root (its run-manifest.json,
-    # workspace metrics, logs, and exported job config) as runtime evidence;
-    # without this, skill-compliant runs surface zero runtime artifacts and their
-    # FL result metrics cannot be graded.
-    runtime_source_globs=("/tmp/nvflare-*/run-*",),
+    # The FL run/export folder location is NOT the harness's to assume: a skill
+    # runs the simulation in a private temp root (observed:
+    # `/tmp/nvflare-<job>.<rand>/workspace/<job>/server/simulate_job/...`), and a
+    # prompt can direct the run/export anywhere else. Any hardcoded absolute glob
+    # (`/tmp/nvflare-*`, `.../run-*`) bakes in a path prefix that breaks the moment
+    # the location changes. Instead, find the run folder by its OUTPUT STRUCTURE:
+    # capture searches the system temp bases (and any designated output dir) for
+    # these markers and captures whichever run root actually holds them. The
+    # metrics_summary.json marker anchors the FL result scalar
+    # (best_metrics[0].value); the config_fed_* markers still locate a run root
+    # that produced a job config but no metrics (e.g. an early failure), so its
+    # logs are captured for RCA.
+    runtime_output_markers=(
+        "**/simulate_job/metrics/metrics_summary.json",
+        "**/simulate_job/metrics/round_metrics.jsonl",
+        "**/config_fed_server.json",
+        "**/config_fed_client.json",
+    ),
 )

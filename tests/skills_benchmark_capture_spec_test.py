@@ -167,10 +167,38 @@ def test_legacy_payload_without_runtime_source_globs_is_empty():
     assert EvidenceCaptureSpec.from_payload({"artifact_globs": []}).runtime_source_globs == ()
 
 
-def test_nvflare_spec_carries_runtime_source_globs():
-    # The skills' runtime-output-guidance mandates private per-user run roots
-    # (/tmp/nvflare-<uid>/run-<random>/); capture must discover them by glob.
-    assert NVFLARE_CAPTURE_SPEC.runtime_source_globs == ("/tmp/nvflare-*/run-*",)
+# --- runtime_output_markers: find the run folder by output structure ---------
+
+
+def test_runtime_output_markers_roundtrip():
+    spec = EvidenceCaptureSpec(
+        structure_file_names=("client.py",),
+        runtime_output_markers=("**/simulate_job/metrics/metrics_summary.json", "**/config_fed_server.json"),
+    )
+    restored = EvidenceCaptureSpec.from_payload(spec.to_payload())
+    assert restored == spec
+    assert restored.runtime_output_markers == (
+        "**/simulate_job/metrics/metrics_summary.json",
+        "**/config_fed_server.json",
+    )
+
+
+def test_from_payload_ignores_non_string_runtime_output_markers():
+    payload = {"runtime_output_markers": ["**/a.json", 7, None, "**/b.json"]}
+    assert EvidenceCaptureSpec.from_payload(payload).runtime_output_markers == ("**/a.json", "**/b.json")
+
+
+def test_legacy_payload_without_runtime_output_markers_is_empty():
+    assert EvidenceCaptureSpec.from_payload({"artifact_globs": []}).runtime_output_markers == ()
+
+
+def test_nvflare_spec_finds_run_folder_by_output_structure_not_path():
+    # The run/export folder location is not the harness's to assume, so the spec
+    # must NOT bake in an absolute path prefix; it identifies the run root by its
+    # OUTPUT STRUCTURE (metrics_summary.json etc.) wherever it landed.
+    assert NVFLARE_CAPTURE_SPEC.runtime_source_globs == ()
+    assert "**/simulate_job/metrics/metrics_summary.json" in NVFLARE_CAPTURE_SPEC.runtime_output_markers
+    assert all(not m.startswith("/") for m in NVFLARE_CAPTURE_SPEC.runtime_output_markers)
 
 
 # --- S2: capture-spec versioning + degrade ----------------------------------
@@ -303,3 +331,70 @@ def test_resolve_runtime_source_glob_dirs_skips_symlinked_match(tmp_path):
     root.mkdir()
     (root / "run-linked").symlink_to(real)
     assert resolve_runtime_source_glob_dirs((f"{tmp_path}/nvflare-*/run-*",)) == []
+
+
+# --- runtime_output_markers resolution: find the run root by structure -------
+
+_NVFLARE_MARKERS = ("**/simulate_job/metrics/metrics_summary.json", "**/config_fed_server.json")
+
+
+def test_resolve_runtime_output_roots_finds_run_root_by_structure(tmp_path):
+    # Reproduces the observed failing layout: the skill ran in a private temp root
+    # `/tmp/nvflare-<job>.<rand>/workspace/<job>/server/simulate_job/metrics/...`
+    # (no `run-*` segment), so the old absolute glob matched nothing.
+    from benchmark.harness.container.agent_run import resolve_runtime_output_roots
+
+    run_root = tmp_path / "nvflare-ames-fedavg.g1o4Nv"
+    metrics = run_root / "workspace" / "ames" / "server" / "simulate_job" / "metrics"
+    metrics.mkdir(parents=True)
+    (metrics / "metrics_summary.json").write_text('{"best_metrics": [{"value": 0.7578}]}\n', encoding="utf-8")
+
+    sources = resolve_runtime_output_roots(_NVFLARE_MARKERS, [tmp_path])
+    # The enclosing run root (not the deep metrics dir) becomes the source, so
+    # capture walks the whole run folder (metrics, logs, configs, exported job).
+    assert sources == [(run_root.as_posix().lstrip("/"), run_root)]
+
+
+def test_resolve_runtime_output_roots_dedupes_multiple_markers_in_one_root(tmp_path):
+    from benchmark.harness.container.agent_run import resolve_runtime_output_roots
+
+    run_root = tmp_path / "nvflare-run.xyz"
+    metrics = run_root / "workspace" / "job" / "server" / "simulate_job" / "metrics"
+    metrics.mkdir(parents=True)
+    (metrics / "metrics_summary.json").write_text("{}\n", encoding="utf-8")
+    cfg = run_root / "workspace" / "job" / "app_server" / "config"
+    cfg.mkdir(parents=True)
+    (cfg / "config_fed_server.json").write_text("{}\n", encoding="utf-8")
+
+    # Two different markers match under the same run root -> one source, not two.
+    sources = resolve_runtime_output_roots(_NVFLARE_MARKERS, [tmp_path])
+    assert sources == [(run_root.as_posix().lstrip("/"), run_root)]
+
+
+def test_resolve_runtime_output_roots_dedupes_against_existing(tmp_path):
+    from benchmark.harness.container.agent_run import resolve_runtime_output_roots
+
+    run_root = tmp_path / "nvflare-run.xyz"
+    metrics = run_root / "server" / "simulate_job" / "metrics"
+    metrics.mkdir(parents=True)
+    (metrics / "metrics_summary.json").write_text("{}\n", encoding="utf-8")
+    assert resolve_runtime_output_roots(_NVFLARE_MARKERS, [tmp_path], existing_sources=[("prior", run_root)]) == []
+
+
+def test_runtime_output_search_roots_excludes_workspace_and_dedupes(tmp_path, monkeypatch):
+    from benchmark.harness.container.agent_run import runtime_output_search_roots
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tmpdir = tmp_path / "tmp"
+    tmpdir.mkdir()
+    designated = tmp_path / "designated"
+    designated.mkdir()
+    monkeypatch.setenv("TMPDIR", str(tmpdir))
+    monkeypatch.setenv("BENCHMARK_JOB_RUN_DIR", str(designated))
+
+    roots = runtime_output_search_roots(workspace)
+    resolved = {r.resolve() for r in roots}
+    assert designated.resolve() in resolved and tmpdir.resolve() in resolved
+    # The workspace is captured by the delta already; it must not be searched.
+    assert workspace.resolve() not in resolved

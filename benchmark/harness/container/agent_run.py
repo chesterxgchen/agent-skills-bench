@@ -996,6 +996,97 @@ def resolve_runtime_source_glob_dirs(
     return sources
 
 
+def runtime_output_search_roots(run_workspace_dir: Path) -> list[Path]:
+    """Candidate roots to search for a run/output folder by output structure.
+
+    The FL run folder's location is not the harness's to assume, so we do not
+    hardcode a product-specific path. We search where a run/export folder can
+    plausibly land OUTSIDE the workspace (the workspace itself is already fully
+    captured by the delta): the system temp bases (TMPDIR/TMP/TEMP plus the
+    conventional /tmp, /var/tmp) and any harness-designated output dir
+    (BENCHMARK_JOB_RUN_DIR). Deduplicated by resolved path, order preserved.
+    """
+
+    raw = [
+        os.environ.get("BENCHMARK_JOB_RUN_DIR"),
+        os.environ.get("TMPDIR"),
+        os.environ.get("TMP"),
+        os.environ.get("TEMP"),
+        "/tmp",
+        "/var/tmp",
+    ]
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for item in raw:
+        if not item:
+            continue
+        path = Path(item)
+        if not path.is_dir() or path.is_symlink():
+            continue
+        with suppress(OSError):
+            resolved = path.resolve()
+            # Skip roots nested in the workspace: that subtree is captured by the
+            # workspace delta already, so searching it would double-capture.
+            if resolved in seen or resolved == run_workspace_dir.resolve():
+                continue
+            seen.add(resolved)
+            roots.append(path)
+    return roots
+
+
+def resolve_runtime_output_roots(
+    runtime_output_markers: tuple[str, ...],
+    search_roots: Iterable[Path],
+    *,
+    existing_sources: Iterable[tuple[str, Path]] = (),
+) -> list[tuple[str, Path]]:
+    """Find run/output roots by OUTPUT STRUCTURE, location-independently.
+
+    For each search root, rglob every marker signature; the run root is the
+    top-level child of the search root on the path to a match (e.g. a match at
+    ``/tmp/nvflare-<rand>/workspace/.../metrics_summary.json`` yields run root
+    ``/tmp/nvflare-<rand>``). Each distinct run root becomes one ``(label, dir)``
+    source; ``capture_workspace_delta`` then copies its source-like files
+    (json/jsonl/logs/configs) and skips model checkpoints. Results are
+    deterministic (sorted), de-duplicated against ``existing_sources``, and
+    symlinked run roots are skipped. Unlike an absolute glob, this bakes in no
+    path prefix — it finds the run folder wherever the run/prompt put it, as long
+    as it is under one of the searched roots.
+    """
+
+    seen: set[Path] = set()
+    for _label, existing in existing_sources:
+        with suppress(OSError):
+            seen.add(Path(existing).resolve())
+    sources: list[tuple[str, Path]] = []
+    for root in search_roots:
+        for marker in runtime_output_markers:
+            matches: list[Path] = []
+            with suppress(OSError):
+                matches = sorted(root.glob(marker))
+            for match in matches:
+                if not match.is_file():
+                    continue
+                try:
+                    rel = match.relative_to(root)
+                except ValueError:
+                    continue
+                if not rel.parts:
+                    continue
+                run_root = root / rel.parts[0]
+                if not run_root.is_dir() or run_root.is_symlink():
+                    continue
+                try:
+                    resolved = run_root.resolve()
+                except OSError:
+                    continue
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                sources.append((run_root.as_posix().lstrip("/"), run_root))
+    return sources
+
+
 def post_process(
     config: AgentRunConfig, elapsed_seconds: int, agent_exit: int, run_start_time_ns: int
 ) -> tuple[int, int]:
@@ -1013,6 +1104,17 @@ def post_process(
     runtime_sources.extend(
         resolve_runtime_source_glob_dirs(
             capture_spec.runtime_source_globs,
+            existing_sources=runtime_sources,
+        )
+    )
+    # Structure-based discovery (§4.1 S1): find the run/output folder wherever it
+    # landed by its output signature, not by a hardcoded path prefix. Searches the
+    # system temp bases + any designated output dir; captures the enclosing run
+    # root (its metrics, logs, configs, exported job).
+    runtime_sources.extend(
+        resolve_runtime_output_roots(
+            capture_spec.runtime_output_markers,
+            runtime_output_search_roots(config.run_workspace_dir),
             existing_sources=runtime_sources,
         )
     )

@@ -47,10 +47,19 @@ class EvidenceCaptureSpec:
     artifact_globs: tuple[str, ...] = ()
     # ABSOLUTE glob patterns whose matched directories become runtime artifact
     # sources at capture time. Discovers runtime output roots OUTSIDE the run
-    # workspace whose exact names are unpredictable by design — e.g. the private
-    # per-user run directories the NVFLARE skills mandate
-    # (``/tmp/nvflare-<uid>/run-<random>/``).
+    # workspace whose exact names are unpredictable by design. Prefer
+    # ``runtime_output_markers`` for FL run output: an absolute glob still bakes a
+    # path PREFIX (e.g. ``/tmp/nvflare-*``) into the spec, which breaks the moment
+    # a prompt directs the run/export somewhere else.
     runtime_source_globs: tuple[str, ...] = ()
+    # RELATIVE glob signatures (rglob) that identify a run/output ROOT by its
+    # output STRUCTURE rather than its location. Capture searches a set of
+    # harness-chosen candidate roots (the system temp bases and any designated
+    # output dir) for these markers and captures the enclosing run root wherever
+    # it landed. This is the location-independent way to find the job run folder:
+    # it keys on what the run produces (e.g. ``**/simulate_job/metrics/
+    # metrics_summary.json``), not on a hardcoded directory name/prefix.
+    runtime_output_markers: tuple[str, ...] = ()
     # Payload format version (see CAPTURE_SPEC_VERSION). Legacy payloads without
     # a version are treated as v1.
     version: int = CAPTURE_SPEC_VERSION
@@ -62,6 +71,7 @@ class EvidenceCaptureSpec:
             "runtime_sources": [list(source) for source in self.runtime_sources],
             "artifact_globs": list(self.artifact_globs),
             "runtime_source_globs": list(self.runtime_source_globs),
+            "runtime_output_markers": list(self.runtime_output_markers),
         }
 
     @classmethod
@@ -72,6 +82,7 @@ class EvidenceCaptureSpec:
         sources = payload.get("runtime_sources") or []
         globs = payload.get("artifact_globs") or []
         source_globs = payload.get("runtime_source_globs") or []
+        markers = payload.get("runtime_output_markers") or []
         return cls(
             structure_file_names=tuple(str(name) for name in names if isinstance(name, str)),
             runtime_sources=tuple(
@@ -81,6 +92,7 @@ class EvidenceCaptureSpec:
             ),
             artifact_globs=tuple(str(pattern) for pattern in globs if isinstance(pattern, str)),
             runtime_source_globs=tuple(str(pattern) for pattern in source_globs if isinstance(pattern, str)),
+            runtime_output_markers=tuple(str(pattern) for pattern in markers if isinstance(pattern, str)),
             version=_payload_version(payload),
         )
 
