@@ -381,6 +381,32 @@ def test_resolve_runtime_output_roots_dedupes_against_existing(tmp_path):
     assert resolve_runtime_output_roots(_NVFLARE_MARKERS, [tmp_path], existing_sources=[("prior", run_root)]) == []
 
 
+def test_resolve_runtime_output_roots_prefers_most_specific_nested_root(tmp_path):
+    # When a designated root is nested under a broader temp root (e.g.
+    # BENCHMARK_JOB_RUN_DIR under /tmp), the same marker resolves to a specific
+    # run root via the inner root and to its ancestor via the outer root. Only the
+    # specific one must be kept, or the ancestor would drag in sibling runs.
+    from benchmark.harness.container.agent_run import resolve_runtime_output_roots
+
+    designated = tmp_path / "designated"
+    run_root = designated / "nvflare-run.xyz"
+    metrics = run_root / "workspace" / "job" / "server" / "simulate_job" / "metrics"
+    metrics.mkdir(parents=True)
+    (metrics / "metrics_summary.json").write_text("{}\n", encoding="utf-8")
+    # A sibling run under the same designated dir must NOT be captured via an
+    # ancestor match.
+    sibling = designated / "nvflare-other.abc" / "server" / "simulate_job" / "metrics"
+    sibling.mkdir(parents=True)
+    (sibling / "metrics_summary.json").write_text("{}\n", encoding="utf-8")
+
+    # Inner (designated) searched first, then the broader ancestor (tmp_path).
+    sources = resolve_runtime_output_roots(_NVFLARE_MARKERS, [designated, tmp_path])
+    roots = {run_root for _label, run_root in sources}
+    assert roots == {designated / "nvflare-run.xyz", designated / "nvflare-other.abc"}
+    # The ancestor `designated` itself must never be returned as a run root.
+    assert all(run_root.name.startswith("nvflare-") for _label, run_root in sources)
+
+
 def test_runtime_output_search_roots_excludes_workspace_and_dedupes(tmp_path, monkeypatch):
     from benchmark.harness.container.agent_run import runtime_output_search_roots
 

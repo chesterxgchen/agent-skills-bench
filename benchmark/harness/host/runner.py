@@ -105,6 +105,14 @@ class InteractiveRuntimeConfig:
     agent_model: str
     model_was_explicit: bool
 
+    @property
+    def unattended(self) -> bool:
+        # An interactive `docker run -it` debug shell is never unattended, so it
+        # must not receive the harness->skill unattended-mode env (unattended_env
+        # in the agent config). A skill run from this shell keeps its approval
+        # prompts. Benchmark case configs do not define this and default to True.
+        return False
+
 
 @dataclass(frozen=True)
 class ScenarioCliOptions:

@@ -56,14 +56,15 @@ auth:
       description: Claude credentials
 
 # Runtime env outputs passed to the agent process.
-#
-# AGENT_HARNESS_UNATTENDED / AGENT_HARNESS_SANDBOX are the harness->skill
-# contract for run mode (see config/agents/codex.yaml for the full rationale).
-# The benchmark always runs unattended in a disposable OS-level sandbox
-# container; declaring both keeps the skill from stalling on an approval prompt
-# that never gets answered. Skill authors must read them.
 runtime_env:
   CLAUDE_CONFIG_DIR: "{container_home}"
+
+# unattended_env applies ONLY to non-interactive benchmark case runs, never to an
+# interactive `docker run -it` debug shell (see config/agents/codex.yaml for the
+# full rationale). AGENT_HARNESS_UNATTENDED / AGENT_HARNESS_SANDBOX are the
+# harness->skill run-mode contract; declaring both keeps the skill from stalling
+# on an approval prompt that never gets answered. Skill authors must read them.
+unattended_env:
   AGENT_HARNESS_UNATTENDED: "1"
   AGENT_HARNESS_SANDBOX: "disposable-container"
 

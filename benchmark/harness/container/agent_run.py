@@ -1052,13 +1052,19 @@ def resolve_runtime_output_roots(
     symlinked run roots are skipped. Unlike an absolute glob, this bakes in no
     path prefix — it finds the run folder wherever the run/prompt put it, as long
     as it is under one of the searched roots.
+
+    When search roots nest (e.g. BENCHMARK_JOB_RUN_DIR lives under /tmp), the same
+    marker resolves to a specific run root via the inner root and to a broader
+    ancestor via /tmp. Only the most specific run root is kept: any collected root
+    that is a strict ANCESTOR of another collected root is dropped, so we never
+    also capture the ancestor's unrelated sibling runs.
     """
 
     seen: set[Path] = set()
     for _label, existing in existing_sources:
         with suppress(OSError):
             seen.add(Path(existing).resolve())
-    sources: list[tuple[str, Path]] = []
+    candidates: list[tuple[str, Path, Path]] = []
     for root in search_roots:
         for marker in runtime_output_markers:
             matches: list[Path] = []
@@ -1083,7 +1089,15 @@ def resolve_runtime_output_roots(
                 if resolved in seen:
                     continue
                 seen.add(resolved)
-                sources.append((run_root.as_posix().lstrip("/"), run_root))
+                candidates.append((run_root.as_posix().lstrip("/"), run_root, resolved))
+    resolved_all = [resolved for _label, _dir, resolved in candidates]
+    sources: list[tuple[str, Path]] = []
+    for label, run_root, resolved in candidates:
+        # Drop this root if a more specific collected root sits under it (its
+        # subtree would otherwise be captured twice, dragging in sibling runs).
+        if any(other != resolved and resolved in other.parents for other in resolved_all):
+            continue
+        sources.append((label, run_root))
     return sources
 
 

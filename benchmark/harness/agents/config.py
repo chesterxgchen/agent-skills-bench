@@ -522,8 +522,19 @@ class ConfigurableAgentAdapter(AgentAdapter):
             )
         if model_was_explicit:
             env["BENCHMARK_AGENT_MODEL"] = getattr(config, "agent_model", self.default_model)
+        subs = {"container_home": self.container_home, "agent": self.name}
         for key, value in (self._cfg.raw.get("runtime_env") or {}).items():
-            env[str(key)] = render_string(str(value), {"container_home": self.container_home, "agent": self.name})
+            env[str(key)] = render_string(str(value), subs)
+        # unattended_env is the harness->skill run-mode contract (e.g.
+        # AGENT_HARNESS_UNATTENDED). It applies ONLY to non-interactive benchmark
+        # runs. An interactive debug shell (InteractiveRuntimeConfig, unattended
+        # False) reuses this same runtime_env, and must NOT be told the run is
+        # unattended -- otherwise a skill launched from that shell would skip its
+        # approval prompts and take the unattended install/run path. Configs that
+        # do not declare `unattended` default to True (every benchmark case run).
+        if getattr(config, "unattended", True):
+            for key, value in (self._cfg.raw.get("unattended_env") or {}).items():
+                env[str(key)] = render_string(str(value), subs)
         return env
 
     def passthrough_env_names(self) -> tuple[str, ...]:

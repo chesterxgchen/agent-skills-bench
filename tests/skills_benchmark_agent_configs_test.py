@@ -201,6 +201,24 @@ def test_runtime_env_declares_unattended_sandbox_contract(agent):
     assert env["AGENT_HARNESS_SANDBOX"] == "disposable-container"
 
 
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_runtime_env_omits_unattended_contract_for_interactive_shell(agent):
+    # An interactive `docker run -it` debug shell reuses runtime_env but must NOT
+    # be told the run is unattended, or a skill launched from it would skip its
+    # approval prompts. InteractiveRuntimeConfig reports unattended=False.
+    from benchmark.harness.agents.registry import load_agent_adapter
+    from benchmark.harness.host.runner import InteractiveRuntimeConfig
+
+    env = load_agent_adapter(agent).runtime_env(
+        InteractiveRuntimeConfig(agent=agent, agent_model="unspecified_default", model_was_explicit=False)
+    )
+
+    assert "AGENT_HARNESS_UNATTENDED" not in env
+    assert "AGENT_HARNESS_SANDBOX" not in env
+    # The ordinary runtime_env (agent home) still applies to the interactive shell.
+    assert env  # non-empty: home var present
+
+
 def test_claude_launch_spec_omits_model_flag_when_not_explicit(tmp_path):
     from benchmark.harness.agents.base import AgentLaunchContext
     from benchmark.harness.agents.registry import load_agent_adapter

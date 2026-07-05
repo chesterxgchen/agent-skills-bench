@@ -74,9 +74,14 @@ auth:
       description: Codex config
 
 # Runtime env outputs passed to the agent process.
+runtime_env:
+  CODEX_HOME: "{container_home}"
+
+# unattended_env applies ONLY to non-interactive benchmark case runs, never to an
+# interactive `docker run -it` debug shell (which reuses runtime_env).
 #
 # AGENT_HARNESS_UNATTENDED / AGENT_HARNESS_SANDBOX are the harness->skill
-# contract for run mode. The benchmark ALWAYS runs unattended: there is no
+# contract for run mode. A benchmark case ALWAYS runs unattended: there is no
 # interactive channel, so an agent that stalls on an approval prompt never
 # starts the job (observed as not_started with_skills runs). The skill decides
 # interactive-vs-unattended by whether "a user or harness has explicitly made
@@ -85,8 +90,7 @@ auth:
 # IS that sandbox. These vars declare both so the skill takes its unattended,
 # install-requirements-and-run path instead of asking. Skill authors must read
 # them (prompts/skills are out of harness scope).
-runtime_env:
-  CODEX_HOME: "{container_home}"
+unattended_env:
   AGENT_HARNESS_UNATTENDED: "1"
   AGENT_HARNESS_SANDBOX: "disposable-container"
 

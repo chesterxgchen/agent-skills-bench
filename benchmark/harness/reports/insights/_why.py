@@ -1163,14 +1163,18 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
                 "",
             ]
         )
+    # Both sections frame elapsed-time impact (install/rerun times, baseline
+    # comparison), so on a primary result failure they read as slowdown analysis
+    # competing with the failure lead. Suppress them with the rest of the slowdown
+    # timing; the agent RCA carries any install/rerun cause that mattered.
     repeated_dependency_installs = repeated_dependency_install_section(
         {"with": with_run, "base": base_run},
         ["with", "base"],
     )
-    if repeated_dependency_installs:
+    if repeated_dependency_installs and include_slowdown_context:
         lines.extend([repeated_dependency_installs, ""])
     repeated_runs = repeated_job_runs_slowdown_section(with_run, base_run, ctx)
-    if repeated_runs:
+    if repeated_runs and include_slowdown_context:
         lines.extend([repeated_runs, ""])
     if include_slowdown_context:
         lines.extend(["", _elapsed_time_accounting_note(with_run, base_run), ""])
