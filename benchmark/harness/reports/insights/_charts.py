@@ -141,7 +141,7 @@ def benchmark_chart_metrics(
     runs: dict[str, RunEvidence], metric_name: str | None, ctx: ReportContext | None = None
 ) -> list[dict[str, Any]]:
     # Each value callable takes (run, ev) where ev is the per-run PluginEvidence.
-    return [
+    metrics = [
         {
             "label": "Total time seconds",
             "kind": "seconds",
@@ -184,6 +184,15 @@ def benchmark_chart_metrics(
             "value": lambda run, ev: metric_value(run, metric_name, ev),
         },
     ]
+    # With the container's dependency prewarm, agents no longer install
+    # dependencies mid-run: install time is 0 and Runtime == Total time for
+    # every run, so three time panels would say the same thing. Collapse to the
+    # single Total time panel; keep the split only for (pre-prewarm) result
+    # roots where a run actually spent agent time installing.
+    if runs and all(not as_number(_dependency_install_total_seconds(run)) for run in runs.values()):
+        redundant = {"Runtime seconds", "Dependency install"}
+        metrics = [metric for metric in metrics if metric["label"] not in redundant]
+    return metrics
 
 
 def chart_mode_label(mode: str, run: RunEvidence) -> str:
