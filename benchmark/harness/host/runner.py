@@ -1136,6 +1136,84 @@ def autorun_code_quality_evaluations(
         write_benchmark_reports(result_root, logs=logs)
 
 
+DIAGNOSTICS_STATUS_FILENAME = "diagnostics_status.json"
+DIAGNOSTICS_CONSOLE_FILENAME = "diagnostics_console.log"
+
+
+def launch_diagnostics(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
+    """Run the agentic diagnostics WITHOUT blocking scenario completion.
+
+    The diagnostics (auto-RCA, code-quality evaluation) can legitimately run
+    for a long time, and blocking the scenario on them forced a kill-timer
+    trade-off: too short kills healthy work, too long stalls the run. Instead
+    the work is detached: the scenario finishes and emits its report paths
+    immediately, and the worker process fires the completion event itself —
+    it regenerates the reports, appends its console lines, and records the
+    outcome in diagnostics_status.json when it exits. Its process exit IS the
+    done signal; nothing waits on a clock for it.
+
+    BENCHMARK_DIAGNOSTICS_BACKGROUND=0 keeps the legacy synchronous behavior
+    (useful for CI wrappers that must observe the fully-final report).
+    """
+
+    if os.environ.get("BENCHMARK_DIAGNOSTICS_BACKGROUND", "1") == "0":
+        autorun_rca_investigations(result_root, logs=logs)
+        autorun_code_quality_evaluations(result_root, logs=logs)
+        return
+    console_path = result_root / DIAGNOSTICS_CONSOLE_FILENAME
+    status_path = result_root / DIAGNOSTICS_STATUS_FILENAME
+    try:
+        with console_path.open("ab") as console:
+            process = subprocess.Popen(
+                [sys.executable, "-m", "benchmark.harness.host.runner", "diagnostics-worker", str(result_root)],
+                stdout=console,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                cwd=str(Path.cwd()),
+            )
+    except OSError as exc:
+        emit(f"Diagnostics worker failed to launch ({exc}); running inline instead.", logs=logs, stderr=True)
+        autorun_rca_investigations(result_root, logs=logs)
+        autorun_code_quality_evaluations(result_root, logs=logs)
+        return
+    write_json(
+        status_path,
+        {"status": "running", "pid": process.pid, "console": str(console_path)},
+    )
+    emit(
+        f"Automatic diagnostics (RCA + code-eval) continue in the background (pid {process.pid}); "
+        f"reports refresh when they finish. Watch: tail -f {console_path}; "
+        f"status: {status_path}",
+        logs=logs,
+    )
+
+
+def run_diagnostics_worker(argv: list[str]) -> int:
+    """Detached diagnostics worker: do the work, then fire the done event.
+
+    The "event" is concrete: regenerated reports on disk, a terminal line in
+    the diagnostics console, and diagnostics_status.json flipping to done —
+    written LAST, so status=done guarantees the refreshed reports exist.
+    """
+
+    if len(argv) != 1:
+        raise SystemExit("Usage: diagnostics-worker RESULT_ROOT")
+    result_root = absolute_path(argv[0])
+    logs = (result_root / "console_output.log",)
+    status_path = result_root / DIAGNOSTICS_STATUS_FILENAME
+    try:
+        autorun_rca_investigations(result_root, logs=logs, only_missing=True)
+        autorun_code_quality_evaluations(result_root, logs=logs, only_missing=True)
+    except Exception as exc:
+        write_json(status_path, {"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
+        emit(f"Diagnostics worker failed: {type(exc).__name__}: {exc}", logs=logs, stderr=True)
+        return 1
+    emit_benchmark_report_paths(result_root, logs=logs)
+    write_json(status_path, {"status": "done"})
+    emit("Automatic diagnostics finished; reports are final.", logs=logs)
+    return 0
+
+
 def emit_benchmark_report_paths(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
     emit(f"Benchmark insights: {result_root / 'benchmark_insights.md'}", logs=logs)
     emit(f"Metrics report: {result_root / 'metrics_report.md'}", logs=logs)
@@ -1219,8 +1297,7 @@ def run_pair(argv: list[str]) -> int:
     # RCA first: it is the priority diagnostic and must not be gated on a slow
     # code-evaluation pass (each is best-effort and independently regenerates
     # the report).
-    autorun_rca_investigations(result_root, logs=logs)
-    autorun_code_quality_evaluations(result_root, logs=logs)
+    launch_diagnostics(result_root, logs=logs)
     emit_benchmark_report_paths(result_root, logs=logs)
     write_host_report_status(result_root, report_statuses)
     return (
@@ -1392,6 +1469,8 @@ def main() -> None:
         status = run_scenario(argv)
     elif command == "report":
         status = run_report(argv)
+    elif command == "diagnostics-worker":
+        status = run_diagnostics_worker(argv)
     elif command == "interactive":
         status = run_interactive(argv)
     else:

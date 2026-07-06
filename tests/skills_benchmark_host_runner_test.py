@@ -948,3 +948,92 @@ def test_autorun_rca_skips_when_no_investigator_available(monkeypatch):
     # Should not raise and should not regenerate when no investigator is available.
     runner.autorun_rca_investigations(__import__("pathlib").Path("/tmp/x"))
     assert regen["n"] == 0
+
+
+def test_launch_diagnostics_detaches_and_records_running_status(tmp_path, monkeypatch):
+    """The scenario must not block on diagnostics: the worker is detached and
+    its exit fires the done event (report regen + status flip), so no
+    kill-timer trade-off applies to healthy long-running work."""
+
+    import json
+    from types import SimpleNamespace
+
+    from benchmark.harness.host import runner
+
+    monkeypatch.delenv("BENCHMARK_DIAGNOSTICS_BACKGROUND", raising=False)
+    spawned = {}
+
+    def fake_popen(args, **kwargs):
+        spawned["args"] = args
+        spawned["start_new_session"] = kwargs.get("start_new_session")
+        return SimpleNamespace(pid=4242)
+
+    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        runner, "autorun_rca_investigations", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must detach"))
+    )
+
+    runner.launch_diagnostics(tmp_path)
+
+    assert spawned["args"][-2:] == ["diagnostics-worker", str(tmp_path)]
+    assert spawned["start_new_session"] is True
+    status = json.loads((tmp_path / runner.DIAGNOSTICS_STATUS_FILENAME).read_text(encoding="utf-8"))
+    assert status["status"] == "running" and status["pid"] == 4242
+
+
+def test_launch_diagnostics_env_zero_runs_inline(tmp_path, monkeypatch):
+    from benchmark.harness.host import runner
+
+    monkeypatch.setenv("BENCHMARK_DIAGNOSTICS_BACKGROUND", "0")
+    calls = []
+    monkeypatch.setattr(runner, "autorun_rca_investigations", lambda root, logs=(): calls.append("rca"))
+    monkeypatch.setattr(runner, "autorun_code_quality_evaluations", lambda root, logs=(): calls.append("eval"))
+    monkeypatch.setattr(
+        runner.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must stay inline"))
+    )
+
+    runner.launch_diagnostics(tmp_path)
+
+    assert calls == ["rca", "eval"]
+    assert not (tmp_path / runner.DIAGNOSTICS_STATUS_FILENAME).exists()
+
+
+def test_diagnostics_worker_flips_status_done_after_reports(tmp_path, monkeypatch):
+    import json
+
+    from benchmark.harness.host import runner
+
+    order = []
+    monkeypatch.setattr(
+        runner, "autorun_rca_investigations", lambda root, logs=(), only_missing=False: order.append("rca")
+    )
+    monkeypatch.setattr(
+        runner,
+        "autorun_code_quality_evaluations",
+        lambda root, logs=(), only_missing=False: order.append("eval"),
+    )
+    monkeypatch.setattr(
+        runner, "emit_benchmark_report_paths", lambda root, logs=(): order.append("reports")
+    )
+
+    assert runner.run_diagnostics_worker([str(tmp_path)]) == 0
+    status = json.loads((tmp_path / runner.DIAGNOSTICS_STATUS_FILENAME).read_text(encoding="utf-8"))
+    # Reports regenerate BEFORE status flips: status=done guarantees final reports.
+    assert order == ["rca", "eval", "reports"]
+    assert status == {"status": "done"}
+
+
+def test_diagnostics_worker_records_failure(tmp_path, monkeypatch):
+    import json
+
+    from benchmark.harness.host import runner
+
+    monkeypatch.setattr(
+        runner,
+        "autorun_rca_investigations",
+        lambda root, logs=(), only_missing=False: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    assert runner.run_diagnostics_worker([str(tmp_path)]) == 1
+    status = json.loads((tmp_path / runner.DIAGNOSTICS_STATUS_FILENAME).read_text(encoding="utf-8"))
+    assert status["status"] == "failed" and "boom" in status["error"]
