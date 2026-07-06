@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import math
+import random
 import statistics
 from pathlib import Path
 from typing import Any, Mapping
@@ -57,6 +59,101 @@ def number_or_none(value: Any) -> float | None:
 
 def optional_number_sort_value(value: Any) -> tuple[int, float]:
     return (0, float(value)) if is_number(value) else (1, 0.0)
+
+
+def pass_at_k_estimates(run_count: int, pass_count: int) -> dict[str, float]:
+    """Unbiased pass@k over the label's runs: P(at least one of k sampled runs passes).
+
+    Standard estimator ``1 - C(n-c, k) / C(n, k)`` with n runs and c passes.
+    Reported for k=1 (per-attempt success rate), k=n (did ANY repetition
+    succeed), and k=3 when enough repeats exist — agent runs are stochastic,
+    so single pairs flip and pass@1 alone under-describes a skill.
+    """
+
+    if run_count <= 0:
+        return {}
+    ks = sorted({1, min(3, run_count), run_count})
+    estimates = {}
+    for k in ks:
+        estimates[str(k)] = 1.0 - (math.comb(run_count - pass_count, k) / math.comb(run_count, k))
+    return estimates
+
+
+_BOOTSTRAP_RESAMPLES = 2000
+
+
+def bootstrap_mean_ci(values: list[float], *, seed: int = 20260706) -> list[float] | None:
+    """Deterministic percentile-bootstrap 95% CI of the mean; None below 2 samples."""
+
+    if len(values) < 2:
+        return None
+    rng = random.Random(seed)
+    n = len(values)
+    means = sorted(sum(rng.choice(values) for _ in range(n)) / n for _ in range(_BOOTSTRAP_RESAMPLES))
+    lo = means[int(0.025 * _BOOTSTRAP_RESAMPLES)]
+    hi = means[min(_BOOTSTRAP_RESAMPLES - 1, int(0.975 * _BOOTSTRAP_RESAMPLES))]
+    return [lo, hi]
+
+
+def paired_mode_deltas(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Per-task paired deltas (with_skills minus without_skills) with bootstrap CIs.
+
+    Runs pair on (agent, model, workflow, job_slug, repeat_index): the same
+    task attempted by both
+    modes. Paired deltas cancel task difficulty, which per-label aggregates
+    cannot; the CI says whether the observed skill effect survives run-to-run
+    stochasticity. Success delta is +1 (skills passed, baseline failed), -1
+    (the reverse), or 0.
+    """
+
+    by_key: dict[tuple[Any, ...], dict[str, dict[str, Any]]] = {}
+    for run in runs:
+        mode = str(run.get("mode") or "")
+        if mode not in ("with_skills", "without_skills"):
+            continue
+        key = (
+            run.get("agent"),
+            run.get("agent_model"),
+            run.get("workflow"),
+            run.get("job_slug"),
+            run.get("repeat_index"),
+        )
+        by_key.setdefault(key, {})[mode] = run
+    pairs = [entry for entry in by_key.values() if len(entry) == 2]
+    if not pairs:
+        return None
+
+    def deltas(field: str) -> list[float]:
+        result = []
+        for entry in pairs:
+            left = as_float(entry["without_skills"].get(field))
+            right = as_float(entry["with_skills"].get(field))
+            if left is not None and right is not None:
+                result.append(right - left)
+        return result
+
+    def as_float(value: Any) -> float | None:
+        return float(value) if is_number(value) else None
+
+    success = [
+        float(bool(entry["with_skills"].get("quality_gate_passed")))
+        - float(bool(entry["without_skills"].get("quality_gate_passed")))
+        for entry in pairs
+    ]
+    payload: dict[str, Any] = {
+        "pair_count": len(pairs),
+        "pairing": "agent+model+workflow+job_slug+repeat_index; delta = with_skills - without_skills",
+        "success_delta_mean": sum(success) / len(success),
+        "success_delta_ci95": bootstrap_mean_ci(success),
+    }
+    for field in ("agent_elapsed_seconds", "token_count"):
+        values = deltas(field)
+        payload[field] = {
+            "count": len(values),
+            "mean_delta": (sum(values) / len(values)) if values else None,
+            "ci95": bootstrap_mean_ci(values),
+        }
+    return payload
 
 
 def stats_for_values(values: list[float]) -> dict[str, Any]:
@@ -487,11 +584,13 @@ def aggregate_results(runs: list[dict[str, Any]], winner_policy: str = DEFAULT_W
             if is_number(item.get("agent_elapsed_seconds"))
         ]
         clean_tokens = [float(item["token_count"]) for item in clean_items if is_number(item.get("token_count"))]
+        pass_count = sum(1 for item in items if item.get("quality_gate_passed"))
         aggregate[label] = {
             "run_count": len(items),
-            "quality_pass_count": sum(1 for item in items if item.get("quality_gate_passed")),
-            "quality_fail_count": sum(1 for item in items if not item.get("quality_gate_passed")),
+            "quality_pass_count": pass_count,
+            "quality_fail_count": len(items) - pass_count,
             "infrastructure_tainted_count": sum(1 for item in items if run_is_infrastructure_tainted(item)),
+            "pass_at_k": pass_at_k_estimates(len(items), pass_count),
             "agent_elapsed_seconds": stats_for_values(elapsed_values),
             "token_count": stats_for_values(token_values),
             "clean_agent_elapsed_seconds": stats_for_values(clean_elapsed),
@@ -529,7 +628,11 @@ def aggregate_results(runs: list[dict[str, Any]], winner_policy: str = DEFAULT_W
         effective_policy = "no_infrastructure_clean_winner"
     else:
         effective_policy = "no_quality_qualified_winner"
-    return {"by_label": aggregate, "winner": winner, "winner_policy": effective_policy}
+    result = {"by_label": aggregate, "winner": winner, "winner_policy": effective_policy}
+    paired = paired_mode_deltas(runs)
+    if paired:
+        result["paired_deltas"] = paired
+    return result
 
 
 def write_json_atomic(path: Path, value: object) -> None:

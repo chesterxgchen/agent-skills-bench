@@ -136,3 +136,50 @@ def test_auto_diagnostic_step_timeout_env_override(monkeypatch):
     # <=0 disables the bound (waits forever, like manual runs).
     monkeypatch.setenv("BENCHMARK_AUTO_DIAGNOSTIC_STEP_TIMEOUT_SECONDS", "0")
     assert auto_diagnostic_step_timeout_seconds() is None
+
+
+def test_pass_at_k_and_paired_deltas_over_repeats():
+    """Issue #2 item 2: pass@k per label and paired per-task deltas with CIs."""
+
+    from benchmark.harness.scenario_summaries import aggregate_results, pass_at_k_estimates
+
+    runs = []
+    # 3 repeats: with_skills passes 2/3 and is consistently ~100s faster.
+    for repeat, (with_pass, with_time, base_time) in enumerate(
+        [(True, 700.0, 800.0), (True, 710.0, 815.0), (False, 720.0, 818.0)], start=1
+    ):
+        common = {"comparison_type": "mode_ablation", "agent": "codex", "agent_model": "m",
+                  "workflow": "default", "job_slug": "ames", "repeat_index": repeat,
+                  "infrastructure_taint": {"tainted": False}}
+        runs.append({**common, "mode": "with_skills", "run_id": f"w{repeat}",
+                     "quality_gate_passed": with_pass, "agent_elapsed_seconds": with_time, "token_count": 100.0})
+        runs.append({**common, "mode": "without_skills", "run_id": f"b{repeat}",
+                     "quality_gate_passed": True, "agent_elapsed_seconds": base_time, "token_count": 150.0})
+
+    import pytest
+
+    results = aggregate_results(runs)
+    with_agg = results["by_label"]["with_skills"]
+    assert with_agg["pass_at_k"]["1"] == pytest.approx(2 / 3)
+    assert with_agg["pass_at_k"]["3"] == 1.0  # at least one of 3 passed
+    assert results["by_label"]["without_skills"]["pass_at_k"]["1"] == 1.0
+
+    paired = results["paired_deltas"]
+    assert paired["pair_count"] == 3
+    assert paired["success_delta_mean"] == pytest.approx(-1 / 3)
+    elapsed = paired["agent_elapsed_seconds"]
+    assert round(elapsed["mean_delta"]) == -101
+    lo, hi = elapsed["ci95"]
+    assert lo <= elapsed["mean_delta"] <= hi and hi < 0  # consistently faster: CI excludes 0
+    # Deterministic bootstrap: same inputs, same CI.
+    assert aggregate_results(runs)["paired_deltas"]["agent_elapsed_seconds"]["ci95"] == [lo, hi]
+
+
+def test_pass_at_k_estimator_matches_closed_form():
+    from benchmark.harness.scenario_summaries import pass_at_k_estimates
+
+    # n=4, c=2: pass@1 = 0.5; pass@3 = 1 - C(2,3)/C(4,3) = 1.0; pass@4 = 1.0
+    estimates = pass_at_k_estimates(4, 2)
+    assert estimates == {"1": 0.5, "3": 1.0, "4": 1.0}
+    assert pass_at_k_estimates(1, 0) == {"1": 0.0}
+    assert pass_at_k_estimates(0, 0) == {}

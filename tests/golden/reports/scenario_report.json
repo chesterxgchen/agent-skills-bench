@@ -28,6 +28,9 @@
           "stddev": null
         },
         "infrastructure_tainted_count": 0,
+        "pass_at_k": {
+          "1": 0.0
+        },
         "quality_fail_count": 1,
         "quality_pass_count": 0,
         "run_count": 1,
@@ -66,6 +69,9 @@
           "stddev": null
         },
         "infrastructure_tainted_count": 0,
+        "pass_at_k": {
+          "1": 0.0
+        },
         "quality_fail_count": 1,
         "quality_pass_count": 0,
         "run_count": 1,
@@ -77,6 +83,22 @@
           "min": 12000.0,
           "stddev": null
         }
+      }
+    },
+    "paired_deltas": {
+      "agent_elapsed_seconds": {
+        "ci95": null,
+        "count": 0,
+        "mean_delta": null
+      },
+      "pair_count": 1,
+      "pairing": "agent+model+workflow+job_slug+repeat_index; delta = with_skills - without_skills",
+      "success_delta_ci95": null,
+      "success_delta_mean": 0.0,
+      "token_count": {
+        "ci95": null,
+        "count": 1,
+        "mean_delta": 3000.0
       }
     },
     "winner": null,
@@ -110,6 +132,9 @@
           "stddev": null
         },
         "infrastructure_tainted_count": 0,
+        "pass_at_k": {
+          "1": 0.0
+        },
         "quality_fail_count": 1,
         "quality_pass_count": 0,
         "run_count": 1,
@@ -148,6 +173,9 @@
           "stddev": null
         },
         "infrastructure_tainted_count": 0,
+        "pass_at_k": {
+          "1": 0.0
+        },
         "quality_fail_count": 1,
         "quality_pass_count": 0,
         "run_count": 1,
@@ -159,6 +187,22 @@
           "min": 12000.0,
           "stddev": null
         }
+      }
+    },
+    "paired_deltas": {
+      "agent_elapsed_seconds": {
+        "ci95": null,
+        "count": 0,
+        "mean_delta": null
+      },
+      "pair_count": 1,
+      "pairing": "agent+model+workflow+job_slug+repeat_index; delta = with_skills - without_skills",
+      "success_delta_ci95": null,
+      "success_delta_mean": 0.0,
+      "token_count": {
+        "ci95": null,
+        "count": 1,
+        "mean_delta": 3000.0
       }
     },
     "winner": null,
