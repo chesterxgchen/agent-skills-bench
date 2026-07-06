@@ -382,7 +382,8 @@ def test_nvflare_sdk_adapter_loads_build_contract():
     # Agent Skills CLI against a configurable git source.
     assert 'npx --yes skills add "${SKILLS_SOURCE_REF}"' in build_args["SKILLS_INSTALL_COMMAND"]
     assert "-a claude-code" in build_args["SKILLS_INSTALL_COMMAND"]
-    assert build_args["SKILLS_SOURCE_REF"] == "NVIDIA/NVFlare#main"
+    # Remote-relative dev ref; build-time resolution maps it to the checkout's origin URL.
+    assert build_args["SKILLS_SOURCE_REF"] == "origin#milestone8-agent-skills"
     assert build_args["SKILLS_INSTALL_EXPECTED_SOURCE"] == "skills_cli"
     # No SDK list CLI anymore: the harness's generic lister walks the target.
     assert build_args["SKILLS_LIST_COMMAND"] == ""
@@ -1017,3 +1018,40 @@ def test_generic_skills_list_reports_names_not_paths(tmp_path, monkeypatch):
     assert payload["available"] == [".nvflare-shared", "nvflare-convert-pytorch", "nvflare-orient"]
     # The report layer's name filter drops the shared container and keeps skill NAMES.
     assert available_skill_names(payload) == ["nvflare-convert-pytorch", "nvflare-orient"]
+
+
+def test_resolve_skills_source_ref_from_local_remote(tmp_path):
+    """`origin#branch` resolves the repo URL from the SDK checkout's git config.
+
+    Development installs must follow each developer's own fork (their `origin`),
+    not a hardcoded owner; ssh remotes rewrite to https because the image build
+    clones without ssh keys.
+    """
+
+    import subprocess
+
+    import pytest
+
+    from benchmark.harness.host.build import resolve_skills_source_ref
+
+    repo = tmp_path / "sdk"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", "git@github.com:chesterxgchen/NVFlare.git"],
+        check=True,
+    )
+
+    resolved = resolve_skills_source_ref("origin#milestone8-agent-skills", repo)
+    assert resolved == "https://github.com/chesterxgchen/NVFlare.git#milestone8-agent-skills"
+
+    # Explicit owner/repo and URL forms pass through unchanged.
+    assert resolve_skills_source_ref("NVIDIA/NVFlare#main", repo) == "NVIDIA/NVFlare#main"
+    url_ref = "https://github.com/NVIDIA/NVFlare.git#main"
+    assert resolve_skills_source_ref(url_ref, repo) == url_ref
+    assert resolve_skills_source_ref("", repo) == ""
+
+    with pytest.raises(SystemExit, match="not found"):
+        resolve_skills_source_ref("upstream#main", repo)
+    with pytest.raises(SystemExit, match="no SDK repo checkout"):
+        resolve_skills_source_ref("origin#main", None)

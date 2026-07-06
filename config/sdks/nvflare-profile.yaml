@@ -96,7 +96,13 @@ skills:
       && mkdir -p "${BENCHMARK_AGENT_HOME}/skills"
       && if [ -d .agents/skills ] && [ -z "$(ls -A "${BENCHMARK_AGENT_HOME}/skills" 2>/dev/null)" ];
       then cp -R .agents/skills/. "${BENCHMARK_AGENT_HOME}/skills/"; fi
-    source_ref: "NVIDIA/NVFlare#main"
+    # Development skills branch (milestone 8). `origin#<branch>` resolves the
+    # repo URL from the local SDK checkout's git config at build time, so each
+    # developer installs from THEIR fork without editing this profile.
+    # Explicit forms also work: owner/repo#branch or a full URL#branch.
+    # Switch to NVIDIA/NVFlare#main once the agent-skills work merges;
+    # BENCHMARK_SKILLS_SOURCE_REF still overrides a single build.
+    source_ref: "origin#milestone8-agent-skills"
     install_output: skills_build_install.json
     list_output: skills_list.json
     expected_source: skills_cli

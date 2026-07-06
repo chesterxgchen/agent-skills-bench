@@ -423,6 +423,42 @@ def stage_nvflare_skill_evals_as_evaluation_rules(source: Path, target: Path) ->
         _write_yaml(index_path, index)
 
 
+def resolve_skills_source_ref(ref: str, repo_root: Path | None) -> str:
+    """Resolve a ``<remote>#<branch>`` skills ref against the SDK repo checkout.
+
+    A profile can name a git REMOTE of the developer's local SDK checkout
+    (e.g. ``origin#milestone8-agent-skills``) instead of hardcoding an owner —
+    each developer's build then installs skills from THEIR fork's branch, per
+    their git config. Explicit ``owner/repo#branch`` and full-URL refs pass
+    through unchanged. ssh remotes are rewritten to https: the image build
+    clones without ssh keys.
+    """
+
+    if not ref or "#" not in ref:
+        return ref
+    remote, branch = ref.split("#", 1)
+    if not remote or "/" in remote or ":" in remote:
+        return ref
+    if repo_root is None:
+        raise SystemExit(
+            f"Skills source ref {ref!r} names git remote {remote!r}, but no SDK repo checkout "
+            "is configured (--sdk-repo/SDK_REPO)."
+        )
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "remote", "get-url", remote], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            f"Cannot resolve skills source ref {ref!r}: git remote {remote!r} not found in {repo_root}"
+            + (f" ({result.stderr.strip()})" if result.stderr.strip() else "")
+        )
+    url = result.stdout.strip()
+    match = re.match(r"^(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?$", url)
+    if match:
+        url = f"https://{match.group(1)}/{match.group(2)}.git"
+    return f"{url}#{branch}"
+
+
 def resolve_sdk_skills_setup(sdk: SdkAdapter) -> SdkSkillsSetup:
     setup = sdk.skills_setup(repo_root=REPO_ROOT or Path(), home=Path.home())
     if setup.setup_type == "copy":
@@ -790,6 +826,10 @@ def main(argv: list[str] | None = None) -> int:
         skills_setup = resolve_sdk_skills_setup(sdk)
         targets = adapter.image_targets()
         sdk_build_args = sdk.docker_build_args()
+        if sdk_build_args.get("SKILLS_SOURCE_REF"):
+            sdk_build_args["SKILLS_SOURCE_REF"] = resolve_skills_source_ref(
+                sdk_build_args["SKILLS_SOURCE_REF"], REPO_ROOT
+            )
         host_cli_version = resolve_host_agent_cli_version(adapter)
         agent_build_args = adapter.build_args(cli_version=host_cli_version)
     except ValueError as exc:
@@ -814,6 +854,8 @@ def main(argv: list[str] | None = None) -> int:
         emit(f"SDK wheel build: {wheel_build.build_type}")
         if build_skills_image:
             emit(f"SDK skills setup: {skills_setup.setup_type}")
+            if sdk_build_args.get("SKILLS_SOURCE_REF"):
+                emit(f"Skills source: {sdk_build_args['SKILLS_SOURCE_REF']}")
             stage_sdk_skills_setup(context, skills_setup)
         if build_skills_image or build_baseline_image:
             source = resolve_sdk_source(sdk)
