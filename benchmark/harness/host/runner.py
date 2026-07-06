@@ -1032,6 +1032,7 @@ def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = ()) 
     emit(f"Running automatic RCA on {', '.join(targets)} (set BENCHMARK_AUTO_RCA=0 to disable)", logs=logs)
     investigated = False
     for mode in targets:
+        emit(f"Auto-RCA ({mode}, {agent_name}): investigating (heartbeat every 60s) ...", logs=logs)
         try:
             report_path = run_investigation(result_root, mode, invoker, topic="auto", agent_name=agent_name)
         except Exception as exc:
@@ -1088,6 +1089,10 @@ def autorun_code_quality_evaluations(result_root: Path, *, logs: Iterable[Path] 
     emit(f"Running automatic code-quality evaluation on {modes} (set BENCHMARK_AUTO_CODE_EVAL=0 to disable)", logs=logs)
     evaluated = False
     for mode, criteria in targets:
+        emit(
+            f"Auto code-eval ({mode}, {agent_name}): judging {len(criteria)} criteria (heartbeat every 60s) ...",
+            logs=logs,
+        )
         try:
             path = evaluate_code_quality(result_root, mode, invoker, criteria, agent_name=agent_name)
         except Exception as exc:

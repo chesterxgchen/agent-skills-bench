@@ -70,6 +70,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -94,8 +95,14 @@ MAX_INVESTIGATION_STEPS_CAP = 24
 # report paths are emitted, so a genuinely wedged agent CLI or docker run must
 # not block scenario completion forever. That path passes a generous PER-STEP
 # wall-clock bound (below, env-overridable) — a cancellation backstop far above
-# any observed step duration, not an idle timer.
-AUTO_DIAGNOSTIC_STEP_TIMEOUT_SECONDS = 900.0
+# any observed step duration, not an idle timer. Generosity matters: a laptop
+# sleep mid-step stalls the container's API connection, and the recovery churn
+# after each wake burns bound time without being the investigator's fault.
+AUTO_DIAGNOSTIC_STEP_TIMEOUT_SECONDS = 1800.0
+
+# Progress cadence for the otherwise-silent diagnostics step (the agent reads
+# and reasons without emitting output; the user still needs a liveness signal).
+_DIAGNOSTIC_HEARTBEAT_SECONDS = 60
 
 
 def auto_diagnostic_step_timeout_seconds() -> float | None:
@@ -238,6 +245,24 @@ def _checked_agent_run(
     ]
     for worker in workers:
         worker.start()
+    # Liveness heartbeat: the agent step works silently for minutes, so print
+    # periodic elapsed/bound lines — otherwise a long diagnostics pass looks
+    # like a hang to the user watching the console.
+    heartbeat_stop = threading.Event()
+    step_started = time.monotonic()
+
+    def _heartbeat() -> None:
+        bound = f"bound {timeout_seconds:.0f}s" if timeout_seconds else "no bound"
+        while not heartbeat_stop.wait(_DIAGNOSTIC_HEARTBEAT_SECONDS):
+            elapsed = int(time.monotonic() - step_started)
+            print(
+                f"[diagnostics] agent step still running: elapsed {elapsed}s ({bound}); evidence={cwd}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+    heartbeat_thread.start()
     timed_out = False
     try:
         # No idle timer: silent work is normal. ``timeout_seconds`` is only set
@@ -251,6 +276,8 @@ def _checked_agent_run(
                 os.killpg(process.pid, signal.SIGKILL)
             process.wait()
     finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=2)
         for worker in workers:
             worker.join(timeout=10)
     if timed_out:
