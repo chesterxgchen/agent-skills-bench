@@ -287,9 +287,10 @@ def _checked_agent_run(
         )
     if process.returncode != 0:
         stderr = (captured.get("stderr") or "").strip()
+        detail = stderr or (captured.get("stdout") or "").strip()[-2000:]
         raise AgentInvocationError(
             f"Investigator agent `{args[0]}` exited with status {process.returncode}"
-            + (f": {stderr}" if stderr else " (no stderr)")
+            + (f": {detail}" if detail else " (no stderr/stdout)")
         )
     return captured.get("stdout") or ""
 

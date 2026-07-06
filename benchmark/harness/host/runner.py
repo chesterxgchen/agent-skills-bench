@@ -126,6 +126,7 @@ class ScenarioCliOptions:
 @dataclass(frozen=True)
 class ReportCliOptions:
     result_root: Path
+    diagnostics: bool = False
 
 
 @dataclass(frozen=True)
@@ -406,6 +407,7 @@ def parse_scenario_cli_options(argv: list[str]) -> ScenarioCliOptions:
 
 def parse_report_cli_options(argv: list[str]) -> ReportCliOptions:
     result_root: Path | None = None
+    diagnostics = False
     index = 0
     while index < len(argv):
         arg = argv[index]
@@ -419,8 +421,17 @@ def parse_report_cli_options(argv: list[str]) -> ReportCliOptions:
             if result_root is not None:
                 raise SystemExit("Expected only one report result root")
             result_root = absolute_path(value)
+        elif arg == "--diagnostics":
+            diagnostics = True
+            index += 1
         elif arg in {"-h", "--help"}:
-            print("Usage: run.sh report RESULT_ROOT")
+            print(
+                "Usage: run.sh report RESULT_ROOT [--diagnostics]\n\n"
+                "  --diagnostics   Backfill MISSING agentic diagnostics (auto-RCA and\n"
+                "                  code-quality evaluation) for the existing result root,\n"
+                "                  then regenerate reports. Existing diagnostic outputs\n"
+                "                  are kept; only killed/skipped ones run."
+            )
             raise SystemExit(0)
         elif arg.startswith("-"):
             raise SystemExit(f"Unknown report option: {arg}")
@@ -433,7 +444,7 @@ def parse_report_cli_options(argv: list[str]) -> ReportCliOptions:
         raise SystemExit("Report result root is required.")
     if not (result_root / "run_plan.json").is_file():
         raise SystemExit(f"Report result root must contain run_plan.json: {result_root}")
-    return ReportCliOptions(result_root=result_root)
+    return ReportCliOptions(result_root=result_root, diagnostics=diagnostics)
 
 
 def _scenario_option_value(argv: list[str], index: int, option: str) -> tuple[str, int]:
@@ -999,7 +1010,21 @@ def write_benchmark_reports(result_root: Path, *, logs: Iterable[Path] = ()) -> 
         parse_cached_usage_and_activity.cache_clear()
 
 
-def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
+def _mode_has_rca_report(result_root: Path, mode: str) -> bool:
+    from ..reports._loader import mode_dir_for_benchmark
+
+    rca_dir = mode_dir_for_benchmark(result_root, mode) / "rca"
+    return rca_dir.is_dir() and any(rca_dir.glob("rca_report_*.md"))
+
+
+def _mode_has_code_quality_assessment(result_root: Path, mode: str) -> bool:
+    from ..code_eval import ASSESSMENT_FILENAME
+    from ..reports._loader import mode_dir_for_benchmark
+
+    return (mode_dir_for_benchmark(result_root, mode) / ASSESSMENT_FILENAME).is_file()
+
+
+def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = (), only_missing: bool = False) -> None:
     """Drill into every mode the Root Cause Analysis section flags as worse.
 
     RCA exists to explain a with-skills regression — a failure, a failed
@@ -1017,6 +1042,8 @@ def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = ()) 
     from ..rca import auto_diagnostic_step_timeout_seconds, resolve_invoker, resolve_seed, run_investigation
 
     targets = [spec.mode for spec in PAIR_RUNS if resolve_seed(result_root, spec.mode, "auto", None) is not None]
+    if only_missing:
+        targets = [mode for mode in targets if not _mode_has_rca_report(result_root, mode)]
     if not targets:
         return
     try:
@@ -1046,7 +1073,9 @@ def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = ()) 
         write_benchmark_reports(result_root, logs=logs)
 
 
-def autorun_code_quality_evaluations(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
+def autorun_code_quality_evaluations(
+    result_root: Path, *, logs: Iterable[Path] = (), only_missing: bool = False
+) -> None:
     """Have an agent judge the generated code against the criteria list.
 
     Replaces the brittle per-code-shape detectors: an agent reads the captured
@@ -1069,6 +1098,8 @@ def autorun_code_quality_evaluations(result_root: Path, *, logs: Iterable[Path] 
     targets: list[tuple[str, list[dict[str, str]]]] = []
     for mode, bundle in runs.items():
         if not bundle.get("available"):
+            continue
+        if only_missing and _mode_has_code_quality_assessment(result_root, mode):
             continue
         try:
             criteria = plugin.code_quality_criteria(_as_run_evidence(bundle))
@@ -1249,6 +1280,12 @@ def run_report(argv: list[str]) -> int:
     emit(f"Scenario summary: {options.result_root / 'scenario_summary.json'}", logs=logs)
     emit(f"Scenario report: {options.result_root / 'reports' / 'scenario_report.md'}", logs=logs)
     report_statuses = write_benchmark_reports(options.result_root, logs=logs)
+    if options.diagnostics:
+        # Backfill ONLY missing diagnostics (a killed/skipped auto-RCA or
+        # code-eval); existing outputs are kept, and each hook regenerates the
+        # reports when it produced something new.
+        autorun_rca_investigations(options.result_root, logs=logs, only_missing=True)
+        autorun_code_quality_evaluations(options.result_root, logs=logs, only_missing=True)
     emit_benchmark_report_paths(options.result_root, logs=logs)
     write_host_report_status(options.result_root, report_statuses)
     # Report regenerates artifacts from an existing result tree; it preserves
