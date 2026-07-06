@@ -649,6 +649,30 @@ def build_sdk_wheel_from_repo(
             temp_build_dir.cleanup()
 
 
+def verify_identical_variant_wheels(
+    sdk: SdkAdapter, skills_prepared: PreparedSdkWheel, baseline_prepared: PreparedSdkWheel
+) -> None:
+    """Without a build-time toggle, both variants MUST stage the same wheel bytes.
+
+    NVFLARE dropped its wheel-bundling hook (PR #4837): the SDK wheel is
+    identical in both images and the A/B distinction is purely the skills
+    setup. If the two variants stage different bytes anyway — a stale wheel
+    lingering in the SDK repo's dist/ is the classic cause — the comparison
+    would silently pit an old SDK against a new one. Fail loudly instead.
+    """
+
+    skills_sha = file_sha256(skills_prepared.wheel)
+    baseline_sha = file_sha256(baseline_prepared.wheel)
+    if skills_sha != baseline_sha:
+        raise SystemExit(
+            f"SDK wheel mismatch between image variants: skills staged {skills_prepared.wheel.name} "
+            f"({skills_sha[:12]}) but baseline staged {baseline_prepared.wheel.name} ({baseline_sha[:12]}). "
+            "The profile defines no build-time variant toggle, so both must be the same wheel — a stale "
+            "wheel in the SDK repo's dist/ is the usual cause. Re-run with --rebuild or clean dist/."
+        )
+    emit(f"Variant wheel check: skills and baseline stage identical bytes (sha256 {skills_sha[:12]})")
+
+
 def prepare_sdk_wheel(
     *,
     source: SdkSource,
@@ -913,6 +937,9 @@ def main(argv: list[str] | None = None) -> int:
                     out_dir=context / "dist" / "baseline",
                     evaluation=evaluation,
                 )
+
+            if build_skills_image and build_baseline_image and not sdk.build_env_name:
+                verify_identical_variant_wheels(sdk, skills_prepared, baseline_prepared)
 
         emit(f"Docker build context: {context}")
         emit(f"UV image: {args.uv_image}")

@@ -300,20 +300,23 @@ Verify the images exist:
 docker image ls 'agent-skills-benchmark'
 ```
 
-Verify the default NVFlare SDK and packaged skills in the skills image:
+Verify the default NVFlare SDK and installed skills in the skills image
+(skills are installed by the Agent Skills CLI at build; the harness's generic
+lister records them in the agent home's `skills_list.json`):
 
 ```bash
 # Codex
 docker run --rm agent-skills-benchmark:codex-skills \
-  /bin/bash -lc 'nvflare --version; nvflare agent skills list --agent codex --format json'
+  /bin/bash -lc 'nvflare --version; ls /workspace/.codex/skills; cat /workspace/.codex/skills_list.json'
 
 # Claude
 docker run --rm agent-skills-benchmark:claude-skills \
-  /bin/bash -lc 'nvflare --version; nvflare agent skills list --agent claude --format json'
+  /bin/bash -lc 'nvflare --version; ls /workspace/.claude/skills; cat /workspace/.claude/skills_list.json'
 ```
 
-The images do not install job-specific training dependencies. Installing
-requirements from the job folder is part of the measured agent behavior.
+The images do not install job-specific training dependencies: the container
+prewarms the job folder's own `requirements*.txt` identically in both modes
+before the measured agent phase.
 
 ## Add Another SDK
 
@@ -577,7 +580,8 @@ Useful checks inside the container:
 python --version
 uv --version
 nvflare --version
-nvflare agent skills list --agent codex --format json
+nvflare agent info --format json
+ls /workspace/.codex/skills   # installed skills (skills image)
 ls -la /workspace/input
 ls -la /workspace/prompts
 ```

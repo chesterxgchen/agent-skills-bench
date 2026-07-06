@@ -370,13 +370,14 @@ def test_nvflare_sdk_adapter_loads_build_contract():
     assert sdk.wheel_build().build_type == "uv_wheel"
     assert source.source_type == "repo"
     assert source.repo_markers == ("pyproject.toml", "nvflare/")
-    assert sdk.build_env_name == "NVFLARE_PACKAGE_AGENT_SKILLS"
-    assert skills.build_env_value == "1"
+    # NVFLARE PR #4837 removed the wheel-bundling toggle: no build env, and both
+    # variants stage the SAME wheel — the A/B distinction is purely skills.setup.
+    assert sdk.build_env_name == ""
+    assert skills.build_env_value == ""
     assert skills.reuse_existing is True
-    assert skills.wheel_exclude_globs == ("*no_skills*.whl",)
-    assert baseline.build_env_value == "0"
+    assert skills.wheel_exclude_globs == ()
     assert baseline.reuse_existing is True
-    assert baseline.wheel_globs == ("*no_skills*.whl",)
+    assert baseline.wheel_globs == skills.wheel_globs == ("nvflare-*.whl", "nvflare_nightly-*.whl")
     assert sdk.evaluation_criteria().repo_relative_path == Path("dev_tools/agent/skill_evals")
     # NVFLARE dropped `nvflare agent skills install`; skills come from the
     # Agent Skills CLI against a configurable git source.
@@ -1060,3 +1061,29 @@ def test_resolve_skills_source_ref_from_local_remote(tmp_path):
         resolve_skills_source_ref("upstream#main", repo)
     with pytest.raises(SystemExit, match="no SDK repo checkout"):
         resolve_skills_source_ref("origin#main", None)
+
+
+def test_variant_wheel_mismatch_fails_without_build_toggle(tmp_path):
+    """Different staged bytes across variants must fail when no toggle exists.
+
+    Issue #1: with reuse_existing and stale wheels in dist/, the benchmark
+    could silently compare an old SDK baseline against a new skills build.
+    """
+
+    from types import SimpleNamespace
+
+    import pytest
+
+    from benchmark.harness.host.build import PreparedSdkWheel, verify_identical_variant_wheels
+
+    sdk = SimpleNamespace(build_env_name="", package_name="nvflare")
+    a = tmp_path / "nvflare-new.whl"
+    b = tmp_path / "nvflare-stale.whl"
+    a.write_bytes(b"new wheel bytes")
+    b.write_bytes(b"stale wheel bytes")
+    same = PreparedSdkWheel(wheel=a, source_type="repo", source_path=tmp_path)
+    stale = PreparedSdkWheel(wheel=b, source_type="repo", source_path=tmp_path)
+
+    verify_identical_variant_wheels(sdk, same, same)  # identical: no raise
+    with pytest.raises(SystemExit, match="wheel mismatch"):
+        verify_identical_variant_wheels(sdk, same, stale)

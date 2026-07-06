@@ -41,23 +41,26 @@ source:
     - nvflare/
 
 # Required wheel preparation contract.
+#
+# NVFLARE PR #4837 removed the wheel-bundling build hook
+# (NVFLARE_PACKAGE_AGENT_SKILLS / *no_skills* wheels): the SDK wheel is now
+# IDENTICAL in both images, and the skills-vs-baseline distinction is purely
+# skills.setup (the npx skills add step runs only in the skills image). Both
+# variants therefore stage the same nvflare wheel; the build fails if they
+# somehow stage different bytes (a stale dist/ wheel would corrupt the A/B).
 build:
   type: uv_wheel
-  env_name: NVFLARE_PACKAGE_AGENT_SKILLS
   variants:
     skills:
       label: skills
-      build_env_value: "1"
       wheel_globs:
         - nvflare-*.whl
         - nvflare_nightly-*.whl
-      wheel_exclude_globs:
-        - "*no_skills*.whl"
     baseline:
       label: baseline
-      build_env_value: "0"
       wheel_globs:
-        - "*no_skills*.whl"
+        - nvflare-*.whl
+        - nvflare_nightly-*.whl
 
 # Optional SDK verification run after wheel install.
 docker:
