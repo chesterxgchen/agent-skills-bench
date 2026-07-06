@@ -80,13 +80,22 @@ docker:
 skills:
   setup:
     type: command
+    # --copy (not the default symlinks): the harness's capture/verification
+    # walkers skip symlinks by design. The CLI's own --yes must come AFTER the
+    # args (npx swallows a leading --yes), or it stops at an interactive skill
+    # selector. -a is repeated per agent; comma lists are rejected. The final
+    # bridge copies the CLI's canonical ./.agents/skills into the benchmark's
+    # contracted skill root when the CLI's per-agent layout differs from it.
     install_command: >-
       skills_agent="${BENCHMARK_DOCKER_AGENT}";
       if [ "${skills_agent}" = "claude" ] || [ "${skills_agent}" = "claude-code" ];
       then agent_flags="-a claude-code";
       else agent_flags="-a claude-code -a ${skills_agent}";
       fi;
-      npx --yes skills add "${SKILLS_SOURCE_REF}" ${agent_flags}
+      npx --yes skills add "${SKILLS_SOURCE_REF}" ${agent_flags} --copy --yes
+      && mkdir -p "${BENCHMARK_AGENT_HOME}/skills"
+      && if [ -d .agents/skills ] && [ -z "$(ls -A "${BENCHMARK_AGENT_HOME}/skills" 2>/dev/null)" ];
+      then cp -R .agents/skills/. "${BENCHMARK_AGENT_HOME}/skills/"; fi
     source_ref: "NVIDIA/NVFlare#main"
     install_output: skills_build_install.json
     list_output: skills_list.json
