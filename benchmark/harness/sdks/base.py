@@ -48,6 +48,10 @@ class SdkSkillsSetup:
     install_output: str = "skills_build_install.json"
     list_output: str = "skills_list.json"
     expected_source: str = "local_sdk_wheel"
+    # Skills source for CLI installers that fetch from a repository (e.g.
+    # `npx skills add <repo>#<branch>`); exposed to the install command as the
+    # SKILLS_SOURCE_REF env var. BENCHMARK_SKILLS_SOURCE_REF overrides at build.
+    source_ref: str = ""
 
 
 @dataclass(frozen=True)

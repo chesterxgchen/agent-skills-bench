@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -299,6 +300,9 @@ class ConfigurableSdkAdapter(SdkAdapter):
             install_output=str(raw.get("install_output", "skills_build_install.json")),
             list_output=str(raw.get("list_output", "skills_list.json")),
             expected_source=str(raw.get("expected_source", "local_sdk_wheel")),
+            source_ref=str(
+                os.environ.get("BENCHMARK_SKILLS_SOURCE_REF") or raw.get("source_ref", "")
+            ).strip(),
         )
 
     def evaluation_criteria(self) -> SdkEvaluationCriteria:
@@ -317,6 +321,7 @@ class ConfigurableSdkAdapter(SdkAdapter):
             "SKILLS_INSTALL_OUTPUT": setup.install_output,
             "SKILLS_LIST_OUTPUT": setup.list_output,
             "SKILLS_INSTALL_EXPECTED_SOURCE": setup.expected_source,
+            "SKILLS_SOURCE_REF": setup.source_ref,
         }
 
     def metadata(self) -> dict[str, object]:

@@ -378,10 +378,14 @@ def test_nvflare_sdk_adapter_loads_build_contract():
     assert baseline.reuse_existing is True
     assert baseline.wheel_globs == ("*no_skills*.whl",)
     assert sdk.evaluation_criteria().repo_relative_path == Path("dev_tools/agent/skill_evals")
-    assert build_args["SKILLS_INSTALL_COMMAND"].startswith("nvflare agent skills install")
-    assert build_args["SKILLS_INSTALL_COMMAND"].endswith("--format json")
-    assert build_args["SKILLS_LIST_COMMAND"].startswith("nvflare agent skills list")
-    assert build_args["SKILLS_LIST_COMMAND"].endswith("--format json")
+    # NVFLARE dropped `nvflare agent skills install`; skills come from the
+    # Agent Skills CLI against a configurable git source.
+    assert 'npx --yes skills add "${SKILLS_SOURCE_REF}"' in build_args["SKILLS_INSTALL_COMMAND"]
+    assert "-a claude-code" in build_args["SKILLS_INSTALL_COMMAND"]
+    assert build_args["SKILLS_SOURCE_REF"] == "NVIDIA/NVFlare#main"
+    assert build_args["SKILLS_INSTALL_EXPECTED_SOURCE"] == "skills_cli"
+    # No SDK list CLI anymore: the harness's generic lister walks the target.
+    assert build_args["SKILLS_LIST_COMMAND"] == ""
 
 
 def test_configurable_sdk_adapter_loads_non_nvflare_contract(tmp_path):
@@ -962,3 +966,54 @@ def test_resolve_host_agent_cli_version_uses_real_adapter_probe(monkeypatch):
         build.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="codex-cli 0.142.5\n", stderr="")
     )
     assert build.resolve_host_agent_cli_version(adapter) == "0.142.5"
+
+
+def test_skills_source_ref_env_override(monkeypatch):
+    """BENCHMARK_SKILLS_SOURCE_REF picks the skills repo#branch for one build."""
+
+    from benchmark.harness.sdks.config import ConfigurableSdkAdapter
+
+    monkeypatch.setenv("BENCHMARK_SKILLS_SOURCE_REF", "chester/NVFlare#skills-experiment")
+    sdk = ConfigurableSdkAdapter(Path("config/sdks/nvflare-profile.yaml"))
+    assert sdk.docker_build_args()["SKILLS_SOURCE_REF"] == "chester/NVFlare#skills-experiment"
+
+
+def test_skills_setup_verifies_nonempty_install(tmp_path, monkeypatch):
+    """A successful-exit install that wrote nothing must fail the image build."""
+
+    import pytest
+
+    from benchmark.harness.container import sdk_skills_setup
+
+    monkeypatch.setenv("BENCHMARK_AGENT_HOME", str(tmp_path))
+    with pytest.raises(SystemExit, match="installed nothing"):
+        sdk_skills_setup.verify_skills_installed()
+
+    skill_dir = tmp_path / "skills" / "nvflare-convert-pytorch"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+    sdk_skills_setup.verify_skills_installed()  # non-empty: no raise
+
+
+def test_generic_skills_list_reports_names_not_paths(tmp_path, monkeypatch):
+    import json
+
+    from benchmark.harness.container import sdk_skills_setup
+    from benchmark.harness.reports._skill_usage import available_skill_names
+
+    monkeypatch.setenv("BENCHMARK_AGENT_HOME", str(tmp_path))
+    for skill in ("nvflare-convert-pytorch", "nvflare-orient"):
+        d = tmp_path / "skills" / skill
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+    shared = tmp_path / "skills" / ".nvflare-shared" / "references"
+    shared.mkdir(parents=True)
+    (shared / "common.md").write_text("ref\n", encoding="utf-8")
+
+    out = tmp_path / "skills_list.json"
+    sdk_skills_setup.write_generic_list(out)
+    payload = json.loads(out.read_text(encoding="utf-8"))
+
+    assert payload["available"] == [".nvflare-shared", "nvflare-convert-pytorch", "nvflare-orient"]
+    # The report layer's name filter drops the shared container and keeps skill NAMES.
+    assert available_skill_names(payload) == ["nvflare-convert-pytorch", "nvflare-orient"]

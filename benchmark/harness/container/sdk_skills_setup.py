@@ -98,6 +98,12 @@ def copy_skills_folder() -> dict:
     }
 
 
+def top_level_skill_names(target: Path) -> list[str]:
+    if not target.is_dir():
+        return []
+    return sorted(item.name for item in target.iterdir() if item.is_dir() and not item.is_symlink())
+
+
 def write_generic_list(output_path: Path, *, reason: str | None = None) -> None:
     target = skills_target()
     payload = {
@@ -105,6 +111,9 @@ def write_generic_list(output_path: Path, *, reason: str | None = None) -> None:
         "agent": env("BENCHMARK_DOCKER_AGENT", "unknown"),
         "mechanism": env("SKILLS_SETUP_TYPE", "none"),
         "target": str(target),
+        # Skill NAMES (top-level dirs) for report display; the full file walk
+        # stays under "installed" for provenance.
+        "available": top_level_skill_names(target),
         "installed": visible_files(target),
     }
     if reason:
@@ -112,10 +121,30 @@ def write_generic_list(output_path: Path, *, reason: str | None = None) -> None:
     write_json(output_path, payload)
 
 
+def verify_skills_installed() -> None:
+    """Fail the image build when the install command left the skill root empty.
+
+    The install command's exit code alone is not enough: a CLI installer given
+    a wrong agent id or source can succeed while writing somewhere else. The
+    contract output is ${BENCHMARK_AGENT_HOME}/skills — enforce it at build
+    time so a misconfigured install fails loudly here, not silently at run
+    grading time as "skills available: none".
+    """
+
+    target = skills_target()
+    if not visible_files(target):
+        raise SystemExit(
+            f"skills.setup command reported success but installed nothing under {target}. "
+            "Check the install command's agent flags and skills source "
+            f"(SKILLS_SOURCE_REF={env('SKILLS_SOURCE_REF')!r})."
+        )
+
+
 def write_setup_metadata(home: Path) -> None:
     payload = {
         "agent": env("BENCHMARK_DOCKER_AGENT", "unknown"),
         "command": env("SKILLS_INSTALL_COMMAND"),
+        "skills_source_ref": env("SKILLS_SOURCE_REF"),
         "expected_source": env("SKILLS_INSTALL_EXPECTED_SOURCE"),
         "network_isolation_enforced": False,
         "setup_type": env("SKILLS_SETUP_TYPE", "none"),
@@ -135,11 +164,12 @@ def main() -> int:
 
     if setup_type == "command":
         run_command(env("SKILLS_INSTALL_COMMAND"), install_output)
+        verify_skills_installed()
         list_command = env("SKILLS_LIST_COMMAND")
         if list_command:
             run_command(list_command, list_output)
         else:
-            write_generic_list(list_output, reason="SKILLS_LIST_COMMAND is empty")
+            write_generic_list(list_output)
     elif setup_type == "copy":
         write_json(install_output, copy_skills_folder())
         list_command = env("SKILLS_LIST_COMMAND")

@@ -64,14 +64,33 @@ docker:
   version_command: nvflare --version
 
 # Required skills setup contract for the skills image.
+#
+# NVFLARE removed the `nvflare agent skills install` CLI; skills now install
+# via the Agent Skills CLI from a git source: `npx skills add <repo>#<branch>`.
+# - source_ref is the <repo>#<branch> to install from; override one build with
+#   BENCHMARK_SKILLS_SOURCE_REF without editing this file.
+# - The command runs from /workspace (the image WORKDIR), so the CLI's
+#   project-scoped install lands at /workspace/.claude/skills and
+#   /workspace/.codex/skills — exactly the agents' configured skill roots
+#   (${BENCHMARK_AGENT_HOME}/skills).
+# - The Skills CLI agent id for the claude benchmark agent is `claude-code`;
+#   other agents (codex) install their own id ALONGSIDE claude-code so the
+#   claude-based report/investigator tooling in the same image sees skills too.
+# - No list_command: the harness's generic lister walks the installed target.
 skills:
   setup:
     type: command
-    install_command: nvflare agent skills install --agent "${BENCHMARK_DOCKER_AGENT}" --target "${BENCHMARK_AGENT_HOME}/skills" --format json
-    list_command: nvflare agent skills list --agent "${BENCHMARK_DOCKER_AGENT}" --target "${BENCHMARK_AGENT_HOME}/skills" --format json
+    install_command: >-
+      skills_agent="${BENCHMARK_DOCKER_AGENT}";
+      if [ "${skills_agent}" = "claude" ] || [ "${skills_agent}" = "claude-code" ];
+      then agent_flags="-a claude-code";
+      else agent_flags="-a claude-code -a ${skills_agent}";
+      fi;
+      npx --yes skills add "${SKILLS_SOURCE_REF}" ${agent_flags}
+    source_ref: "NVIDIA/NVFlare#main"
     install_output: skills_build_install.json
     list_output: skills_list.json
-    expected_source: local_sdk_wheel
+    expected_source: skills_cli
 
 evaluation:
   criteria_path: dev_tools/agent/skill_evals
