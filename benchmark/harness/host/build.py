@@ -438,6 +438,12 @@ def resolve_skills_source_ref(ref: str, repo_root: Path | None) -> str:
         return ref
     remote, branch = ref.split("#", 1)
     if not remote or "/" in remote or ":" in remote:
+        # Explicit owner/repo or URL ref. Rewrite an ssh URL to https here too —
+        # the image build clones without ssh keys, so a pasted ssh remote would
+        # only fail later inside the container.
+        explicit = re.match(r"^(?:ssh://)?git@([^:/]+)[:/](.+?)(?:\.git)?$", remote)
+        if explicit:
+            return f"https://{explicit.group(1)}/{explicit.group(2)}.git#{branch}"
         return ref
     if repo_root is None:
         raise SystemExit(

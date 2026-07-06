@@ -1049,6 +1049,11 @@ def test_resolve_skills_source_ref_from_local_remote(tmp_path):
     assert resolve_skills_source_ref("NVIDIA/NVFlare#main", repo) == "NVIDIA/NVFlare#main"
     url_ref = "https://github.com/NVIDIA/NVFlare.git#main"
     assert resolve_skills_source_ref(url_ref, repo) == url_ref
+    # An explicit ssh URL rewrites to https: the image build has no ssh keys.
+    assert (
+        resolve_skills_source_ref("git@github.com:NVIDIA/NVFlare.git#main", repo)
+        == "https://github.com/NVIDIA/NVFlare.git#main"
+    )
     assert resolve_skills_source_ref("", repo) == ""
 
     with pytest.raises(SystemExit, match="not found"):
