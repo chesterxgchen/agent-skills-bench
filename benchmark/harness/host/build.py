@@ -26,7 +26,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +53,7 @@ _env_repo = os.environ.get("SDK_REPO")
 REPO_ROOT = Path(_env_repo).expanduser().resolve() if _env_repo else None
 DEFAULT_UV_IMAGE = "ghcr.io/astral-sh/uv:0.11.19"
 DEFAULT_NODE_IMAGE = "node:22.16.0-bookworm-slim"
+STAGED_SDK_SKILLS_SOURCE_REF = "/tmp/sdk_skills"
 
 
 @dataclass(frozen=True)
@@ -488,9 +489,7 @@ def resolve_skills_source_ref(ref: str, repo_root: Path | None) -> str:
             f"Skills source ref {ref!r} names git remote {remote!r}, but no SDK repo checkout "
             "is configured (--sdk-repo/SDK_REPO)."
         )
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "remote", "get-url", remote], capture_output=True, text=True
-    )
+    result = subprocess.run(["git", "-C", str(repo_root), "remote", "get-url", remote], capture_output=True, text=True)
     if result.returncode != 0:
         raise SystemExit(
             f"Cannot resolve skills source ref {ref!r}: git remote {remote!r} not found in {repo_root}"
@@ -503,22 +502,28 @@ def resolve_skills_source_ref(ref: str, repo_root: Path | None) -> str:
     return f"{url}#{branch}"
 
 
+def sdk_skills_setup_uses_staged_source(setup: SdkSkillsSetup) -> bool:
+    if setup.setup_type == "copy":
+        return True
+    if setup.setup_type != "command":
+        return False
+    if STAGED_SDK_SKILLS_SOURCE_REF in setup.install_command or STAGED_SDK_SKILLS_SOURCE_REF in setup.list_command:
+        return True
+    if setup.source_ref:
+        return setup.source_ref.rstrip("/") == STAGED_SDK_SKILLS_SOURCE_REF
+    return False
+
+
 def resolve_sdk_skills_setup(sdk: SdkAdapter) -> SdkSkillsSetup:
     setup = sdk.skills_setup(repo_root=REPO_ROOT or Path(), home=Path.home())
-    if setup.setup_type == "copy" and setup.source_path is None:
+    uses_staged_source = sdk_skills_setup_uses_staged_source(setup)
+    if uses_staged_source and setup.source_path is None:
         raise SystemExit(f"{sdk.display_name} SDK profile skills.setup.source_path is required")
-    if setup.source_path is not None:
+    if uses_staged_source:
         source_path = canonical_dir(setup.source_path, "SDK profile skills.setup.source_path")
-        return SdkSkillsSetup(
-            setup_type=setup.setup_type,
-            source_path=source_path,
-            install_command=setup.install_command,
-            list_command=setup.list_command,
-            install_output=setup.install_output,
-            list_output=setup.list_output,
-            expected_source=setup.expected_source,
-            source_ref=setup.source_ref,
-        )
+        return replace(setup, source_path=source_path)
+    if setup.source_path is not None:
+        return replace(setup, source_path=None)
     return setup
 
 
@@ -911,10 +916,12 @@ def main(argv: list[str] | None = None) -> int:
         skills_setup = resolve_sdk_skills_setup(sdk) if build_skills_image else SdkSkillsSetup(setup_type="none")
         targets = adapter.image_targets()
         sdk_build_args = sdk.docker_build_args()
-        if sdk_build_args.get("SKILLS_SOURCE_REF"):
+        if build_skills_image and sdk_build_args.get("SKILLS_SOURCE_REF"):
             sdk_build_args["SKILLS_SOURCE_REF"] = resolve_skills_source_ref(
                 sdk_build_args["SKILLS_SOURCE_REF"], REPO_ROOT
             )
+        elif not build_skills_image:
+            sdk_build_args.pop("SKILLS_SOURCE_REF", None)
         host_cli_version = resolve_host_agent_cli_version(adapter)
         agent_build_args = adapter.build_args(cli_version=host_cli_version)
     except ValueError as exc:

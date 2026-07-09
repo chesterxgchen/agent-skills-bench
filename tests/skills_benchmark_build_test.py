@@ -335,6 +335,49 @@ def test_build_main_routes_prepared_evaluation_to_both_image_metadata(tmp_path, 
     assert all(call["evaluation"].source_path == rules for call in metadata_calls)
 
 
+def test_build_main_skip_skills_image_omits_skills_source_ref(tmp_path, monkeypatch):
+    from benchmark.harness.host import build
+    from benchmark.harness.sdks.base import SdkSource
+
+    rules = tmp_path / "rules.yaml"
+    rules.write_text("schema_version: 1\nsdk: example\nsignals: {}\n", encoding="utf-8")
+    wheel = tmp_path / "example.whl"
+    wheel.write_bytes(b"wheel")
+    sdk = SimpleNamespace(
+        name="example",
+        display_name="Example SDK",
+        package_name="example",
+        build_env_name="",
+        wheel_build=lambda: SimpleNamespace(build_type="uv_wheel"),
+        wheel_variant=lambda name: SimpleNamespace(name=name, label=name, build_env_value=""),
+        docker_build_args=lambda: {"SKILLS_SOURCE_REF": "origin#branch"},
+    )
+    adapter = SimpleNamespace(
+        name="agent",
+        display_name="Agent",
+        availability_probe=[],
+        image_targets=lambda: SimpleNamespace(skills="skills", baseline="baseline", report="report"),
+        build_args=lambda *, cli_version="": {},
+    )
+    monkeypatch.setattr(build, "REPO_ROOT", None)
+    monkeypatch.setattr(build, "load_sdk_profile", lambda _profile: sdk)
+    monkeypatch.setattr(build, "load_agent_profile", lambda _profile: adapter)
+    monkeypatch.setattr(build, "resolve_sdk_source", lambda _sdk: SdkSource(source_type="repo", repo_path=tmp_path))
+    monkeypatch.setattr(
+        build,
+        "resolve_skills_source_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected skills ref resolution")),
+    )
+    monkeypatch.setattr(build, "prepare_sdk_wheel", lambda **_kwargs: build.PreparedSdkWheel(wheel, "repo", tmp_path))
+    monkeypatch.setattr(build, "write_wheel_metadata", lambda **_kwargs: None)
+    docker_calls = []
+    monkeypatch.setattr(build, "docker_build", lambda **kwargs: docker_calls.append(kwargs))
+
+    assert build.main(["--skip-skills-image", "--evaluation-criteria", str(rules)]) == 0
+    assert [call["target"] for call in docker_calls] == ["baseline"]
+    assert "SKILLS_SOURCE_REF" not in docker_calls[0]["sdk_build_args"]
+
+
 def test_latest_sdk_wheel_skips_stat_failures(tmp_path, monkeypatch):
     from benchmark.harness.host import build
 
@@ -838,6 +881,51 @@ skills:
     assert setup.setup_type == "command"
     assert setup.source_ref == "/tmp/sdk_skills"
     assert (context / "sdk_skills" / "README.md").read_text(encoding="utf-8") == "example skill\n"
+
+
+def test_command_skills_setup_source_ref_override_skips_local_staging(tmp_path, monkeypatch):
+    from benchmark.harness.host import build
+    from benchmark.harness.sdks.config import ConfigurableSdkAdapter
+
+    config_path = tmp_path / "example_sdk_command_skills.yaml"
+    config_path.write_text(
+        f"""
+name: example
+display_name: Example SDK
+package_name: example-sdk
+import_name: example_sdk
+source:
+  type: wheels
+  wheels:
+    skills: {tmp_path / "skills.whl"}
+    baseline: {tmp_path / "baseline.whl"}
+build:
+  type: provided_wheels
+  variants:
+    skills:
+      wheel_globs:
+        - "*.whl"
+    baseline:
+      wheel_globs:
+        - "*.whl"
+docker: {{}}
+skills:
+  setup:
+    type: command
+    source_path: {tmp_path / "missing-skills"}
+    install_command: npx --yes skills add "${{SKILLS_SOURCE_REF}}" --copy --yes
+    source_ref: /tmp/sdk_skills
+    expected_source: skills_cli
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BENCHMARK_SKILLS_SOURCE_REF", "owner/repo#branch")
+    sdk = ConfigurableSdkAdapter(config_path)
+
+    setup = build.resolve_sdk_skills_setup(sdk)
+
+    assert setup.source_ref == "owner/repo#branch"
+    assert setup.source_path is None
 
 
 def test_container_sdk_skills_setup_copy_mode_installs_staged_folder(tmp_path, monkeypatch):
