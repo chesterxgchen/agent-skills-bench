@@ -69,9 +69,10 @@ docker:
 # Required skills setup contract for the skills image.
 #
 # NVFLARE removed the `nvflare agent skills install` CLI; skills now install
-# via the Agent Skills CLI from a git source: `npx skills add <repo>#<branch>`.
-# - source_ref is the <repo>#<branch> to install from; override one build with
-#   BENCHMARK_SKILLS_SOURCE_REF without editing this file.
+# via the Agent Skills CLI from the SDK checkout's local skills/ tree.
+# - source_path is staged into the Docker build context as /tmp/sdk_skills.
+# - source_ref is the path passed to `npx skills add`; override one build with
+#   BENCHMARK_SKILLS_SOURCE_REF to install from a published repo/branch instead.
 # - The command runs from /workspace (the image WORKDIR), so the CLI's
 #   project-scoped install lands at /workspace/.claude/skills and
 #   /workspace/.codex/skills — exactly the agents' configured skill roots
@@ -89,6 +90,7 @@ skills:
     # selector. -a is repeated per agent; comma lists are rejected. The final
     # bridge copies the CLI's canonical ./.agents/skills into the benchmark's
     # contracted skill root when the CLI's per-agent layout differs from it.
+    source_path: "{repo_root}/skills"
     install_command: >-
       skills_agent="${BENCHMARK_DOCKER_AGENT}";
       if [ "${skills_agent}" = "claude" ] || [ "${skills_agent}" = "claude-code" ];
@@ -99,13 +101,10 @@ skills:
       && mkdir -p "${BENCHMARK_AGENT_HOME}/skills"
       && if [ -d .agents/skills ] && [ -z "$(ls -A "${BENCHMARK_AGENT_HOME}/skills" 2>/dev/null)" ];
       then cp -R .agents/skills/. "${BENCHMARK_AGENT_HOME}/skills/"; fi
-    # Development skills branch (milestone 8). `origin#<branch>` resolves the
-    # repo URL from the local SDK checkout's git config at build time, so each
-    # developer installs from THEIR fork without editing this profile.
-    # Explicit forms also work: owner/repo#branch or a full URL#branch.
-    # Switch to NVIDIA/NVFlare#main once the agent-skills work merges;
-    # BENCHMARK_SKILLS_SOURCE_REF still overrides a single build.
-    source_ref: "origin#milestone8-agent-skills"
+    # Default to the staged local SDK checkout so unpublished/local branches work
+    # without pushing. Explicit published forms also work via
+    # BENCHMARK_SKILLS_SOURCE_REF: owner/repo#branch or a full URL#branch.
+    source_ref: "/tmp/sdk_skills"
     install_output: skills_build_install.json
     list_output: skills_list.json
     expected_source: skills_cli

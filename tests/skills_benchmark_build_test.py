@@ -380,11 +380,11 @@ def test_nvflare_sdk_adapter_loads_build_contract():
     assert baseline.wheel_globs == skills.wheel_globs == ("nvflare-*.whl", "nvflare_nightly-*.whl")
     assert sdk.evaluation_criteria().repo_relative_path == Path("dev_tools/agent/skill_evals")
     # NVFLARE dropped `nvflare agent skills install`; skills come from the
-    # Agent Skills CLI against a configurable git source.
+    # Agent Skills CLI against the staged local SDK skills tree by default.
     assert 'npx --yes skills add "${SKILLS_SOURCE_REF}"' in build_args["SKILLS_INSTALL_COMMAND"]
     assert "-a claude-code" in build_args["SKILLS_INSTALL_COMMAND"]
-    # Remote-relative dev ref; build-time resolution maps it to the checkout's origin URL.
-    assert build_args["SKILLS_SOURCE_REF"] == "origin#milestone8-agent-skills"
+    assert sdk.skills_setup(repo_root=Path("/sdk"), home=Path.home()).source_path == Path("/sdk/skills")
+    assert build_args["SKILLS_SOURCE_REF"] == "/tmp/sdk_skills"
     assert build_args["SKILLS_INSTALL_EXPECTED_SOURCE"] == "skills_cli"
     # No SDK list CLI anymore: the harness's generic lister walks the target.
     assert build_args["SKILLS_LIST_COMMAND"] == ""
@@ -786,6 +786,57 @@ skills:
     build.stage_sdk_skills_setup(context, setup)
 
     assert setup.setup_type == "copy"
+    assert (context / "sdk_skills" / "README.md").read_text(encoding="utf-8") == "example skill\n"
+
+
+def test_command_skills_setup_stages_profile_skills_folder(tmp_path):
+    from benchmark.harness.host import build
+    from benchmark.harness.sdks.config import ConfigurableSdkAdapter
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "README.md").write_text("example skill\n", encoding="utf-8")
+    config_path = tmp_path / "example_sdk_command_skills.yaml"
+    config_path.write_text(
+        f"""
+name: example
+display_name: Example SDK
+package_name: example-sdk
+import_name: example_sdk
+source:
+  type: wheels
+  wheels:
+    skills: {tmp_path / "skills.whl"}
+    baseline: {tmp_path / "baseline.whl"}
+build:
+  type: provided_wheels
+  variants:
+    skills:
+      wheel_globs:
+        - "*.whl"
+    baseline:
+      wheel_globs:
+        - "*.whl"
+docker: {{}}
+skills:
+  setup:
+    type: command
+    source_path: {skills_dir}
+    install_command: npx skills add /tmp/sdk_skills
+    source_ref: /tmp/sdk_skills
+    expected_source: skills_cli
+""".lstrip(),
+        encoding="utf-8",
+    )
+    sdk = ConfigurableSdkAdapter(config_path)
+    setup = build.resolve_sdk_skills_setup(sdk)
+    context = tmp_path / "context"
+    context.mkdir()
+
+    build.stage_sdk_skills_setup(context, setup)
+
+    assert setup.setup_type == "command"
+    assert setup.source_ref == "/tmp/sdk_skills"
     assert (context / "sdk_skills" / "README.md").read_text(encoding="utf-8") == "example skill\n"
 
 

@@ -505,9 +505,9 @@ def resolve_skills_source_ref(ref: str, repo_root: Path | None) -> str:
 
 def resolve_sdk_skills_setup(sdk: SdkAdapter) -> SdkSkillsSetup:
     setup = sdk.skills_setup(repo_root=REPO_ROOT or Path(), home=Path.home())
-    if setup.setup_type == "copy":
-        if setup.source_path is None:
-            raise SystemExit(f"{sdk.display_name} SDK profile skills.setup.source_path is required")
+    if setup.setup_type == "copy" and setup.source_path is None:
+        raise SystemExit(f"{sdk.display_name} SDK profile skills.setup.source_path is required")
+    if setup.source_path is not None:
         source_path = canonical_dir(setup.source_path, "SDK profile skills.setup.source_path")
         return SdkSkillsSetup(
             setup_type=setup.setup_type,
@@ -517,6 +517,7 @@ def resolve_sdk_skills_setup(sdk: SdkAdapter) -> SdkSkillsSetup:
             install_output=setup.install_output,
             list_output=setup.list_output,
             expected_source=setup.expected_source,
+            source_ref=setup.source_ref,
         )
     return setup
 
@@ -524,10 +525,8 @@ def resolve_sdk_skills_setup(sdk: SdkAdapter) -> SdkSkillsSetup:
 def stage_sdk_skills_setup(context: Path, setup: SdkSkillsSetup) -> None:
     target = context / "sdk_skills"
     clean_directory(target)
-    if setup.setup_type != "copy":
-        return
     if setup.source_path is None:
-        raise SystemExit("SDK profile skills.setup.source_path is required for copy setup")
+        return
     copy_directory_contents(setup.source_path, target)
     emit(f"Using SDK skills folder: {setup.source_path}")
 
@@ -899,6 +898,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--uv-image", default=DEFAULT_UV_IMAGE, help="uv image used as the Docker uv source stage.")
     parser.add_argument("--node-image", default=DEFAULT_NODE_IMAGE, help="Node runtime image used as the Docker base.")
     args = parser.parse_args(argv)
+    build_skills_image = not args.skip_skills_image
+    build_baseline_image = not args.skip_baseline_image
 
     try:
         adapter = load_agent_profile(args.agent_profile)
@@ -906,7 +907,8 @@ def main(argv: list[str] | None = None) -> int:
         wheel_build = sdk.wheel_build()
         skills_variant = sdk.wheel_variant("skills")
         baseline_variant = sdk.wheel_variant("baseline")
-        skills_setup = resolve_sdk_skills_setup(sdk)
+        source = resolve_sdk_source(sdk) if build_skills_image or build_baseline_image else None
+        skills_setup = resolve_sdk_skills_setup(sdk) if build_skills_image else SdkSkillsSetup(setup_type="none")
         targets = adapter.image_targets()
         sdk_build_args = sdk.docker_build_args()
         if sdk_build_args.get("SKILLS_SOURCE_REF"):
@@ -921,8 +923,6 @@ def main(argv: list[str] | None = None) -> int:
     image_name = targets.skills
     baseline_image_name = targets.baseline
     report_image_name = targets.report
-    build_skills_image = not args.skip_skills_image
-    build_baseline_image = not args.skip_baseline_image
 
     context = None
     try:
@@ -941,7 +941,7 @@ def main(argv: list[str] | None = None) -> int:
                 emit(f"Skills source: {sdk_build_args['SKILLS_SOURCE_REF']}")
             stage_sdk_skills_setup(context, skills_setup)
         if build_skills_image or build_baseline_image:
-            source = resolve_sdk_source(sdk)
+            assert source is not None
             if source.source_type == "repo":
                 emit(f"Using SDK repo: {source.repo_path}")
             else:
