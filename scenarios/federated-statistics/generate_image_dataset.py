@@ -56,28 +56,17 @@ def png_bytes(pixels: list[list[int]]) -> bytes:
 
     def chunk(tag: bytes, payload: bytes) -> bytes:
         return (
-            struct.pack(">I", len(payload))
-            + tag
-            + payload
-            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+            struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
         )
 
     height, width = len(pixels), len(pixels[0])
     header = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)  # 8-bit grayscale
     raw = b"".join(b"\x00" + bytes(row) for row in pixels)  # filter 0 per scanline
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", header)
-        + chunk(b"IDAT", zlib.compress(raw, 9))
-        + chunk(b"IEND", b"")
-    )
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
 
 
 def synthesize_image(size: int, mean: float, stddev: float, rng: random.Random) -> list[list[int]]:
-    return [
-        [max(0, min(255, int(round(rng.gauss(mean, stddev))))) for _ in range(size)]
-        for _ in range(size)
-    ]
+    return [[max(0, min(255, int(round(rng.gauss(mean, stddev))))) for _ in range(size)] for _ in range(size)]
 
 
 def main() -> int:
@@ -111,7 +100,7 @@ def main() -> int:
     (out / "README.md").write_text(
         "# Image Extract for Federated Statistics\n\n"
         "Each site keeps its own imaging data: `site-1/`, `site-2/`, and\n"
-        "`site-3/`, each a flat folder of 8-bit grayscale PNG files (64x64).\n"
+        f"`site-3/`, each a flat folder of 8-bit grayscale PNG files ({args.size}x{args.size}).\n"
         "There is no train/valid split. Per-site image counts:\n\n"
         + "".join(f"- {site}: {profile[0]} images\n" for site, profile in SITE_PROFILES.items())
         + "\nIntended statistics: per-site and Global image counts and\n"
