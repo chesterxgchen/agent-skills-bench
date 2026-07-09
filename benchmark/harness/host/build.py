@@ -687,6 +687,21 @@ def build_sdk_wheel_from_repo(
             temp_build_dir.cleanup()
 
 
+def stage_shared_variant_wheel(prepared: PreparedSdkWheel, out_dir: Path) -> PreparedSdkWheel:
+    """Stage the wheel one variant already prepared into another variant's dir.
+
+    Without a build-time variant toggle both images must stage IDENTICAL wheel
+    bytes, and a second ``uv build`` of the same source is never byte-identical
+    (archive timestamps differ) — so the second variant copies the first
+    variant's staged wheel instead of building its own.
+    """
+
+    clean_wheels(out_dir)
+    target = out_dir / prepared.wheel.name
+    shutil.copy2(prepared.wheel, target)
+    return PreparedSdkWheel(wheel=target, source_type=prepared.source_type, source_path=prepared.source_path)
+
+
 def verify_identical_variant_wheels(
     sdk: SdkAdapter, skills_prepared: PreparedSdkWheel, baseline_prepared: PreparedSdkWheel
 ) -> None:
@@ -958,15 +973,22 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
             if build_baseline_image:
-                baseline_prepared = prepare_sdk_wheel(
-                    source=source,
-                    wheel_build=wheel_build,
-                    sdk=sdk,
-                    variant=baseline_variant,
-                    out_dir=context / "dist" / "baseline",
-                    rebuild=args.rebuild,
-                )
-                emit(f"Using baseline wheel: {baseline_prepared.wheel.name}")
+                if build_skills_image and not sdk.build_env_name and wheel_build.build_type == "uv_wheel":
+                    # No variant toggle: reuse the exact wheel the skills
+                    # variant staged (see stage_shared_variant_wheel) — a
+                    # second build would fail the identical-bytes check below.
+                    baseline_prepared = stage_shared_variant_wheel(skills_prepared, context / "dist" / "baseline")
+                    emit(f"Using baseline wheel: {baseline_prepared.wheel.name} (shared with skills variant)")
+                else:
+                    baseline_prepared = prepare_sdk_wheel(
+                        source=source,
+                        wheel_build=wheel_build,
+                        sdk=sdk,
+                        variant=baseline_variant,
+                        out_dir=context / "dist" / "baseline",
+                        rebuild=args.rebuild,
+                    )
+                    emit(f"Using baseline wheel: {baseline_prepared.wheel.name}")
                 write_wheel_metadata(
                     sdk=sdk,
                     variant=baseline_variant,

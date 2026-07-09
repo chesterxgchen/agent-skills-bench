@@ -1087,3 +1087,24 @@ def test_variant_wheel_mismatch_fails_without_build_toggle(tmp_path):
     verify_identical_variant_wheels(sdk, same, same)  # identical: no raise
     with pytest.raises(SystemExit, match="wheel mismatch"):
         verify_identical_variant_wheels(sdk, same, stale)
+
+
+def test_stage_shared_variant_wheel_copies_identical_bytes(tmp_path):
+    from benchmark.harness.host import build
+    from benchmark.harness.host.build import PreparedSdkWheel, stage_shared_variant_wheel
+
+    skills_dir = tmp_path / "dist" / "skills"
+    skills_dir.mkdir(parents=True)
+    wheel = skills_dir / "nvflare_nightly-2.8.0rc1-py3-none-any.whl"
+    wheel.write_bytes(b"wheel-bytes")
+    stale = tmp_path / "dist" / "baseline"
+    stale.mkdir(parents=True)
+    (stale / "nvflare_nightly-old-py3-none-any.whl").write_bytes(b"stale")
+
+    prepared = PreparedSdkWheel(wheel=wheel, source_type="repo", source_path=tmp_path)
+    shared = stage_shared_variant_wheel(prepared, stale)
+
+    assert shared.wheel == stale / wheel.name
+    assert shared.wheel.read_bytes() == b"wheel-bytes"
+    assert not (stale / "nvflare_nightly-old-py3-none-any.whl").exists()
+    assert build.file_sha256(shared.wheel) == build.file_sha256(wheel)
