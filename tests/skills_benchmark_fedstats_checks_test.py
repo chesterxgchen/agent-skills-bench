@@ -139,6 +139,42 @@ def test_find_statistics_output_honors_selected_result_artifact_env(tmp_path, mo
     assert score == 0
 
 
+def test_find_statistics_output_scores_best_declared_result_artifact_match(tmp_path, monkeypatch):
+    record_dir = tmp_path / "record"
+    record_dir.mkdir()
+    scoring_stats = json.dumps(
+        {
+            "site-1": {"age": {"count": 12}},
+            "global": {"age": {"count": 40}},
+        }
+    )
+    selected_dummy = "workspace/server/simulate_job/statistics/dummy.json"
+    valid_stats = "workspace/server/simulate_job/statistics/fedstats.json"
+    write_workspace_delta(
+        record_dir,
+        {
+            "runtime_artifacts": [
+                (selected_dummy, "runtime_artifacts/dummy.json", '{"valid": true}'),
+                (valid_stats, "runtime_artifacts/fedstats.json", scoring_stats),
+                (
+                    "workspace/server/simulate_job/statistics/unmatched_stats.json",
+                    "runtime_artifacts/unmatched_stats.json",
+                    scoring_stats,
+                ),
+            ],
+        },
+    )
+    monkeypatch.setenv("ACCEPTANCE_RESULT_ARTIFACT_MATCH", selected_dummy)
+    monkeypatch.setenv("ACCEPTANCE_RESULT_ARTIFACT_MATCHES", json.dumps([selected_dummy, valid_stats]))
+
+    rel, leaves, key_paths, score = fedstats_checks.find_statistics_output(record_dir, {"numeric_features": ["age"]})
+
+    assert rel == valid_stats
+    assert leaves
+    assert "global/age/count" in key_paths
+    assert score == 2
+
+
 def test_min_count_weakening_detects_python_json_and_yaml_configs(tmp_path):
     record_dir = tmp_path / "record"
     record_dir.mkdir()

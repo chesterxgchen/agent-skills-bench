@@ -93,16 +93,34 @@ def result_artifact_match_path() -> str | None:
     return normalize_workspace_path(selected) if selected else None
 
 
-def captured_statistics_json_files(record_dir: Path, selected_result_artifact: str | None = None):
-    """Captured JSON payloads matching the selected simulator stats artifact.
+def result_artifact_match_paths() -> set[str] | None:
+    raw_matches = os.environ.get("ACCEPTANCE_RESULT_ARTIFACT_MATCHES", "").strip()
+    if raw_matches:
+        try:
+            parsed_matches = json.loads(raw_matches)
+        except ValueError:
+            parsed_matches = None
+        if isinstance(parsed_matches, list):
+            matches = {
+                normalize_workspace_path(match.strip())
+                for match in parsed_matches
+                if isinstance(match, str) and match.strip()
+            }
+            if matches:
+                return matches
+    selected = result_artifact_match_path()
+    return {selected} if selected else None
 
-    When the harness provides ACCEPTANCE_RESULT_ARTIFACT_MATCH, the numeric
-    checks judge that same JSON instead of searching for a better-scoring file
-    elsewhere in the captured workspace.
+
+def captured_statistics_json_files(record_dir: Path, selected_result_artifacts: set[str] | None = None):
+    """Captured JSON payloads matching the declared simulator stats artifacts.
+
+    When the harness provides result-artifact matches, the numeric checks judge
+    only those JSONs instead of searching for a better-scoring file elsewhere
+    in the captured workspace.
     """
 
     seen = set()
-    selected = normalize_workspace_path(selected_result_artifact) if selected_result_artifact else None
     manifest_path = record_dir / "workspace_delta_manifest.json"
     manifest = {}
     if manifest_path.is_file():
@@ -118,7 +136,7 @@ def captured_statistics_json_files(record_dir: Path, selected_result_artifact: s
             artifact = item.get("artifact_path")
             captured = record_dir / "workspace_delta" / str(artifact) if artifact else None
             if (
-                (selected is not None and path != selected)
+                (selected_result_artifacts is not None and path not in selected_result_artifacts)
                 or not path.endswith(".json")
                 or not glob_matches(path, STATISTICS_ARTIFACT_GLOB)
                 or captured is None
@@ -221,7 +239,7 @@ def find_statistics_output(record_dir: Path, truth: dict):
 
     best = (None, None, (), 0)
     probe_features = truth["numeric_features"][:5]
-    selected = result_artifact_match_path()
+    selected = result_artifact_match_paths()
     for rel, captured in captured_statistics_json_files(record_dir, selected):
         try:
             payload = json.loads(captured.read_text(encoding="utf-8", errors="replace"))
