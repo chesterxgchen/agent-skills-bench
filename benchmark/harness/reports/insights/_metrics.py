@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from ...metric_artifacts import (
     metric_is_runtime_result_artifact,
@@ -171,6 +171,60 @@ def result_metric_scalar_available(run: RunEvidence, metric_name: str | None = N
     return metric_value(run, canonical_metric_name(metric_name) if metric_name else None, ev) is not None
 
 
+def _quality_check_sources(run: RunEvidence) -> list[Mapping[str, Any]]:
+    sources: list[Mapping[str, Any]] = []
+    for source in (run.record, run.summary):
+        if isinstance(source, Mapping):
+            sources.append(source)
+    raw = run.raw if isinstance(run.raw, Mapping) else {}
+    for key in ("record", "run", "acceptance_checks"):
+        source = raw.get(key)
+        if isinstance(source, Mapping):
+            sources.append(source)
+    return sources
+
+
+def _failed_critical_quality_check(check: Any) -> bool:
+    if not isinstance(check, Mapping):
+        return False
+    severity = str(check.get("severity") or "").lower()
+    status = str(check.get("status") or "").lower()
+    return severity == "critical" and (check.get("passed") is False or status in {"fail", "failed", "error"})
+
+
+def _quality_check_detail(value: Any, *, max_chars: int = 600) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def _failed_critical_quality_check_issues(run: RunEvidence) -> list[str]:
+    issues: list[str] = []
+    seen: set[str] = set()
+    saw_failed_flag = False
+    for source in _quality_check_sources(run):
+        saw_failed_flag = saw_failed_flag or source.get("critical_quality_checks_failed") is True
+        for key in ("quality_checks", "checks"):
+            checks = source.get(key)
+            if not isinstance(checks, list):
+                continue
+            for check in checks:
+                if not _failed_critical_quality_check(check):
+                    continue
+                check_id = _quality_check_detail(check.get("id") or "critical_quality_check", max_chars=80)
+                evidence = _quality_check_detail(check.get("evidence"))
+                status = _quality_check_detail(check.get("status"), max_chars=80)
+                detail = evidence or (f"status={status}" if status else "critical quality check failed")
+                issue = f"Failed check `{check_id}`: {detail}"
+                if issue not in seen:
+                    issues.append(issue)
+                    seen.add(issue)
+    if not issues and saw_failed_flag:
+        issues.append("Failed check `critical_quality_checks`: one or more critical quality checks failed.")
+    return issues
+
+
 def _plugin_metric_quality_issue(run: RunEvidence, ev: Any = None) -> str:
     assessment = getattr(ev, "metric", None) if ev is not None else None
     if assessment is None or not getattr(assessment, "gate_phrase", None):
@@ -222,6 +276,7 @@ def run_quality_issues(run: RunEvidence, ev: Any = None) -> list[str]:
         reason = str(getattr(job_execution, "status_reason", "") or "").strip()
         detail = f": {reason}" if reason else ""
         issues.append(f"Failed check `job_execution`: job status is `{job_status}`{detail}.")
+    issues.extend(_failed_critical_quality_check_issues(run))
     record = run.record if isinstance(run.record, dict) else {}
     signal = quality_signal(record)
     expected = signal.get("expected_primary_metric")

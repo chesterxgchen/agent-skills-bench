@@ -583,6 +583,49 @@ def test_plugin_selected_scalar_clears_scalar_availability_checks():
     assert benchmark_insights.run_quality_issues(run, toy_ev)  # non-empty
 
 
+def test_nvflare_fedstats_acceptance_failure_blocks_passed_report():
+    """A task result artifact is not enough when the declared acceptance gate fails."""
+
+    from benchmark.harness.reports import benchmark_insights
+    from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
+
+    run = _run(
+        {
+            "available": True,
+            "label": "Run",
+            "evaluation_task": "federated-statistics",
+            "workspace_delta": {
+                "runtime_artifacts": [
+                    {
+                        "path": "workspace/server/simulate_job/statistics/fedstats.json",
+                        "artifact_path": "runtime_artifacts/fedstats.json",
+                    }
+                ]
+            },
+            "acceptance_checks": {
+                "checks": [
+                    {
+                        "id": "statistics_semantics",
+                        "severity": "critical",
+                        "passed": False,
+                        "status": "fail",
+                        "evidence": "global age count missing",
+                    }
+                ]
+            },
+        }
+    )
+
+    nv_ev = NvflareReportPlugin().collect(run)
+
+    assert nv_ev.job_execution.status == "completed"
+    assert nv_ev.metric.gate_phrase == "declared federated-statistics result gate satisfied"
+    issues = benchmark_insights.run_quality_issues(run, nv_ev)
+    assert issues == ["Failed check `statistics_semantics`: global age count missing"]
+    assert benchmark_insights.run_status_kind(run, nv_ev) == "needs review"
+    assert benchmark_insights.benchmark_outcome(run, nv_ev).startswith("fail: Failed check `statistics_semantics`")
+
+
 def test_nvflare_runtime_log_artifact_scalar_is_plugin_accepted():
     """Captured runtime logs are runtime evidence, but the NVFLARE plugin owns that call.
 

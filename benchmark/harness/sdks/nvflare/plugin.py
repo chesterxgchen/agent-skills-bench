@@ -131,8 +131,9 @@ class NvflareReportPlugin(ReportPlugin):
         )
 
     def assess_metric(self, run: RunEvidence, expected: Any) -> MetricAssessment:
-        if _logic._resolved_evaluation_task(run.raw) != "conversion":
-            return MetricAssessment()
+        task = _logic._resolved_evaluation_task(run.raw)
+        if task != "conversion":
+            return MetricAssessment(gate_phrase=self._task_result_gate_phrase(task))
         # Delegate to the SAME source the report consumes: the bundle's
         # validation_metric (artifact_metric or record_metric), not a record-only
         # re-derivation — so routing cannot shift output.
@@ -185,6 +186,12 @@ class NvflareReportPlugin(ReportPlugin):
             return value
         entry = plausible_fl_summary_entry(name, metric.get("reported_value_entries"))
         return entry.get("value") if entry else None
+
+    @staticmethod
+    def _task_result_gate_phrase(task: str) -> str:
+        if task == "federated-statistics":
+            return "declared federated-statistics result gate satisfied"
+        return "declared task result gate satisfied"
 
     @staticmethod
     def _is_runtime_result_metric(metric: dict[str, Any]) -> bool:
