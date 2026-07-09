@@ -1061,6 +1061,8 @@ def write_benchmark_reports(result_root: Path, *, logs: Iterable[Path] = ()) -> 
             emit(f"Metrics report failed: {type(exc).__name__}: {exc}", logs=logs, stderr=True)
             statuses["metrics_report"] = 1
         else:
+            with suppress(OSError):
+                (result_root / "metrics_report_error.json").unlink()
             statuses["metrics_report"] = 0
 
         try:
@@ -1079,6 +1081,8 @@ def write_benchmark_reports(result_root: Path, *, logs: Iterable[Path] = ()) -> 
             emit(f"Benchmark insights report failed: {type(exc).__name__}: {exc}", logs=logs, stderr=True)
             statuses["benchmark_insights"] = 1
         else:
+            with suppress(OSError):
+                (result_root / "benchmark_insights_error.json").unlink()
             statuses["benchmark_insights"] = 0
 
         write_report_generator_status(result_root, statuses)

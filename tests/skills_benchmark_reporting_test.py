@@ -1397,6 +1397,58 @@ recipe = FedAvgRecipe(
     assert "bad: AUROC 0.4860 -> 0.4860 -> 0.4860 (flat)" in section
 
 
+def test_generated_code_quality_table_handles_mode_specific_rows():
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports._context import CodeQualitySignal, ReportContext
+    from benchmark.harness.reports.insights._code_quality import generated_code_quality_table
+
+    modes = [NO_SKILLS_MODE, WITH_SKILLS_MODE]
+    ctx = ReportContext(
+        evidence={
+            NO_SKILLS_MODE: type(
+                "Evidence",
+                (),
+                {
+                    "code_quality": CodeQualitySignal(
+                        overall="poor",
+                        rows=(
+                            ("Shared criterion", "good", "baseline evidence"),
+                            ("Baseline-only criterion", "unknown", "not captured"),
+                        ),
+                    )
+                },
+            )(),
+            WITH_SKILLS_MODE: type(
+                "Evidence",
+                (),
+                {
+                    "code_quality": CodeQualitySignal(
+                        overall="good",
+                        rows=(
+                            ("Shared criterion", "good", "skills evidence"),
+                            ("Skills-only criterion", "good", "fedstats evidence"),
+                        ),
+                    )
+                },
+            )(),
+        }
+    )
+
+    table = generated_code_quality_table(
+        {
+            NO_SKILLS_MODE: {"available": True, "mode": NO_SKILLS_MODE},
+            WITH_SKILLS_MODE: {"available": True, "mode": WITH_SKILLS_MODE},
+        },
+        modes,
+        ctx,
+    )
+
+    assert "Shared criterion" in table
+    assert "Baseline-only criterion" in table
+    assert "Skills-only criterion" in table
+    assert "not evaluated" in table
+
+
 def test_execution_model_detects_both_legacy_and_recipe_conversions():
     from benchmark.harness.evaluation import load_evaluation_rules, score_signal
     from benchmark.harness.sdks.nvflare._logic import _detect_execution_model

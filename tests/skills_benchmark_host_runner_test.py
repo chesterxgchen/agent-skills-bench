@@ -266,6 +266,23 @@ def test_write_benchmark_reports_clears_agent_parser_cache(tmp_path, monkeypatch
     assert cleared["count"] == 1
 
 
+def test_write_benchmark_reports_removes_stale_error_files_on_success(tmp_path, monkeypatch):
+    from benchmark.harness.host import runner
+
+    (tmp_path / "metrics_report_error.json").write_text('{"old": true}\n', encoding="utf-8")
+    (tmp_path / "benchmark_insights_error.json").write_text('{"old": true}\n', encoding="utf-8")
+
+    monkeypatch.setattr(runner.metrics_report, "write_reports", lambda _root, _title: None)
+    monkeypatch.setattr(runner.benchmark_insights, "collect_benchmark_runs", lambda _root: {})
+    monkeypatch.setattr(runner.benchmark_insights, "benchmark_report", lambda _root, _runs: "report\n")
+
+    statuses = runner.write_benchmark_reports(tmp_path)
+
+    assert statuses == {"metrics_report": 0, "benchmark_insights": 0}
+    assert not (tmp_path / "metrics_report_error.json").exists()
+    assert not (tmp_path / "benchmark_insights_error.json").exists()
+
+
 def test_enforce_result_size_budget_reports_oversized_results(tmp_path):
     from benchmark.harness.agents.registry import load_agent_adapter
     from benchmark.harness.host.common import CaseConfig, ImageConfig

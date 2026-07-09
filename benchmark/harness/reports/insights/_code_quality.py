@@ -47,6 +47,34 @@ def _status_cell(status: str, evidence: str) -> str:
     return f"{status}: {evidence}" if evidence else status
 
 
+def _row_label(row: Any) -> str:
+    return str(row[0]) if isinstance(row, tuple) and row else ""
+
+
+def _row_status_evidence(row: Any, default_status: str = "not evaluated") -> tuple[str, str]:
+    if not isinstance(row, tuple):
+        return default_status, ""
+    status = str(row[1]) if len(row) > 1 else default_status
+    evidence = str(row[2]) if len(row) > 2 else ""
+    return status, evidence
+
+
+def _ordered_row_labels(row_sets: list[tuple]) -> list[str]:
+    labels = []
+    seen: set[str] = set()
+    for rows in row_sets:
+        for row in rows:
+            label = _row_label(row)
+            if label and label not in seen:
+                labels.append(label)
+                seen.add(label)
+    return labels
+
+
+def _row_map(rows: tuple) -> dict[str, Any]:
+    return {label: row for row in rows if (label := _row_label(row))}
+
+
 def generated_code_quality_table(
     runs: dict[str, RunEvidence | dict[str, Any]], modes: list[str], ctx: ReportContext | None = None
 ) -> str:
@@ -57,17 +85,23 @@ def generated_code_quality_table(
         "|---|" + "|".join("---" for _ in modes) + "|",
         "| Overall code quality signal | " + " | ".join(markdown_cell(cq[mode].overall) for mode in modes) + " |",
     ]
-    # Realized rows (label, status, evidence) are aligned across modes (same spec).
-    for i, label in enumerate(row[0] for row in cq[modes[0]].rows):
+    row_maps = {mode: _row_map(cq[mode].rows) for mode in modes}
+    for label in _ordered_row_labels([cq[mode].rows for mode in modes]):
         lines.append(
             f"| {markdown_cell(label)} | "
-            + " | ".join(markdown_cell(_status_cell(cq[mode].rows[i][1], cq[mode].rows[i][2])) for mode in modes)
+            + " | ".join(
+                markdown_cell(_status_cell(*_row_status_evidence(row_maps[mode].get(label)))) for mode in modes
+            )
             + " |"
         )
-    for i, label in enumerate(row[0] for row in cq[modes[0]].context_rows):
+    context_maps = {mode: _row_map(cq[mode].context_rows) for mode in modes}
+    for label in _ordered_row_labels([cq[mode].context_rows for mode in modes]):
         lines.append(
             f"| {markdown_cell(label)} | "
-            + " | ".join(markdown_cell(_status_cell("context", cq[mode].context_rows[i][2])) for mode in modes)
+            + " | ".join(
+                markdown_cell(_status_cell(*_row_status_evidence(context_maps[mode].get(label), "context")))
+                for mode in modes
+            )
             + " |"
         )
     return "\n".join(lines)
