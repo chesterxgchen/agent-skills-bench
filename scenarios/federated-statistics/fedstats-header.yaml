@@ -1,0 +1,32 @@
+# Federated-statistics benchmark, headered tabular variant.
+#
+# Onboarded as pure data: criteria come from the federated-statistics task in
+# the evaluation manifest, the hard gates from result_artifact +
+# fedstats_checks.py, ground truth from the committed constants. Compile with
+#   python -m benchmark.harness.scenarios scenarios/federated-statistics/fedstats-header.yaml --output-dir <dir>
+name: fedstats-header
+prompt: prompt-header.txt
+agents:
+  - claude
+workflows:
+  - name: FEDSTATS
+jobs:
+  - path: ~/projects/flare_test/tabular_with_header
+    name: fedstats-header
+    scale: small
+evaluation_task: federated-statistics
+# A statistics job reports no training validation metric; the aggregated
+# statistics artifact is the result gate instead.
+result_artifact:
+  glob: "**/simulate_job/statistics/*.json"
+  format: json
+  description: aggregated federated statistics output from the simulator workspace
+acceptance_checks:
+  script: fedstats_checks.py
+  timeout_seconds: 300
+quality_gate:
+  required_validation_metric_status: [not_required]
+comparison:
+  type: mode_ablation
+  modes: [without_skills, with_skills]
+  repeats: 3

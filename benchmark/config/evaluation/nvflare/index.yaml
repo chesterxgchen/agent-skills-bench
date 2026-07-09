@@ -24,6 +24,13 @@
 # Adding a framework/dimension value = one file + one line here. Adding a
 # dimension or task group = a subtree. Nothing else changes: the scorer, the
 # CLI, and the report engine all resolve through this manifest.
+#
+# Task routing: a scenario/job declares `evaluation_task` (see
+# scenario_run_plan.resolve_jobs); the run record carries it and the report
+# plugin scores against that task's composed rules. `native_skills` glob
+# patterns map SDK-native skill_evals documents (skill_name in evals.json)
+# onto a task at build-stage time, so a new skill family feeds its task's
+# report signals by adding a pattern here — no harness code.
 schema_version: 1
 sdk: nvflare
 default_task: conversion
@@ -39,6 +46,8 @@ scoring:
     caution: 0.5
 tasks:
   conversion:
+    native_skills:
+      - "*-convert-*"
     compose:
       - shared:tasks/conversion/common.yaml   # SDK-agnostic conversion criteria
       - tasks/conversion/common.yaml          # NVFLARE-specific criteria (may override shared)
@@ -50,9 +59,11 @@ tasks:
         # tensorflow: tasks/conversion/tensorflow.yaml
         # huggingface: tasks/conversion/huggingface.yaml
         # jax: tasks/conversion/jax.yaml
-  # Consumable today via the standalone scorer
-  # (`python -m benchmark.harness.evaluation --sdk nvflare --task federated-statistics ...`);
-  # the report engine scores the manifest's default_task until per-task
-  # detectors land and the plugin wires task identity through.
   federated-statistics:
+    native_skills:
+      - "*fed-stats*"
+      - "*federated-stat*"
     common: tasks/federated-statistics/common.yaml
+    overlays:
+      data-format:
+        no_header: tasks/federated-statistics/no-header.yaml

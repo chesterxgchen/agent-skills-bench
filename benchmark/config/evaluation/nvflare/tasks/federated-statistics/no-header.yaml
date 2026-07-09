@@ -1,0 +1,14 @@
+# federated-statistics overlay: data-format=no_header.
+#
+# Applied when the scenario declares `evaluation_selectors: {data-format:
+# no_header}` — headerless CSV datasets where the column names come from the
+# dataset README. Replaces no common signal; adds the names-honored criterion.
+schema_version: 1
+signals:
+  names_honored:
+    label: "Statistics: README column names honored (no col_0/Unnamed/invented names)"
+    rules:
+      - contains_any: ["readme column names", "names from readme", "explicit names="]
+        verdict: good
+      - contains_any: ["col_0", "unnamed:", "invented column names", "default integer columns"]
+        verdict: bad

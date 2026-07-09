@@ -1,27 +1,60 @@
 # NVFLARE federated-statistics task — evaluation criteria.
 #
 # A task group with no framework axis: statistics jobs are judged on the
-# statistics workflow itself. Starter criteria — extend as detectors for this
-# task land; a criterion listed here appears in the report even before its
-# detector exists (as "unknown: not captured").
+# statistics workflow itself. These rows are quality shading, judged by the
+# code-eval agent (or scored from detector evidence when captured); the hard
+# pass/fail gates — real output artifact, ground-truth numbers, leakage — are
+# scenario-declared (`result_artifact` / `acceptance_checks`), not criteria.
+# A criterion listed here appears in the report even before evidence exists
+# for it (as "unknown: not captured").
 schema_version: 1
 signals:
+  one_job_both_views:
+    label: "Statistics: one federated job serves per-site AND global views"
+    rules:
+      - contains_any: ["one federated job", "single fedstats job", "one job both views", "per-site computed locally"]
+        verdict: good
+      - contains_any: ["separate per-site script", "ran the job per site", "pooled local computation", "pooled pandas"]
+        verdict: bad
+  api_generation:
+    label: "Statistics: current recipe API (FedStatsRecipe / DFStatisticsCore)"
+    rules:
+      - contains_any: ["fedstatsrecipe", "dfstatisticscore"]
+        verdict: good
+      - contains_any: ["statisticscontroller", "legacy job config", "hand-rolled controller"]
+        verdict: caution
   statistics_config:
-    label: "Statistics: configured measures/targets"
+    label: "Statistics: configured measures include count plus the stated defaults"
     rules:
-      - contains_any: ["histogram", "mean", "stddev", "quantile", "count"]
+      - contains: "count"
         verdict: good
+      - contains_any: ["histogram", "mean", "stddev", "quantile"]
+        verdict: caution
+  categorical_exclusion:
+    label: "Statistics: non-numeric features excluded and named, derived from dtypes"
+    rules:
+      - contains_any: ["categorical features excluded", "excluded non-numeric", "excluded: sex"]
+        verdict: good
+      - contains_any: ["categorical included", "encoded categorical into statistics"]
+        verdict: bad
   privacy_thresholds:
-    label: "Statistics: privacy/min-count thresholds"
+    label: "Statistics: default privacy filters intact (min_count, noise, bin cap)"
     rules:
-      - contains_any: ["min_count", "min count threshold", "noise level"]
+      - contains_any: ["min_count", "min count threshold", "noise level", "max_bins_percent"]
         verdict: good
-      - contains: "no privacy threshold"
+      - contains_any: ["no privacy threshold", "privacy filters removed", "min_count=0", "min_count=1"]
         verdict: bad
   statistics_outputs:
-    label: "Statistics: aggregated output artifacts"
+    label: "Statistics: aggregated output artifact validated for completeness"
     rules:
-      - contains_any: ["statistics.json", "aggregated statistics artifact"]
+      - contains_any: ["statistics.json", "aggregated statistics artifact", "output completeness"]
         verdict: good
       - contains: "per-site outputs only"
         verdict: caution
+  report_summary:
+    label: "Statistics: per-site x Global aggregate summary, no raw rows"
+    rules:
+      - contains_any: ["per-site x global", "per-site and global table", "site-1 site-2 site-3 global"]
+        verdict: good
+      - contains_any: ["raw rows echoed", "printed raw data"]
+        verdict: bad

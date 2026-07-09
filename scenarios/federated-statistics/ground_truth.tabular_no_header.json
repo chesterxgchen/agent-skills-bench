@@ -1,0 +1,929 @@
+{
+  "categorical_features": [
+    "sex",
+    "smoker",
+    "diagnosis_group",
+    "readmitted_30d"
+  ],
+  "columns": [
+    "age",
+    "sex",
+    "bmi",
+    "smoker",
+    "systolic_bp",
+    "diastolic_bp",
+    "heart_rate",
+    "respiratory_rate",
+    "temperature_c",
+    "spo2",
+    "glucose_mg_dl",
+    "hba1c_pct",
+    "total_cholesterol",
+    "hdl",
+    "ldl",
+    "triglycerides",
+    "creatinine",
+    "egfr",
+    "hemoglobin",
+    "wbc_count",
+    "platelet_count",
+    "sodium",
+    "potassium",
+    "num_prior_admissions",
+    "length_of_stay_days",
+    "diagnosis_group",
+    "readmitted_30d"
+  ],
+  "csv_sha256": {
+    "site-1": "ba40e38b9b40465d9934b56f3829e542994d3afaa140aa44548fdebe9f29ba60",
+    "site-2": "a5e8d470607b0e8c9eebc308eb4e3e489d15cce6e3a99fd42ab2a7b617a6129e",
+    "site-3": "3736e956deb3dfbb1383db0649ad041ac03573d905a0f890d63db16405463320"
+  },
+  "dataset": "tabular_no_header",
+  "global": {
+    "count": 1000,
+    "features": {
+      "age": {
+        "count": 1000,
+        "max": 94.0,
+        "mean": 56.233,
+        "min": 18.0,
+        "stddev": 22.216126,
+        "stddev_population": 22.205015,
+        "sum": 56233.0
+      },
+      "bmi": {
+        "count": 1000,
+        "max": 43.5,
+        "mean": 27.0982,
+        "min": 15.0,
+        "stddev": 5.512417,
+        "stddev_population": 5.50966,
+        "sum": 27098.2
+      },
+      "creatinine": {
+        "count": 1000,
+        "max": 2.36,
+        "mean": 1.0156,
+        "min": 0.4,
+        "stddev": 0.313439,
+        "stddev_population": 0.313283,
+        "sum": 1015.6
+      },
+      "diastolic_bp": {
+        "count": 1000,
+        "max": 124.0,
+        "mean": 81.603,
+        "min": 51.0,
+        "stddev": 11.381429,
+        "stddev_population": 11.375737,
+        "sum": 81603.0
+      },
+      "egfr": {
+        "count": 1000,
+        "max": 130.0,
+        "mean": 74.318,
+        "min": 19.0,
+        "stddev": 29.100063,
+        "stddev_population": 29.08551,
+        "sum": 74318.0
+      },
+      "glucose_mg_dl": {
+        "count": 1000,
+        "max": 248.0,
+        "mean": 107.132,
+        "min": 55.0,
+        "stddev": 28.852678,
+        "stddev_population": 28.838248,
+        "sum": 107132.0
+      },
+      "hba1c_pct": {
+        "count": 1000,
+        "max": 6.3,
+        "mean": 4.4852,
+        "min": 4.0,
+        "stddev": 0.495688,
+        "stddev_population": 0.49544,
+        "sum": 4485.2
+      },
+      "hdl": {
+        "count": 1000,
+        "max": 94.0,
+        "mean": 51.494,
+        "min": 15.0,
+        "stddev": 13.637153,
+        "stddev_population": 13.630332,
+        "sum": 51494.0
+      },
+      "heart_rate": {
+        "count": 1000,
+        "max": 115.0,
+        "mean": 76.619,
+        "min": 40.0,
+        "stddev": 12.056334,
+        "stddev_population": 12.050305,
+        "sum": 76619.0
+      },
+      "hemoglobin": {
+        "count": 1000,
+        "max": 19.0,
+        "mean": 14.0419,
+        "min": 8.6,
+        "stddev": 1.661166,
+        "stddev_population": 1.660336,
+        "sum": 14041.9
+      },
+      "ldl": {
+        "count": 1000,
+        "max": 262.0,
+        "mean": 113.26,
+        "min": 30.0,
+        "stddev": 42.042859,
+        "stddev_population": 42.021832,
+        "sum": 113260.0
+      },
+      "length_of_stay_days": {
+        "count": 1000,
+        "max": 23.6,
+        "mean": 3.9989,
+        "min": 0.6,
+        "stddev": 2.602391,
+        "stddev_population": 2.60109,
+        "sum": 3998.9
+      },
+      "num_prior_admissions": {
+        "count": 1000,
+        "max": 6.0,
+        "mean": 1.11,
+        "min": 0.0,
+        "stddev": 1.021246,
+        "stddev_population": 1.020735,
+        "sum": 1110.0
+      },
+      "platelet_count": {
+        "count": 1000,
+        "max": 435.0,
+        "mean": 256.995,
+        "min": 82.0,
+        "stddev": 58.717516,
+        "stddev_population": 58.68815,
+        "sum": 256995.0
+      },
+      "potassium": {
+        "count": 1000,
+        "max": 5.7,
+        "mean": 4.1068,
+        "min": 2.8,
+        "stddev": 0.451838,
+        "stddev_population": 0.451612,
+        "sum": 4106.8
+      },
+      "respiratory_rate": {
+        "count": 1000,
+        "max": 24.0,
+        "mean": 15.991,
+        "min": 8.0,
+        "stddev": 2.596856,
+        "stddev_population": 2.595558,
+        "sum": 15991.0
+      },
+      "sodium": {
+        "count": 1000,
+        "max": 148.0,
+        "mean": 139.26,
+        "min": 129.0,
+        "stddev": 2.951798,
+        "stddev_population": 2.950322,
+        "sum": 139260.0
+      },
+      "spo2": {
+        "count": 1000,
+        "max": 100.0,
+        "mean": 97.031,
+        "min": 91.0,
+        "stddev": 1.741572,
+        "stddev_population": 1.740701,
+        "sum": 97031.0
+      },
+      "systolic_bp": {
+        "count": 1000,
+        "max": 176.0,
+        "mean": 131.953,
+        "min": 91.0,
+        "stddev": 14.246675,
+        "stddev_population": 14.23955,
+        "sum": 131953.0
+      },
+      "temperature_c": {
+        "count": 1000,
+        "max": 38.1,
+        "mean": 36.7873,
+        "min": 35.6,
+        "stddev": 0.391691,
+        "stddev_population": 0.391495,
+        "sum": 36787.3
+      },
+      "total_cholesterol": {
+        "count": 1000,
+        "max": 353.0,
+        "mean": 194.693,
+        "min": 90.0,
+        "stddev": 38.28235,
+        "stddev_population": 38.263204,
+        "sum": 194693.0
+      },
+      "triglycerides": {
+        "count": 1000,
+        "max": 473.0,
+        "mean": 144.764,
+        "min": 30.0,
+        "stddev": 68.974806,
+        "stddev_population": 68.94031,
+        "sum": 144764.0
+      },
+      "wbc_count": {
+        "count": 1000,
+        "max": 18.6,
+        "mean": 7.6795,
+        "min": 3.2,
+        "stddev": 2.317581,
+        "stddev_population": 2.316422,
+        "sum": 7679.5
+      }
+    }
+  },
+  "header": false,
+  "min_count_floor": 10,
+  "numeric_features": [
+    "age",
+    "bmi",
+    "systolic_bp",
+    "diastolic_bp",
+    "heart_rate",
+    "respiratory_rate",
+    "temperature_c",
+    "spo2",
+    "glucose_mg_dl",
+    "hba1c_pct",
+    "total_cholesterol",
+    "hdl",
+    "ldl",
+    "triglycerides",
+    "creatinine",
+    "egfr",
+    "hemoglobin",
+    "wbc_count",
+    "platelet_count",
+    "sodium",
+    "potassium",
+    "num_prior_admissions",
+    "length_of_stay_days"
+  ],
+  "schema_version": 1,
+  "sentinels": [
+    "77,F,26.1,never,132.0,79.0,64.0,16.0,37.6,93.0,119.0,4.6,353.0,71.0,262.0,292.0,1.05,51.0,13.3,9.1,245.0,137.0,4.6,1,4.9,cardiovascular,yes",
+    "51,F,35.8,former,117.0,79.0,72.0,16.0,37.2,97.0,95.0,4.4,137.0,41.0,68.0,107.0,1.0,58.0,12.2,9.7,277.0,135.0,4.0,1,7.1,renal,no",
+    "32,F,30.1,never,123.0,69.0,78.0,18.0,36.9,95.0,94.0,4.0,221.0,42.0,127.0,397.0,0.57,123.0,14.5,5.6,239.0,144.0,4.1,2,2.0,other,no",
+    "19,F,26.7,former,131.0,71.0,74.0,9.0,37.0,97.0,99.0,4.0,253.0,53.0,155.0,141.0,0.64,120.0,13.6,7.6,382.0,141.0,4.1,1,5.5,metabolic,no",
+    "67,F,24.8,current,137.0,83.0,55.0,19.0,36.7,99.0,101.0,4.4,183.0,79.0,52.0,157.0,0.65,91.0,13.8,8.3,209.0,138.0,3.1,1,0.6,renal,no",
+    "35,F,31.6,never,135.0,98.0,72.0,15.0,36.1,98.0,101.0,4.1,174.0,55.0,92.0,194.0,0.61,112.0,15.0,8.3,308.0,136.0,3.7,0,1.2,respiratory,no"
+  ],
+  "sites": {
+    "site-1": {
+      "count": 403,
+      "features": {
+        "age": {
+          "count": 403,
+          "max": 94.0,
+          "mean": 63.655087,
+          "min": 18.0,
+          "stddev": 20.980746,
+          "stddev_population": 20.954699,
+          "sum": 25653.0
+        },
+        "bmi": {
+          "count": 403,
+          "max": 43.5,
+          "mean": 27.177916,
+          "min": 15.0,
+          "stddev": 5.557527,
+          "stddev_population": 5.550627,
+          "sum": 10952.7
+        },
+        "creatinine": {
+          "count": 403,
+          "max": 2.36,
+          "mean": 1.064243,
+          "min": 0.4,
+          "stddev": 0.317439,
+          "stddev_population": 0.317045,
+          "sum": 428.89
+        },
+        "diastolic_bp": {
+          "count": 403,
+          "max": 123.0,
+          "mean": 83.622829,
+          "min": 55.0,
+          "stddev": 11.15948,
+          "stddev_population": 11.145626,
+          "sum": 33700.0
+        },
+        "egfr": {
+          "count": 403,
+          "max": 130.0,
+          "mean": 68.863524,
+          "min": 25.0,
+          "stddev": 27.36366,
+          "stddev_population": 27.329689,
+          "sum": 27752.0
+        },
+        "glucose_mg_dl": {
+          "count": 403,
+          "max": 236.0,
+          "mean": 107.419355,
+          "min": 55.0,
+          "stddev": 28.719701,
+          "stddev_population": 28.684046,
+          "sum": 43290.0
+        },
+        "hba1c_pct": {
+          "count": 403,
+          "max": 6.3,
+          "mean": 4.489826,
+          "min": 4.0,
+          "stddev": 0.49235,
+          "stddev_population": 0.491739,
+          "sum": 1809.4
+        },
+        "hdl": {
+          "count": 403,
+          "max": 94.0,
+          "mean": 51.568238,
+          "min": 15.0,
+          "stddev": 13.695232,
+          "stddev_population": 13.67823,
+          "sum": 20782.0
+        },
+        "heart_rate": {
+          "count": 403,
+          "max": 115.0,
+          "mean": 77.25062,
+          "min": 40.0,
+          "stddev": 12.70657,
+          "stddev_population": 12.690796,
+          "sum": 31132.0
+        },
+        "hemoglobin": {
+          "count": 403,
+          "max": 19.0,
+          "mean": 14.144417,
+          "min": 9.6,
+          "stddev": 1.618929,
+          "stddev_population": 1.61692,
+          "sum": 5700.2
+        },
+        "ldl": {
+          "count": 403,
+          "max": 262.0,
+          "mean": 114.645161,
+          "min": 30.0,
+          "stddev": 41.875801,
+          "stddev_population": 41.823814,
+          "sum": 46202.0
+        },
+        "length_of_stay_days": {
+          "count": 403,
+          "max": 16.0,
+          "mean": 4.147891,
+          "min": 0.8,
+          "stddev": 2.570434,
+          "stddev_population": 2.567242,
+          "sum": 1671.6
+        },
+        "num_prior_admissions": {
+          "count": 403,
+          "max": 5.0,
+          "mean": 1.124069,
+          "min": 0.0,
+          "stddev": 1.021895,
+          "stddev_population": 1.020627,
+          "sum": 453.0
+        },
+        "platelet_count": {
+          "count": 403,
+          "max": 409.0,
+          "mean": 258.181141,
+          "min": 98.0,
+          "stddev": 58.806407,
+          "stddev_population": 58.733401,
+          "sum": 104047.0
+        },
+        "potassium": {
+          "count": 403,
+          "max": 5.4,
+          "mean": 4.143176,
+          "min": 3.0,
+          "stddev": 0.435744,
+          "stddev_population": 0.435203,
+          "sum": 1669.7
+        },
+        "respiratory_rate": {
+          "count": 403,
+          "max": 24.0,
+          "mean": 16.069479,
+          "min": 8.0,
+          "stddev": 2.608851,
+          "stddev_population": 2.605613,
+          "sum": 6476.0
+        },
+        "sodium": {
+          "count": 403,
+          "max": 148.0,
+          "mean": 139.188586,
+          "min": 129.0,
+          "stddev": 2.902078,
+          "stddev_population": 2.898475,
+          "sum": 56093.0
+        },
+        "spo2": {
+          "count": 403,
+          "max": 100.0,
+          "mean": 97.104218,
+          "min": 91.0,
+          "stddev": 1.708643,
+          "stddev_population": 1.706521,
+          "sum": 39133.0
+        },
+        "systolic_bp": {
+          "count": 403,
+          "max": 174.0,
+          "mean": 134.62531,
+          "min": 92.0,
+          "stddev": 13.741974,
+          "stddev_population": 13.724914,
+          "sum": 54254.0
+        },
+        "temperature_c": {
+          "count": 403,
+          "max": 38.1,
+          "mean": 36.766749,
+          "min": 35.6,
+          "stddev": 0.389011,
+          "stddev_population": 0.388528,
+          "sum": 14817.0
+        },
+        "total_cholesterol": {
+          "count": 403,
+          "max": 353.0,
+          "mean": 196.171216,
+          "min": 95.0,
+          "stddev": 38.135566,
+          "stddev_population": 38.088222,
+          "sum": 79057.0
+        },
+        "triglycerides": {
+          "count": 403,
+          "max": 436.0,
+          "mean": 141.722084,
+          "min": 36.0,
+          "stddev": 65.480597,
+          "stddev_population": 65.399306,
+          "sum": 57114.0
+        },
+        "wbc_count": {
+          "count": 403,
+          "max": 16.0,
+          "mean": 7.731017,
+          "min": 3.3,
+          "stddev": 2.358441,
+          "stddev_population": 2.355513,
+          "sum": 3115.6
+        }
+      }
+    },
+    "site-2": {
+      "count": 359,
+      "features": {
+        "age": {
+          "count": 359,
+          "max": 94.0,
+          "mean": 48.860724,
+          "min": 18.0,
+          "stddev": 21.673494,
+          "stddev_population": 21.643287,
+          "sum": 17541.0
+        },
+        "bmi": {
+          "count": 359,
+          "max": 42.4,
+          "mean": 26.835655,
+          "min": 15.0,
+          "stddev": 5.57772,
+          "stddev_population": 5.569946,
+          "sum": 9634.0
+        },
+        "creatinine": {
+          "count": 359,
+          "max": 2.16,
+          "mean": 0.971058,
+          "min": 0.41,
+          "stddev": 0.296945,
+          "stddev_population": 0.296531,
+          "sum": 348.61
+        },
+        "diastolic_bp": {
+          "count": 359,
+          "max": 124.0,
+          "mean": 79.721448,
+          "min": 51.0,
+          "stddev": 11.313726,
+          "stddev_population": 11.297958,
+          "sum": 28620.0
+        },
+        "egfr": {
+          "count": 359,
+          "max": 130.0,
+          "mean": 79.980501,
+          "min": 23.0,
+          "stddev": 29.770578,
+          "stddev_population": 29.729086,
+          "sum": 28713.0
+        },
+        "glucose_mg_dl": {
+          "count": 359,
+          "max": 248.0,
+          "mean": 108.142061,
+          "min": 55.0,
+          "stddev": 31.131266,
+          "stddev_population": 31.087878,
+          "sum": 38823.0
+        },
+        "hba1c_pct": {
+          "count": 359,
+          "max": 6.1,
+          "mean": 4.473538,
+          "min": 4.0,
+          "stddev": 0.507262,
+          "stddev_population": 0.506555,
+          "sum": 1606.0
+        },
+        "hdl": {
+          "count": 359,
+          "max": 93.0,
+          "mean": 51.623955,
+          "min": 15.0,
+          "stddev": 13.974461,
+          "stddev_population": 13.954985,
+          "sum": 18533.0
+        },
+        "heart_rate": {
+          "count": 359,
+          "max": 106.0,
+          "mean": 76.866295,
+          "min": 43.0,
+          "stddev": 11.540502,
+          "stddev_population": 11.524418,
+          "sum": 27595.0
+        },
+        "hemoglobin": {
+          "count": 359,
+          "max": 18.1,
+          "mean": 14.124234,
+          "min": 8.6,
+          "stddev": 1.717832,
+          "stddev_population": 1.715438,
+          "sum": 5070.6
+        },
+        "ldl": {
+          "count": 359,
+          "max": 227.0,
+          "mean": 111.852368,
+          "min": 30.0,
+          "stddev": 41.997911,
+          "stddev_population": 41.939377,
+          "sum": 40155.0
+        },
+        "length_of_stay_days": {
+          "count": 359,
+          "max": 23.6,
+          "mean": 4.019499,
+          "min": 0.7,
+          "stddev": 2.823041,
+          "stddev_population": 2.819107,
+          "sum": 1443.0
+        },
+        "num_prior_admissions": {
+          "count": 359,
+          "max": 5.0,
+          "mean": 1.08078,
+          "min": 0.0,
+          "stddev": 0.981188,
+          "stddev_population": 0.979821,
+          "sum": 388.0
+        },
+        "platelet_count": {
+          "count": 359,
+          "max": 431.0,
+          "mean": 253.203343,
+          "min": 87.0,
+          "stddev": 59.136717,
+          "stddev_population": 59.054296,
+          "sum": 90900.0
+        },
+        "potassium": {
+          "count": 359,
+          "max": 5.4,
+          "mean": 4.083565,
+          "min": 2.8,
+          "stddev": 0.461698,
+          "stddev_population": 0.461054,
+          "sum": 1466.0
+        },
+        "respiratory_rate": {
+          "count": 359,
+          "max": 24.0,
+          "mean": 15.933148,
+          "min": 9.0,
+          "stddev": 2.544792,
+          "stddev_population": 2.541245,
+          "sum": 5720.0
+        },
+        "sodium": {
+          "count": 359,
+          "max": 146.0,
+          "mean": 139.339833,
+          "min": 129.0,
+          "stddev": 3.016037,
+          "stddev_population": 3.011834,
+          "sum": 50023.0
+        },
+        "spo2": {
+          "count": 359,
+          "max": 100.0,
+          "mean": 97.011142,
+          "min": 92.0,
+          "stddev": 1.725552,
+          "stddev_population": 1.723147,
+          "sum": 34827.0
+        },
+        "systolic_bp": {
+          "count": 359,
+          "max": 176.0,
+          "mean": 129.236769,
+          "min": 91.0,
+          "stddev": 14.79099,
+          "stddev_population": 14.770376,
+          "sum": 46396.0
+        },
+        "temperature_c": {
+          "count": 359,
+          "max": 37.8,
+          "mean": 36.79805,
+          "min": 35.6,
+          "stddev": 0.402675,
+          "stddev_population": 0.402114,
+          "sum": 13210.5
+        },
+        "total_cholesterol": {
+          "count": 359,
+          "max": 310.0,
+          "mean": 193.058496,
+          "min": 90.0,
+          "stddev": 38.961081,
+          "stddev_population": 38.90678,
+          "sum": 69308.0
+        },
+        "triglycerides": {
+          "count": 359,
+          "max": 473.0,
+          "mean": 149.431755,
+          "min": 41.0,
+          "stddev": 74.816612,
+          "stddev_population": 74.712337,
+          "sum": 53646.0
+        },
+        "wbc_count": {
+          "count": 359,
+          "max": 18.6,
+          "mean": 7.704735,
+          "min": 3.3,
+          "stddev": 2.350812,
+          "stddev_population": 2.347536,
+          "sum": 2766.0
+        }
+      }
+    },
+    "site-3": {
+      "count": 238,
+      "features": {
+        "age": {
+          "count": 238,
+          "max": 94.0,
+          "mean": 54.785714,
+          "min": 18.0,
+          "stddev": 21.121316,
+          "stddev_population": 21.076897,
+          "sum": 13039.0
+        },
+        "bmi": {
+          "count": 238,
+          "max": 43.0,
+          "mean": 27.359244,
+          "min": 15.0,
+          "stddev": 5.340276,
+          "stddev_population": 5.329045,
+          "sum": 6511.5
+        },
+        "creatinine": {
+          "count": 238,
+          "max": 2.36,
+          "mean": 1.00042,
+          "min": 0.4,
+          "stddev": 0.320533,
+          "stddev_population": 0.319859,
+          "sum": 238.1
+        },
+        "diastolic_bp": {
+          "count": 238,
+          "max": 114.0,
+          "mean": 81.021008,
+          "min": 53.0,
+          "stddev": 11.348878,
+          "stddev_population": 11.32501,
+          "sum": 19283.0
+        },
+        "egfr": {
+          "count": 238,
+          "max": 130.0,
+          "mean": 75.012605,
+          "min": 19.0,
+          "stddev": 29.342655,
+          "stddev_population": 29.280946,
+          "sum": 17853.0
+        },
+        "glucose_mg_dl": {
+          "count": 238,
+          "max": 200.0,
+          "mean": 105.121849,
+          "min": 56.0,
+          "stddev": 25.303847,
+          "stddev_population": 25.250632,
+          "sum": 25019.0
+        },
+        "hba1c_pct": {
+          "count": 238,
+          "max": 6.2,
+          "mean": 4.494958,
+          "min": 4.0,
+          "stddev": 0.485285,
+          "stddev_population": 0.484265,
+          "sum": 1069.8
+        },
+        "hdl": {
+          "count": 238,
+          "max": 92.0,
+          "mean": 51.172269,
+          "min": 19.0,
+          "stddev": 13.062966,
+          "stddev_population": 13.035494,
+          "sum": 12179.0
+        },
+        "heart_rate": {
+          "count": 238,
+          "max": 114.0,
+          "mean": 75.176471,
+          "min": 50.0,
+          "stddev": 11.610156,
+          "stddev_population": 11.58574,
+          "sum": 17892.0
+        },
+        "hemoglobin": {
+          "count": 238,
+          "max": 18.4,
+          "mean": 13.744118,
+          "min": 9.8,
+          "stddev": 1.615963,
+          "stddev_population": 1.612565,
+          "sum": 3271.1
+        },
+        "ldl": {
+          "count": 238,
+          "max": 244.0,
+          "mean": 113.037815,
+          "min": 30.0,
+          "stddev": 42.493418,
+          "stddev_population": 42.404052,
+          "sum": 26903.0
+        },
+        "length_of_stay_days": {
+          "count": 238,
+          "max": 17.0,
+          "mean": 3.715546,
+          "min": 0.6,
+          "stddev": 2.276548,
+          "stddev_population": 2.27176,
+          "sum": 884.3
+        },
+        "num_prior_admissions": {
+          "count": 238,
+          "max": 6.0,
+          "mean": 1.130252,
+          "min": 0.0,
+          "stddev": 1.081026,
+          "stddev_population": 1.078752,
+          "sum": 269.0
+        },
+        "platelet_count": {
+          "count": 238,
+          "max": 435.0,
+          "mean": 260.705882,
+          "min": 82.0,
+          "stddev": 57.848902,
+          "stddev_population": 57.727242,
+          "sum": 62048.0
+        },
+        "potassium": {
+          "count": 238,
+          "max": 5.7,
+          "mean": 4.080252,
+          "min": 3.0,
+          "stddev": 0.461227,
+          "stddev_population": 0.460257,
+          "sum": 971.1
+        },
+        "respiratory_rate": {
+          "count": 238,
+          "max": 22.0,
+          "mean": 15.945378,
+          "min": 9.0,
+          "stddev": 2.661089,
+          "stddev_population": 2.655492,
+          "sum": 3795.0
+        },
+        "sodium": {
+          "count": 238,
+          "max": 147.0,
+          "mean": 139.260504,
+          "min": 131.0,
+          "stddev": 2.946677,
+          "stddev_population": 2.94048,
+          "sum": 33144.0
+        },
+        "spo2": {
+          "count": 238,
+          "max": 100.0,
+          "mean": 96.936975,
+          "min": 92.0,
+          "stddev": 1.821177,
+          "stddev_population": 1.817347,
+          "sum": 23071.0
+        },
+        "systolic_bp": {
+          "count": 238,
+          "max": 165.0,
+          "mean": 131.52521,
+          "min": 94.0,
+          "stddev": 13.463398,
+          "stddev_population": 13.435083,
+          "sum": 31303.0
+        },
+        "temperature_c": {
+          "count": 238,
+          "max": 38.0,
+          "mean": 36.805882,
+          "min": 35.8,
+          "stddev": 0.379272,
+          "stddev_population": 0.378474,
+          "sum": 8759.8
+        },
+        "total_cholesterol": {
+          "count": 238,
+          "max": 303.0,
+          "mean": 194.655462,
+          "min": 90.0,
+          "stddev": 37.549615,
+          "stddev_population": 37.470647,
+          "sum": 46328.0
+        },
+        "triglycerides": {
+          "count": 238,
+          "max": 377.0,
+          "mean": 142.87395,
+          "min": 30.0,
+          "stddev": 65.371132,
+          "stddev_population": 65.233653,
+          "sum": 34004.0
+        },
+        "wbc_count": {
+          "count": 238,
+          "max": 14.3,
+          "mean": 7.554202,
+          "min": 3.2,
+          "stddev": 2.199281,
+          "stddev_population": 2.194656,
+          "sum": 1797.9
+        }
+      }
+    }
+  }
+}

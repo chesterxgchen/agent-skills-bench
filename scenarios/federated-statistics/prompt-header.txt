@@ -1,0 +1,1 @@
+I'd like to calculate each site's stats (those will be calculated by separate hospitals), but also create a fed stats job to calculate the federated stats across all sites.
