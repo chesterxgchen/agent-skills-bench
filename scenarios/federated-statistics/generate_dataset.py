@@ -147,6 +147,10 @@ def main() -> int:
             write_csv(noheader_root / site / f"{split}.csv", split_rows, None)
         print(f"{site}: train={len(splits['train'])} valid={len(splits['valid'])}")
     write_noheader_readme(noheader_root / "README.md", columns)
+    # The job ships its own dependency requirements; the harness prewarms
+    # top-level requirements*.txt before the measured agent run.
+    for root in (header_root, noheader_root):
+        (root / "requirements.txt").write_text("numpy\npandas\n", encoding="utf-8")
     print(f"wrote {header_root} and {noheader_root}")
     return 0
 
