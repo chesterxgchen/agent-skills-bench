@@ -526,7 +526,9 @@ def _infer_pair_evaluation_metadata(options) -> dict[str, object]:
         return {}
 
     selectors: dict[str, str] = {}
-    if any(phrase in text for phrase in ("no header", "no-header", "headerless", "without header")):
+    if any(
+        phrase in text for phrase in ("no header", "no-header", "no_header", "noheader", "headerless", "without header")
+    ):
         selectors["data-format"] = "no_header"
 
     return {
@@ -553,7 +555,7 @@ def pair_compilation_from_options(options) -> ScenarioCompilation:
     if repeats > 1:
         comparison["repeats"] = repeats
     inferred = _infer_pair_evaluation_metadata(options)
-    workflow = options.workflow or str(inferred.get("workflow") or os.environ.get("BENCHMARK_WORKFLOW", "default"))
+    workflow = options.workflow or os.environ.get("BENCHMARK_WORKFLOW") or str(inferred.get("workflow") or "default")
     raw = {
         "name": f"pair {adapter.name} {options.job_input.name}",
         "prompt": str(options.prompt_path),

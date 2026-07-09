@@ -669,16 +669,20 @@ def test_pair_compilation_uses_direct_run_selection_flags(tmp_path, monkeypatch)
     assert {entry["job_scale"] for entry in entries} == {"medium"}
 
 
-def test_pair_compilation_infers_fedstats_for_multi_csv_site_dataset(tmp_path, monkeypatch):
-    from benchmark.harness.host.common import parse_host_cli_options
-    from benchmark.harness.host.runner import pair_compilation_from_options
-
-    job_input = tmp_path / "tabular_no_header_v2"
+def _write_site_split_csv_dataset(job_input: Path) -> None:
     for site in ("site-1", "site-2", "site-3"):
         site_dir = job_input / site
         site_dir.mkdir(parents=True)
         (site_dir / "train.csv").write_text("1,2\n3,4\n", encoding="utf-8")
         (site_dir / "valid.csv").write_text("5,6\n7,8\n", encoding="utf-8")
+
+
+def test_pair_compilation_infers_fedstats_for_multi_csv_site_dataset(tmp_path, monkeypatch):
+    from benchmark.harness.host.common import parse_host_cli_options
+    from benchmark.harness.host.runner import pair_compilation_from_options
+
+    job_input = tmp_path / "tabular_no_header_v2"
+    _write_site_split_csv_dataset(job_input)
     (job_input / "README.md").write_text("The CSV files have no header row.\n1. age\n2. cost\n", encoding="utf-8")
     prompt = tmp_path / "prompt.txt"
     prompt.write_text(
@@ -700,6 +704,49 @@ def test_pair_compilation_infers_fedstats_for_multi_csv_site_dataset(tmp_path, m
     assert entry["evaluation_selectors"] == {"data-format": "no_header"}
     assert entry["result_artifact"]["glob"] == "**/simulate_job/*stat*.json"
     assert compilation.run_plan["quality_gate"]["required_validation_metric_status"] == ["not_required"]
+
+
+def test_pair_compilation_infers_no_header_selector_from_directory_name_only(tmp_path, monkeypatch):
+    from benchmark.harness.host.common import parse_host_cli_options
+    from benchmark.harness.host.runner import pair_compilation_from_options
+
+    job_input = tmp_path / "tabular_no_header_v2"
+    _write_site_split_csv_dataset(job_input)
+    (job_input / "README.md").write_text("Column list:\n1. age\n2. cost\n", encoding="utf-8")
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("create a fedstats job that reports site stats and global stats\n", encoding="utf-8")
+    monkeypatch.delenv("BENCHMARK_WORKFLOW", raising=False)
+
+    options = parse_host_cli_options(
+        ["--prompt", str(prompt), "--agent", "codex", "--model", "codex-test", str(job_input)],
+        "pair",
+    )
+    compilation = pair_compilation_from_options(options)
+    entry = compilation.run_plan["entries"][0]
+
+    assert entry["workflow"] == "FEDSTATS"
+    assert entry["evaluation_selectors"] == {"data-format": "no_header"}
+
+
+def test_pair_compilation_preserves_env_workflow_over_inferred_fedstats(tmp_path, monkeypatch):
+    from benchmark.harness.host.common import parse_host_cli_options
+    from benchmark.harness.host.runner import pair_compilation_from_options
+
+    job_input = tmp_path / "tabular_with_header_v2"
+    _write_site_split_csv_dataset(job_input)
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("create a fedstats job that reports site stats and global stats\n", encoding="utf-8")
+    monkeypatch.setenv("BENCHMARK_WORKFLOW", "custom-fedstats-env")
+
+    options = parse_host_cli_options(
+        ["--prompt", str(prompt), "--agent", "codex", "--model", "codex-test", str(job_input)],
+        "pair",
+    )
+    compilation = pair_compilation_from_options(options)
+    entry = compilation.run_plan["entries"][0]
+
+    assert entry["workflow"] == "custom-fedstats-env"
+    assert entry["evaluation_task"] == "federated-statistics"
 
 
 def test_case_config_uses_generic_runtime_auth_overrides(tmp_path, monkeypatch):
@@ -1045,9 +1092,7 @@ def test_diagnostics_worker_flips_status_done_after_reports(tmp_path, monkeypatc
         "autorun_code_quality_evaluations",
         lambda root, logs=(), only_missing=False: order.append("eval"),
     )
-    monkeypatch.setattr(
-        runner, "emit_benchmark_report_paths", lambda root, logs=(): order.append("reports")
-    )
+    monkeypatch.setattr(runner, "emit_benchmark_report_paths", lambda root, logs=(): order.append("reports"))
 
     assert runner.run_diagnostics_worker([str(tmp_path)]) == 0
     status = json.loads((tmp_path / runner.DIAGNOSTICS_STATUS_FILENAME).read_text(encoding="utf-8"))
