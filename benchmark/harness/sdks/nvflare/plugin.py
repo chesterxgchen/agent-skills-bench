@@ -131,6 +131,8 @@ class NvflareReportPlugin(ReportPlugin):
         )
 
     def assess_metric(self, run: RunEvidence, expected: Any) -> MetricAssessment:
+        if _logic._resolved_evaluation_task(run.raw) != "conversion":
+            return MetricAssessment()
         # Delegate to the SAME source the report consumes: the bundle's
         # validation_metric (artifact_metric or record_metric), not a record-only
         # re-derivation — so routing cannot shift output.

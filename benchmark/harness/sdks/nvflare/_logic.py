@@ -891,7 +891,7 @@ def last_successful_job_event(run: dict[str, Any]) -> dict[str, Any] | None:
 def _runtime_started_but_incomplete(run: dict[str, Any]) -> bool:
     """Return true when captured NVFLARE artifacts show a started, unfinished run."""
 
-    if _has_runtime_scalar_result_metric(run):
+    if _has_task_result_artifact(run):
         return False
     progress = _server_progress_summary(run)
     if not progress or "no terminal `Finished` marker was captured" not in progress:
@@ -1041,7 +1041,7 @@ def job_run_status(run: dict[str, Any]) -> str:
     # background interruption classification: a background run can finish and capture results
     # without ever emitting a terminal task-status event, which would otherwise be misread as
     # "agent_left_simulation_running".
-    has_success_evidence = last_successful_job_event(run) or artifact_validation_metric_is_runtime_evidence(run)
+    has_success_evidence = last_successful_job_event(run) or _has_task_result_artifact(run)
     if not has_success_evidence:
         background_status = _background_simulation_interruption_status(run)
         if background_status:
@@ -1050,7 +1050,7 @@ def job_run_status(run: dict[str, Any]) -> str:
         return "started_failed"
     if last_successful_job_event(run):
         return "completed"
-    if artifact_validation_metric_is_runtime_evidence(run):
+    if _has_task_result_artifact(run):
         return "completed"
     if not attempted:
         return "not_started"
@@ -1150,10 +1150,12 @@ def job_run_status_reason(run: dict[str, Any]) -> str:
         output = str(event.get("output") or "") if event else ""
         recovered_issue = completed_job_recovered_issue_summary(run)
         repeated_runs = repeated_job_run_summary(run)
-        artifact_evidence = artifact_validation_metric_evidence(run)
+        fedstats_artifact = _captured_federated_statistics_artifact(run)
+        artifact_evidence = _task_result_artifact_evidence(run)
         if artifact_evidence and not event:
+            artifact_kind = "task result artifact" if fedstats_artifact else "runtime metric artifact"
             return (
-                "job execution inferred from captured runtime metric artifact — "
+                f"job execution inferred from captured {artifact_kind} — "
                 f"{artifact_evidence}; command detector did not identify a direct job.py or simulator command"
             )
         if "Finished" in output:
@@ -1206,40 +1208,26 @@ def _has_runtime_scalar_result_metric(run: dict[str, Any]) -> bool:
 def _captured_federated_statistics_artifact(run: dict[str, Any]) -> str:
     for item in _runtime_artifacts(run):
         label = _artifact_label(item).replace("\\", "/")
-        if not re.search(r"(^|/)simulate_job/(?:stats|statistics|results)/", label):
+        if not re.search(r"(^|/)server/simulate_job/", label):
             continue
         if re.search(r"(?:fedstats|global_stats|statistics|stats)[^/]*\.json$", label, re.IGNORECASE):
             return label
     return ""
 
 
-def _missing_federated_statistics_routing_block(run: dict[str, Any]) -> str:
-    if _declared_evaluation_task(run) or _declared_evaluation_selectors(run):
-        return ""
-    artifact = _captured_federated_statistics_artifact(run)
-    if not artifact:
-        return ""
-    lines = [
-        "**Root cause of misleading result failure**",
-        "",
-        (
-            "This run captured a federated-statistics result artifact, but the scenario/run plan did not declare "
-            "`evaluation_task: federated-statistics`. The NVFLARE report therefore fell back to the legacy "
-            "conversion result gate, which expects training outputs such as `metrics_summary.json` and terminal "
-            "`Finished` markers. Federated-statistics jobs report statistics JSON instead, so the run was marked "
-            "`started_failed` by the wrong gate."
-        ),
-        "",
-        "| Evidence | What it shows |",
-        "|---|---|",
-        "| Declared evaluation task | none captured in `scenario.json` / `run_plan.json` |",
-        f"| Captured statistics artifact | {markdown_cell(artifact)} |",
-        (
-            "| Fix | rerun through a scenario that declares `evaluation_task: federated-statistics`, "
-            "`result_artifact`, and `acceptance_checks` |"
-        ),
-    ]
-    return "\n".join(lines)
+def _has_federated_statistics_result_artifact(run: dict[str, Any]) -> bool:
+    return bool(_captured_federated_statistics_artifact(run))
+
+
+def _has_task_result_artifact(run: dict[str, Any]) -> bool:
+    return _has_runtime_scalar_result_metric(run) or _has_federated_statistics_result_artifact(run)
+
+
+def _task_result_artifact_evidence(run: dict[str, Any]) -> str:
+    fedstats_artifact = _captured_federated_statistics_artifact(run)
+    if fedstats_artifact:
+        return f"captured federated-statistics result artifact `{fedstats_artifact}`"
+    return artifact_validation_metric_evidence(run)
 
 
 def _agent_event_payloads(run: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1973,6 +1961,12 @@ def _declared_evaluation_selectors(run: dict[str, Any] | None) -> dict[str, str]
     return {}
 
 
+def _inferred_evaluation_task(run: dict[str, Any] | None) -> str:
+    if isinstance(run, dict) and _has_federated_statistics_result_artifact(run):
+        return "federated-statistics"
+    return ""
+
+
 def _run_evaluation_rules(run: dict[str, Any] | None = None):
     """Composed rules for the run's DECLARED task (scenario `evaluation_task`).
 
@@ -1984,8 +1978,9 @@ def _run_evaluation_rules(run: dict[str, Any] | None = None):
 
     declared_selectors = _declared_evaluation_selectors(run)
     path = _evaluation_rules_path(run)
-    task = _declared_evaluation_task(run) or None
-    if task or declared_selectors:
+    declared_task = _declared_evaluation_task(run)
+    task = declared_task or _inferred_evaluation_task(run) or None
+    if declared_task or declared_selectors:
         try:
             load_evaluation_rules("nvflare", path, task=task, selectors=declared_selectors, strict_selectors=True)
         except ValueError as exc:
@@ -2006,7 +2001,12 @@ def _run_evaluation_rules(run: dict[str, Any] | None = None):
 def _resolved_evaluation_task(run: dict[str, Any] | None) -> str:
     # Self-contained rules FILES compose no manifest and carry no task key;
     # they inherit the declared task, defaulting to conversion (legacy shape).
-    return str(_run_evaluation_rules(run).get("task") or _declared_evaluation_task(run) or "conversion")
+    return str(
+        _run_evaluation_rules(run).get("task")
+        or _declared_evaluation_task(run)
+        or _inferred_evaluation_task(run)
+        or "conversion"
+    )
 
 
 def conversion_quality_score(signal: str, value: str, run: dict[str, Any] | None = None) -> str:
@@ -2123,11 +2123,8 @@ def _error_log_summary(run: dict[str, Any]) -> str:
 def result_failure_root_cause_block(run: dict[str, Any]) -> str:
     """Explain missing NVFLARE result metrics from captured runtime artifacts."""
 
-    if not run.get("available") or _has_runtime_scalar_result_metric(run):
+    if not run.get("available") or _has_task_result_artifact(run):
         return ""
-    routing_block = _missing_federated_statistics_routing_block(run)
-    if routing_block:
-        return routing_block
     # This diagnostic explains a missing TRAINING result scalar
     # (metrics_summary.json). Tasks whose result is a different artifact —
     # federated-statistics writes statistics JSON, never a metrics summary —

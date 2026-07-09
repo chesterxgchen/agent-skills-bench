@@ -1054,7 +1054,7 @@ def _root_cause_lead(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportCo
     return lines
 
 
-def _agent_rca_section(run: RunEvidence, fallback_label: str) -> list[str]:
+def _agent_rca_section(run: RunEvidence, fallback_label: str, ev: Any = None) -> list[str]:
     """Render an agent-driven RCA report (benchmark.harness.rca) for a run, if one exists.
 
     The report is an AGENT-AUTHORED post-run analysis, not captured Stage-3
@@ -1065,6 +1065,8 @@ def _agent_rca_section(run: RunEvidence, fallback_label: str) -> list[str]:
     raw = run.raw if isinstance(run.raw, dict) else {}
     report = str(raw.get("rca_report") or "").strip()
     if not report:
+        return []
+    if "failed quality check(s)" in report.lower() and not run_quality_issues(run, ev):
         return []
     return [
         f"**Agent root-cause investigation ({run.label or fallback_label})** — agent-authored analysis "
@@ -1166,7 +1168,7 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
     root_cause_chain = _failure_root_cause_chain(with_run, base_run)
     if root_cause_chain:
         lines.extend([*root_cause_chain, ""])
-    rca_lines = _agent_rca_section(with_run, "With skills")
+    rca_lines = _agent_rca_section(with_run, "With skills", ctx.evidence.get(with_run.mode) if ctx else None)
     if rca_lines:
         lines.extend(rca_lines)
     elif root_cause_chain:
@@ -1417,10 +1419,10 @@ def why_section(
     # Agent RCA reports stand on their own: render any that no subsection embedded,
     # regardless of which Why triggers fired or which mode was investigated.
     if not with_rca_embedded:
-        with_rca = _agent_rca_section(with_run, WITH_SKILLS_MODE)
+        with_rca = _agent_rca_section(with_run, WITH_SKILLS_MODE, ctx.evidence.get(WITH_SKILLS_MODE))
         if with_rca:
             sections.append(with_rca)
-    base_rca = _agent_rca_section(base_run, base_mode)
+    base_rca = _agent_rca_section(base_run, base_mode, ctx.evidence.get(base_mode))
     if base_rca:
         sections.append(base_rca)
     if not sections:

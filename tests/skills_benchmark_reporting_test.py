@@ -4244,7 +4244,8 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
     assert "Slowdown driver comparison" not in why
 
 
-def test_fedstats_artifact_without_task_route_explains_wrong_gate():
+def test_fedstats_artifact_without_task_route_infers_fedstats_result():
+    from benchmark.harness.reports.benchmark_insights import run_quality_issues
     from benchmark.harness.sdks.nvflare import _logic
 
     run = {
@@ -4261,12 +4262,47 @@ def test_fedstats_artifact_without_task_route_explains_wrong_gate():
         },
     }
 
-    block = _logic.result_failure_root_cause_block(run)
+    evidence = _ev(run)
+    ev = _nv_ev(run)
 
-    assert "**Root cause of misleading result failure**" in block
-    assert "`evaluation_task: federated-statistics`" in block
-    assert "`metrics_summary.json`" in block
-    assert "simulate_job/results/fedstats.json" in block
+    assert _logic._resolved_evaluation_task(run) == "federated-statistics"
+    assert _logic.job_run_status(run) == "completed"
+    assert "captured federated-statistics result artifact" in _logic.job_run_status_reason(run)
+    assert _logic.result_failure_root_cause_block(run) == ""
+    assert run_quality_issues(evidence, ev) == []
+
+
+def test_fedstats_stats_output_artifact_completes_declared_task():
+    from benchmark.harness.reports.benchmark_insights import run_quality_issues
+    from benchmark.harness.sdks.nvflare import _logic
+
+    run = {
+        "available": True,
+        "mode": "with_skills",
+        "label": "With skills",
+        "run_plan_entry": {"evaluation_task": "federated-statistics"},
+        "workspace_delta": {
+            "runtime_artifacts": [
+                {
+                    "path": (
+                        "tmp/nvflare_patient_fedstats/sim_workspace/patient_encounter_fedstats/server/"
+                        "simulate_job/stats_output/patient_encounter_stats.json"
+                    ),
+                    "artifact_path": "runtime_artifacts/patient_encounter_stats.json",
+                }
+            ]
+        },
+    }
+
+    evidence = _ev(run)
+    ev = _nv_ev(run)
+
+    assert _logic._captured_federated_statistics_artifact(run).endswith(
+        "server/simulate_job/stats_output/patient_encounter_stats.json"
+    )
+    assert _logic.job_run_status(run) == "completed"
+    assert "captured federated-statistics result artifact" in _logic.job_run_status_reason(run)
+    assert run_quality_issues(evidence, ev) == []
 
 
 def test_reported_scalar_alone_does_not_satisfy_nvflare_result_gate():
@@ -9063,6 +9099,36 @@ def test_why_renders_rca_report_when_only_token_section_triggers():
     why = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
     assert "Agent root-cause investigation (With skills)" in why
     assert "Skill files were re-read every turn." in why
+
+
+def test_why_suppresses_stale_quality_failure_rca_after_current_pass():
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.insights._why import why_section
+
+    with_run = {
+        "available": True,
+        "label": "With skills",
+        "mode": WITH_SKILLS_MODE,
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0, "elapsed_seconds": 300, "token_count": 50_000},
+        "rca_report": (
+            "**with_skills finished but failed quality check(s): Failed check `job_execution`: "
+            "job status is `started_failed`.**\n\n### Verdict\n\nOld failure."
+        ),
+    }
+    base_run = {
+        "available": True,
+        "label": "No skills baseline",
+        "mode": NO_SKILLS_MODE,
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0, "elapsed_seconds": 300, "token_count": 50_000},
+    }
+    runs = {NO_SKILLS_MODE: base_run, WITH_SKILLS_MODE: with_run}
+
+    why = why_section(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
+
+    assert "Agent root-cause investigation" not in why
+    assert "Old failure." not in why
 
 
 def test_why_renders_rca_report_for_base_mode():
