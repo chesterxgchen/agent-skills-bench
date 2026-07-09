@@ -4244,6 +4244,31 @@ def test_why_section_renders_when_with_skills_missing_result_even_if_faster(tmp_
     assert "Slowdown driver comparison" not in why
 
 
+def test_fedstats_artifact_without_task_route_explains_wrong_gate():
+    from benchmark.harness.sdks.nvflare import _logic
+
+    run = {
+        "available": True,
+        "mode": "with_skills",
+        "label": "With skills",
+        "workspace_delta": {
+            "runtime_artifacts": [
+                {
+                    "path": "tmp/nvflare_fedstats_sim/federated_site_stats/server/simulate_job/results/fedstats.json",
+                    "artifact_path": "runtime_artifacts/fedstats.json",
+                }
+            ]
+        },
+    }
+
+    block = _logic.result_failure_root_cause_block(run)
+
+    assert "**Root cause of misleading result failure**" in block
+    assert "`evaluation_task: federated-statistics`" in block
+    assert "`metrics_summary.json`" in block
+    assert "simulate_job/results/fedstats.json" in block
+
+
 def test_reported_scalar_alone_does_not_satisfy_nvflare_result_gate():
     from benchmark.harness.reports.benchmark_insights import benchmark_outcome, run_quality_issues
 

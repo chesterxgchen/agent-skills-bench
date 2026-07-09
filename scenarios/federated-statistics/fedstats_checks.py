@@ -105,11 +105,31 @@ def numeric_leaves(payload, path=()):
         yield path, float(payload)
 
 
+def dict_key_paths(payload, path=()):
+    """Every dict key chain as a joined lowercase path — histogram/quantile
+    values are nested bin ARRAYS, invisible to numeric_leaves, so structural
+    presence checks walk key paths instead."""
+
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            child = path + (str(key),)
+            yield "/".join(child).lower()
+            yield from dict_key_paths(value, child)
+
+
 def path_has_token(path_str: str, token: str) -> bool:
     return re.search(rf"(^|[^a-z0-9]){re.escape(token.lower())}([^a-z0-9]|$)", path_str) is not None
 
 
-def matched_values(leaves, feature: str, stat: str, site_tokens) -> list[float]:
+# Dataset-name variants an agent plausibly uses for each split file stem.
+DATASET_TOKENS = {
+    "train": ("train", "training"),
+    "valid": ("valid", "validation", "validate", "val"),
+    "test": ("test", "testing"),
+}
+
+
+def matched_values(leaves, feature: str, stat: str, site_tokens, dataset_tokens=()) -> list[float]:
     values = []
     for path, value in leaves:
         path_str = "/".join(path).lower()
@@ -119,8 +139,44 @@ def matched_values(leaves, feature: str, stat: str, site_tokens) -> list[float]:
             continue
         if not any(path_has_token(path_str, token) for token in site_tokens):
             continue
+        if dataset_tokens and not any(path_has_token(path_str, token) for token in dataset_tokens):
+            continue
         values.append(value)
     return values
+
+
+def evaluation_axes(truth: dict) -> list[dict]:
+    """One evaluation axis per (site|Global) x dataset split.
+
+    v1 ground truth (single data.csv) has no dataset dimension: axes carry
+    empty dataset tokens and reference the top-level sites/global stats. v2
+    (train/valid) nests per-split references and requires a dataset token in
+    the matched leaf path, so a train value can never satisfy a valid cell.
+    """
+
+    axes = []
+    splits = truth.get("datasets") or {None: truth}
+    for split, payload in splits.items():
+        dataset_tokens = DATASET_TOKENS.get(split, (split,)) if split else ()
+        suffix = f"[{split}]" if split else ""
+        for site in SITES:
+            axes.append(
+                {
+                    "label": f"{site}{suffix}",
+                    "site_tokens": (site,),
+                    "dataset_tokens": dataset_tokens,
+                    "reference": payload["sites"][site],
+                }
+            )
+        axes.append(
+            {
+                "label": f"Global{suffix}",
+                "site_tokens": GLOBAL_TOKENS,
+                "dataset_tokens": dataset_tokens,
+                "reference": payload["global"],
+            }
+        )
+    return axes
 
 
 def close(value: float, reference: float) -> bool:
@@ -131,7 +187,7 @@ def find_statistics_output(record_dir: Path, truth: dict):
     """The captured JSON whose numeric leaves best cover (feature, stat, site)
     expectations — the run's aggregated statistics artifact."""
 
-    best = (None, None, 0)
+    best = (None, None, (), 0)
     probe_features = truth["numeric_features"][:5]
     for rel, captured in captured_json_files(record_dir):
         try:
@@ -147,8 +203,8 @@ def find_statistics_output(record_dir: Path, truth: dict):
             for site_tokens in (SITES, GLOBAL_TOKENS)
             if matched_values(leaves, feature, "count", site_tokens)
         )
-        if score > best[2]:
-            best = (rel, leaves, score)
+        if score > best[3]:
+            best = (rel, leaves, tuple(dict_key_paths(payload)), score)
     return best
 
 
@@ -168,11 +224,14 @@ def main() -> int:
     checks = []
 
     # 1. Committed ground truth still matches the dataset the run consumed.
+    # v1 keys are site names (implicit data.csv); v2 keys are relative CSV paths.
+    def csv_path(key: str) -> Path:
+        return job_path / key if "/" in key else job_path / key / "data.csv"
+
     drift = [
-        site
-        for site, digest in truth["csv_sha256"].items()
-        if not (job_path / site / "data.csv").is_file()
-        or hashlib.sha256((job_path / site / "data.csv").read_bytes()).hexdigest() != digest
+        key
+        for key, digest in truth["csv_sha256"].items()
+        if not csv_path(key).is_file() or hashlib.sha256(csv_path(key).read_bytes()).hexdigest() != digest
     ]
     if drift:
         checks.append(
@@ -183,7 +242,7 @@ def main() -> int:
     checks.append(ok("dataset_unchanged", "site CSV hashes match committed ground truth"))
 
     # 2. A real aggregated statistics artifact landed in the workspace.
-    rel, leaves, score = find_statistics_output(record_dir, truth)
+    rel, leaves, key_paths, score = find_statistics_output(record_dir, truth)
     if not rel or score == 0:
         checks.append(fail("statistics_output_found", "no captured JSON carries per-site+Global statistics leaves"))
         for check_id in ("completeness", "count_exact", "value_accuracy", "categorical_excluded"):
@@ -200,31 +259,32 @@ def main() -> int:
     checks.append(ok("statistics_output_found", f"statistics artifact: {rel}"))
 
     features = truth["numeric_features"]
-    site_axes = [(site, (site,)) for site in SITES] + [("Global", GLOBAL_TOKENS)]
+    axes = evaluation_axes(truth)
 
-    # 3. Completeness: every numeric feature x every site + Global x core stats.
+    # 3. Completeness: every numeric feature x every (site + Global) x dataset
+    #    split x core stats.
     missing = [
-        f"{feature}/{stat}/{label}"
+        f"{feature}/{stat}/{axis['label']}"
         for feature in features
         for stat in ("count", "mean", "stddev")
-        for label, tokens in site_axes
-        if not matched_values(leaves, feature, stat, tokens)
+        for axis in axes
+        if not matched_values(leaves, feature, stat, axis["site_tokens"], axis["dataset_tokens"])
     ]
     if missing:
         checks.append(
             fail("completeness", f"{len(missing)} feature/stat/site cells missing, e.g. {', '.join(missing[:6])}")
         )
     else:
-        checks.append(ok("completeness", f"{len(features)} features x {len(site_axes)} sites x count/mean/stddev"))
+        checks.append(ok("completeness", f"{len(features)} features x {len(axes)} site/split cells x count/mean/stddev"))
 
     # 4. Counts are exact constants — the anti-site-mixup / anti-fake check.
     count_errors = []
-    for label, tokens in site_axes:
-        reference = truth["global"]["count"] if label == "Global" else truth["sites"][label]["count"]
+    for axis in axes:
+        reference = axis["reference"]["count"]
         for feature in features:
-            values = matched_values(leaves, feature, "count", tokens)
+            values = matched_values(leaves, feature, "count", axis["site_tokens"], axis["dataset_tokens"])
             if values and not any(int(round(value)) == reference for value in values):
-                count_errors.append(f"{label}/{feature}={values[:2]} != {reference}")
+                count_errors.append(f"{axis['label']}/{feature}={values[:2]} != {reference}")
     if count_errors:
         checks.append(fail("count_exact", f"{len(count_errors)} wrong counts, e.g. {'; '.join(count_errors[:4])}"))
     else:
@@ -232,12 +292,11 @@ def main() -> int:
 
     # 5. Numeric accuracy at persisted precision; stddev accepts either ddof.
     value_errors = []
-    for label, tokens in site_axes:
-        reference_features = truth["global"]["features"] if label == "Global" else truth["sites"][label]["features"]
+    for axis in axes:
         for feature in features:
-            refs = reference_features[feature]
+            refs = axis["reference"]["features"][feature]
             for stat in ("mean", "sum", "stddev"):
-                values = matched_values(leaves, feature, stat, tokens)
+                values = matched_values(leaves, feature, stat, axis["site_tokens"], axis["dataset_tokens"])
                 if not values:
                     continue
                 if stat == "stddev":
@@ -245,7 +304,7 @@ def main() -> int:
                 else:
                     passed = any(close(v, refs[stat]) for v in values)
                 if not passed:
-                    value_errors.append(f"{label}/{feature}/{stat}={values[:1]} != {refs.get(stat)}")
+                    value_errors.append(f"{axis['label']}/{feature}/{stat}={values[:1]} != {refs.get(stat)}")
     if value_errors:
         checks.append(
             fail("value_accuracy", f"{len(value_errors)} values off reference, e.g. {'; '.join(value_errors[:4])}")
@@ -253,17 +312,27 @@ def main() -> int:
     else:
         checks.append(ok("value_accuracy", "mean/sum/stddev match the pandas reference at persisted precision"))
 
-    # 6. min/max presence only (noised by default privacy filters).
-    minmax_missing = [
-        f"{feature}/{stat}"
-        for feature in features
-        for stat in ("min", "max")
-        if not matched_values(leaves, feature, stat, GLOBAL_TOKENS + tuple(SITES))
-    ]
+    # 6. Spread statistics present (warning). The skill's default selection is
+    #    count/mean/stddev/sum/histogram — min/max and quantiles are optional,
+    #    so any of histogram, min+max, or quantile per feature satisfies this.
+    def spread_present(feature: str) -> bool:
+        has_histogram = any(
+            path_has_token(path, feature) and path_has_token(path, "histogram") for path in key_paths
+        )
+        has_minmax = matched_values(leaves, feature, "min", GLOBAL_TOKENS + tuple(SITES)) and matched_values(
+            leaves, feature, "max", GLOBAL_TOKENS + tuple(SITES)
+        )
+        return has_histogram or bool(has_minmax)
+
+    spread_missing = [feature for feature in features if not spread_present(feature)]
     checks.append(
-        fail("minmax_present", f"missing min/max for e.g. {', '.join(minmax_missing[:6])}", severity="warning")
-        if minmax_missing
-        else ok("minmax_present", "noised min/max present for all features", severity="warning")
+        fail(
+            "spread_stats_present",
+            f"no histogram or min/max for e.g. {', '.join(spread_missing[:6])}",
+            severity="warning",
+        )
+        if spread_missing
+        else ok("spread_stats_present", "histogram or min/max present for all features", severity="warning")
     )
 
     # 7. Categorical features stay out of the numeric statistics.

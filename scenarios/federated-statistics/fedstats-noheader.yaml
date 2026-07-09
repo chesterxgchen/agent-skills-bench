@@ -9,14 +9,14 @@ agents:
 workflows:
   - name: FEDSTATS
 jobs:
-  - path: ~/projects/flare_test/tabular_no_header
+  - path: ~/projects/flare_test/tabular_no_header_v2
     name: fedstats-noheader
     scale: small
 evaluation_task: federated-statistics
 evaluation_selectors:
   data-format: no_header
 result_artifact:
-  glob: "**/simulate_job/statistics/*.json"
+  glob: "**/simulate_job/*stat*.json"
   format: json
   description: aggregated federated statistics output from the simulator workspace
 acceptance_checks:
@@ -27,4 +27,4 @@ quality_gate:
 comparison:
   type: mode_ablation
   modes: [without_skills, with_skills]
-  repeats: 3
+  repeats: 1

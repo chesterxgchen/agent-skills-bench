@@ -1203,6 +1203,45 @@ def _has_runtime_scalar_result_metric(run: dict[str, Any]) -> bool:
     return artifact_validation_metric_is_runtime_evidence(run)
 
 
+def _captured_federated_statistics_artifact(run: dict[str, Any]) -> str:
+    for item in _runtime_artifacts(run):
+        label = _artifact_label(item).replace("\\", "/")
+        if not re.search(r"(^|/)simulate_job/(?:stats|statistics|results)/", label):
+            continue
+        if re.search(r"(?:fedstats|global_stats|statistics|stats)[^/]*\.json$", label, re.IGNORECASE):
+            return label
+    return ""
+
+
+def _missing_federated_statistics_routing_block(run: dict[str, Any]) -> str:
+    if _declared_evaluation_task(run) or _declared_evaluation_selectors(run):
+        return ""
+    artifact = _captured_federated_statistics_artifact(run)
+    if not artifact:
+        return ""
+    lines = [
+        "**Root cause of misleading result failure**",
+        "",
+        (
+            "This run captured a federated-statistics result artifact, but the scenario/run plan did not declare "
+            "`evaluation_task: federated-statistics`. The NVFLARE report therefore fell back to the legacy "
+            "conversion result gate, which expects training outputs such as `metrics_summary.json` and terminal "
+            "`Finished` markers. Federated-statistics jobs report statistics JSON instead, so the run was marked "
+            "`started_failed` by the wrong gate."
+        ),
+        "",
+        "| Evidence | What it shows |",
+        "|---|---|",
+        "| Declared evaluation task | none captured in `scenario.json` / `run_plan.json` |",
+        f"| Captured statistics artifact | {markdown_cell(artifact)} |",
+        (
+            "| Fix | rerun through a scenario that declares `evaluation_task: federated-statistics`, "
+            "`result_artifact`, and `acceptance_checks` |"
+        ),
+    ]
+    return "\n".join(lines)
+
+
 def _agent_event_payloads(run: dict[str, Any]) -> list[dict[str, Any]]:
     payloads = []
     for line in str(run.get("agent_events_text") or "").splitlines():
@@ -2085,6 +2124,15 @@ def result_failure_root_cause_block(run: dict[str, Any]) -> str:
     """Explain missing NVFLARE result metrics from captured runtime artifacts."""
 
     if not run.get("available") or _has_runtime_scalar_result_metric(run):
+        return ""
+    routing_block = _missing_federated_statistics_routing_block(run)
+    if routing_block:
+        return routing_block
+    # This diagnostic explains a missing TRAINING result scalar
+    # (metrics_summary.json). Tasks whose result is a different artifact —
+    # federated-statistics writes statistics JSON, never a metrics summary —
+    # must not be told their "final metrics summary was not produced".
+    if _resolved_evaluation_task(run) != "conversion":
         return ""
     status = job_run_status(run)
     if status not in {

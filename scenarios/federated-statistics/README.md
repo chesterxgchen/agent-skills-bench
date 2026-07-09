@@ -3,8 +3,8 @@
 Two scenarios over the local `~/projects/flare_test` site-split patient
 datasets, with the canonical fed-stats prompt:
 
-- `fedstats-header.yaml` — `tabular_with_header/` (CSV header row present)
-- `fedstats-noheader.yaml` — `tabular_no_header/` (column names only in the
+- `fedstats-header.yaml` — `tabular_with_header_v2/` (CSV header row present)
+- `fedstats-noheader.yaml` — `tabular_no_header_v2/` (column names only in the
   dataset README; adds the `data-format: no_header` criteria overlay and the
   names-honored acceptance check)
 
@@ -16,6 +16,11 @@ records each site CSV's sha256; `fedstats_checks.py` fails the
 
 ## Files
 
+- `generate_dataset.py` — seeded generator for the v2 datasets: bootstraps
+  per-site rows from the original 1000-row extract (~20k rows total, sites
+  45/35/20%), jitters continuous columns, and splits each site 80/20 into
+  `train.csv`/`valid.csv`. Rerunning with the same seed is byte-identical.
+
 - `ground_truth.<dataset>.json` — committed constants (counts, sum/mean/stddev
   per site + Global, both stddev conventions, categorical lists, leakage
   sentinels, CSV hashes). Regenerate only when the dataset intentionally
@@ -26,7 +31,7 @@ records each site CSV's sha256; `fedstats_checks.py` fails the
   completeness (features x sites x stats), exact counts, value accuracy at
   persisted precision, categorical exclusion, privacy defaults not weakened,
   no raw-row leakage in the final report, README names honored (noheader).
-  min/max are presence-only (noised by the default privacy filters);
+  spread statistics (histogram or min/max) are presence-only;
   quantiles/histograms are not judged numerically.
 
 Acceptance scripts are trusted host code (same trust as the scenario file);
@@ -34,8 +39,8 @@ the compiler requires them to live inside this directory.
 
 ## What scores what
 
-- Hard pass/fail: `result_artifact` (statistics JSON under the simulator
-  workspace) + the checks above, via `critical_quality_checks_failed`.
+- Hard pass/fail: `result_artifact` (stats JSON under the simulator workspace)
+  + the checks above, via `critical_quality_checks_failed`.
 - Quality shading: the `federated-statistics` task criteria in
   `benchmark/config/evaluation/nvflare/tasks/federated-statistics/`, judged by
   the code-eval agent and rendered as report rows.

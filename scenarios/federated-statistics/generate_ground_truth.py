@@ -68,8 +68,25 @@ def readme_columns(readme: Path) -> list[str]:
     return columns
 
 
-def load_site(site_dir: Path, *, header: bool, columns: list[str] | None) -> tuple[list[str], list[dict[str, str]]]:
-    csv_path = site_dir / "data.csv"
+def site_csv_files(dataset: Path) -> dict[str, str]:
+    """Per-site dataset files: ``{"data": "data.csv"}`` (v1 single-file) or the
+    split form (``{"train": ..., "valid": ...}``). All sites must agree."""
+
+    layouts = {}
+    for site in SITES:
+        names = sorted(path.name for path in (dataset / site).glob("*.csv"))
+        if not names:
+            raise SystemExit(f"no CSV files under {dataset / site}")
+        layouts[site] = names
+    reference = layouts[SITES[0]]
+    for site, names in layouts.items():
+        if names != reference:
+            raise SystemExit(f"{site} has different CSV files than {SITES[0]}: {names} != {reference}")
+    return {Path(name).stem: name for name in reference}
+
+
+def load_site(site_dir: Path, *, header: bool, columns: list[str] | None, filename: str = "data.csv") -> tuple[list[str], list[dict[str, str]]]:
+    csv_path = site_dir / filename
     with csv_path.open(encoding="utf-8", newline="") as stream:
         reader = csv.reader(stream)
         rows = [row for row in reader if row]
@@ -117,8 +134,8 @@ def feature_stats(values: list[float]) -> dict[str, float]:
     }
 
 
-def sentinel_rows(site_dir: Path, *, header: bool) -> list[str]:
-    lines = [line for line in (site_dir / "data.csv").read_text(encoding="utf-8").splitlines() if line.strip()]
+def sentinel_rows(site_dir: Path, *, header: bool, filename: str = "data.csv") -> list[str]:
+    lines = [line for line in (site_dir / filename).read_text(encoding="utf-8").splitlines() if line.strip()]
     if header:
         lines = lines[1:]
     # Distinctive full rows from fixed offsets — deterministic, mid-file.
@@ -136,19 +153,25 @@ def main() -> int:
     dataset = args.dataset_dir.expanduser().resolve()
     header = not args.no_header
     columns = None if header else readme_columns(dataset / "README.md")
+    files_by_stem = site_csv_files(dataset)
+    single_file = files_by_stem == {"data": "data.csv"}
 
-    per_site_records: dict[str, list[dict[str, str]]] = {}
-    for site in SITES:
-        site_columns, records = load_site(dataset / site, header=header, columns=columns)
-        if columns is not None and site_columns != columns:
-            raise SystemExit(
-                f"{site} declares a different schema than {SITES[0]}: {site_columns} != {columns} — "
-                "cross-site schema drift would corrupt the ground truth"
-            )
-        columns = site_columns
-        per_site_records[site] = records
+    # records[stem][site] — one dataset axis entry per CSV stem (train/valid),
+    # or the single "data" axis for the v1 one-file-per-site layout.
+    records_by_stem: dict[str, dict[str, list[dict[str, str]]]] = {}
+    for stem, filename in files_by_stem.items():
+        records_by_stem[stem] = {}
+        for site in SITES:
+            site_columns, records = load_site(dataset / site, header=header, columns=columns, filename=filename)
+            if columns is not None and site_columns != columns:
+                raise SystemExit(
+                    f"{site}/{filename} declares a different schema than the reference: "
+                    f"{site_columns} != {columns} — cross-site schema drift would corrupt the ground truth"
+                )
+            columns = site_columns
+            records_by_stem[stem][site] = records
 
-    all_records = [record for records in per_site_records.values() for record in records]
+    all_records = [record for sites in records_by_stem.values() for records in sites.values() for record in records]
     numeric = [column for column in columns if is_numeric_column(all_records, column)]
     categorical = [column for column in columns if column not in numeric]
 
@@ -157,27 +180,49 @@ def main() -> int:
             feature: feature_stats([float(record[feature]) for record in records]) for feature in numeric
         }
 
+    def axis_payload(sites: dict[str, list[dict[str, str]]]) -> dict:
+        pooled = [record for records in sites.values() for record in records]
+        return {
+            "sites": {
+                site: {"count": len(records), "features": stats_for(records)} for site, records in sites.items()
+            },
+            "global": {"count": len(pooled), "features": stats_for(pooled)},
+        }
+
     payload = {
-        "schema_version": 1,
+        "schema_version": 1 if single_file else 2,
         "dataset": dataset.name,
         "header": header,
         "columns": columns,
         "numeric_features": numeric,
         "categorical_features": categorical,
         "csv_sha256": {
-            site: hashlib.sha256((dataset / site / "data.csv").read_bytes()).hexdigest() for site in SITES
+            (site if single_file else f"{site}/{filename}"): hashlib.sha256(
+                (dataset / site / filename).read_bytes()
+            ).hexdigest()
+            for site in SITES
+            for filename in files_by_stem.values()
         },
-        "sites": {
-            site: {"count": len(records), "features": stats_for(records)}
-            for site, records in per_site_records.items()
-        },
-        "global": {"count": len(all_records), "features": stats_for(all_records)},
-        "sentinels": [row for site in SITES for row in sentinel_rows(dataset / site, header=header)],
+        "sentinels": [
+            row
+            for site in SITES
+            for filename in files_by_stem.values()
+            for row in sentinel_rows(dataset / site, header=header, filename=filename)
+        ],
         "min_count_floor": 10,
     }
+    if single_file:
+        payload.update(axis_payload(records_by_stem["data"]))
+    else:
+        payload["datasets"] = {stem: axis_payload(sites) for stem, sites in records_by_stem.items()}
     args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    total = (
+        payload["global"]["count"]
+        if single_file
+        else {stem: axis["global"]["count"] for stem, axis in payload["datasets"].items()}
+    )
     print(
-        f"{dataset.name}: {payload['global']['count']} rows, "
+        f"{dataset.name}: rows {total}, "
         f"{len(numeric)} numeric / {len(categorical)} categorical features -> {args.output}"
     )
     return 0

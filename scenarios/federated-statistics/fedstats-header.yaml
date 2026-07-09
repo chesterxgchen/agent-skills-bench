@@ -11,14 +11,14 @@ agents:
 workflows:
   - name: FEDSTATS
 jobs:
-  - path: ~/projects/flare_test/tabular_with_header
+  - path: ~/projects/flare_test/tabular_with_header_v2
     name: fedstats-header
     scale: small
 evaluation_task: federated-statistics
 # A statistics job reports no training validation metric; the aggregated
 # statistics artifact is the result gate instead.
 result_artifact:
-  glob: "**/simulate_job/statistics/*.json"
+  glob: "**/simulate_job/*stat*.json"
   format: json
   description: aggregated federated statistics output from the simulator workspace
 acceptance_checks:
@@ -29,4 +29,4 @@ quality_gate:
 comparison:
   type: mode_ablation
   modes: [without_skills, with_skills]
-  repeats: 3
+  repeats: 1
