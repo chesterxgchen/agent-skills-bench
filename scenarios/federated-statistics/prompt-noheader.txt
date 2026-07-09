@@ -1,1 +1,1 @@
-I'd like to calculate each site's stats (those will be calculated by separate hospitals), but also create a fed stats job to calculate the federated stats across all sites. The CSVs have no header; the README lists the columns.
+I'd like to calculate each site's stats separately for train.csv and valid.csv (those will be calculated by separate hospitals), but also create a fed stats job to calculate the Global federated stats across all sites separately for train.csv and valid.csv. The CSVs have no header; the README lists the columns.

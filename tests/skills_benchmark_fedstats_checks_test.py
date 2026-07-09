@@ -106,6 +106,39 @@ def test_find_statistics_output_accepts_declared_simulator_stats_artifact(tmp_pa
     assert score == 2
 
 
+def test_find_statistics_output_honors_selected_result_artifact_env(tmp_path, monkeypatch):
+    record_dir = tmp_path / "record"
+    record_dir.mkdir()
+    scoring_stats = json.dumps(
+        {
+            "site-1": {"age": {"count": 12}},
+            "global": {"age": {"count": 40}},
+        }
+    )
+    selected_dummy = "workspace/server/simulate_job/statistics/dummy.json"
+    write_workspace_delta(
+        record_dir,
+        {
+            "runtime_artifacts": [
+                (selected_dummy, "runtime_artifacts/dummy.json", '{"valid": true}'),
+                (
+                    "workspace/server/simulate_job/statistics/fedstats.json",
+                    "runtime_artifacts/fedstats.json",
+                    scoring_stats,
+                ),
+            ],
+        },
+    )
+    monkeypatch.setenv("ACCEPTANCE_RESULT_ARTIFACT_MATCH", selected_dummy)
+
+    rel, leaves, key_paths, score = fedstats_checks.find_statistics_output(record_dir, {"numeric_features": ["age"]})
+
+    assert rel is None
+    assert leaves is None
+    assert key_paths == ()
+    assert score == 0
+
+
 def test_min_count_weakening_detects_python_json_and_yaml_configs(tmp_path):
     record_dir = tmp_path / "record"
     record_dir.mkdir()

@@ -123,9 +123,7 @@ def record_dir_with_manifest(tmp_path: Path, files: dict[str, str]) -> Path:
         captured.parent.mkdir(parents=True, exist_ok=True)
         captured.write_text(content, encoding="utf-8")
         changed.append({"path": path, "artifact_path": artifact_path})
-    (record_dir / "workspace_delta_manifest.json").write_text(
-        json.dumps({"changed_files": changed}), encoding="utf-8"
-    )
+    (record_dir / "workspace_delta_manifest.json").write_text(json.dumps({"changed_files": changed}), encoding="utf-8")
     return record_dir
 
 
@@ -138,6 +136,8 @@ def test_result_artifact_gate_passes_on_matching_valid_json(tmp_path):
     result = evaluate_result_artifact(record_dir, {"glob": "**/simulate_job/**/*.json", "format": "json"})
     assert result["check"]["passed"] is True
     assert result["matches"] == ["workspace/server/simulate_job/statistics/adults.json"]
+    assert result["parsed_matches"] == ["workspace/server/simulate_job/statistics/adults.json"]
+    assert result["selected_match"] == "workspace/server/simulate_job/statistics/adults.json"
 
 
 def test_result_artifact_gate_fails_when_missing_or_unparsable(tmp_path):
@@ -242,6 +242,32 @@ def test_acceptance_script_checks_are_normalized(tmp_path):
     assert checks[2]["severity"] == "critical"
 
 
+def test_acceptance_script_receives_selected_result_artifact_env(tmp_path):
+    from benchmark.harness.acceptance import run_acceptance_checks
+
+    script = write_check_script(
+        tmp_path,
+        "import json, os\n"
+        'selected = os.environ.get("ACCEPTANCE_RESULT_ARTIFACT_MATCH")\n'
+        'matches = os.environ.get("ACCEPTANCE_RESULT_ARTIFACT_MATCHES")\n'
+        'print(json.dumps({"checks": [{"id": "selected", "passed": True, "evidence": selected + "|" + matches}]}))\n',
+    )
+    record_dir = tmp_path / "record"
+    record_dir.mkdir()
+    checks = run_acceptance_checks(
+        record_dir,
+        {"script": str(script), "timeout_seconds": 30},
+        result_artifact={
+            "selected_match": "workspace/server/simulate_job/statistics/stats.json",
+            "parsed_matches": ["workspace/server/simulate_job/statistics/stats.json"],
+        },
+    )
+
+    assert checks[0]["evidence"] == (
+        'workspace/server/simulate_job/statistics/stats.json|["workspace/server/simulate_job/statistics/stats.json"]'
+    )
+
+
 def test_acceptance_script_failure_fails_closed(tmp_path):
     from benchmark.harness.acceptance import run_acceptance_checks
 
@@ -338,7 +364,9 @@ def test_typoed_declared_selector_fails_closed():
 def test_conversion_detector_rows_render_only_for_conversion_task():
     from benchmark.harness.sdks.nvflare import _logic
 
-    stats_rows = {label for label, _, _ in _logic.generated_code_quality_assessments({"evaluation_task": "federated-statistics"})}
+    stats_rows = {
+        label for label, _, _ in _logic.generated_code_quality_assessments({"evaluation_task": "federated-statistics"})
+    }
     assert "Loss/optimizer lifecycle" not in stats_rows
     assert not any(label.startswith("Runtime") for label in stats_rows)
     conversion_rows = {label for label, _, _ in _logic.generated_code_quality_assessments({})}

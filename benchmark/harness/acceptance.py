@@ -90,6 +90,7 @@ def evaluate_result_artifact(record_dir: Path, declared: Mapping[str, Any] | Non
     pattern = str(declared["glob"])
     artifact_format = str(declared.get("format") or "")
     matches = []
+    parsed_matches = []
     parse_failures = []
     for item in _manifest_artifact_items(record_dir):
         path = str(item.get("path") or "")
@@ -114,7 +115,8 @@ def evaluate_result_artifact(record_dir: Path, declared: Mapping[str, Any] | Non
             json.loads(captured.read_text(encoding="utf-8", errors="replace"))
         except ValueError as exc:
             parse_failures.append(f"{path}: {exc}")
-    parsed_matches = [path for path in matches if not any(failure.startswith(f"{path}:") for failure in parse_failures)]
+        else:
+            parsed_matches.append(path)
     passed = bool(parsed_matches) if artifact_format == "json" else bool(matches)
     if not matches:
         evidence = f"no workspace artifact matches {pattern!r}"
@@ -131,11 +133,18 @@ def evaluate_result_artifact(record_dir: Path, declared: Mapping[str, Any] | Non
         "status": "pass" if passed else "fail",
         "evidence": _clip(evidence),
     }
+    selected_match = None
+    if artifact_format == "json" and parsed_matches:
+        selected_match = parsed_matches[0]
+    elif matches:
+        selected_match = matches[0]
     return {
         "check": check,
         "glob": pattern,
         "format": artifact_format or None,
         "matches": matches,
+        "parsed_matches": parsed_matches,
+        "selected_match": selected_match,
         "parse_failures": parse_failures,
         "description": declared.get("description"),
     }
@@ -182,6 +191,7 @@ def run_acceptance_checks(
     *,
     job_path: str = "",
     mode: str = "",
+    result_artifact: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the scenario-local acceptance script and normalize its checks.
 
@@ -201,6 +211,13 @@ def run_acceptance_checks(
     timeout = timeout if isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0 else 600
     command = [sys.executable, str(script_path)] if script_path.suffix == ".py" else [str(script_path)]
     command.append(str(record_dir))
+    artifact_match = ""
+    artifact_matches = "[]"
+    if isinstance(result_artifact, Mapping):
+        artifact_match = str(result_artifact.get("selected_match") or "")
+        raw_matches = result_artifact.get("parsed_matches")
+        if isinstance(raw_matches, list):
+            artifact_matches = json.dumps([str(match) for match in raw_matches])
     try:
         result = subprocess.run(
             command,
@@ -210,6 +227,8 @@ def run_acceptance_checks(
                 "RECORD_DIR": str(record_dir),
                 "JOB_PATH": str(job_path or ""),
                 "BENCHMARK_MODE": str(mode or ""),
+                "ACCEPTANCE_RESULT_ARTIFACT_MATCH": artifact_match,
+                "ACCEPTANCE_RESULT_ARTIFACT_MATCHES": artifact_matches,
             },
             capture_output=True,
             text=True,
@@ -250,6 +269,7 @@ def apply_acceptance_gates(record_dir: Path, entry: Mapping[str, Any], summary: 
         entry.get("acceptance_checks"),
         job_path=str(entry.get("job_path") or ""),
         mode=str(entry.get("mode") or ""),
+        result_artifact=artifact_result,
     )
     checks = ([artifact_result["check"]] if artifact_result else []) + script_checks
     if not checks:

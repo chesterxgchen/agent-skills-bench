@@ -81,10 +81,28 @@ def glob_matches(path: str, pattern: str) -> bool:
     return any(fnmatch.fnmatchcase(path, candidate) for candidate in candidates)
 
 
-def captured_statistics_json_files(record_dir: Path):
-    """Captured JSON payloads matching the scenario's declared simulator stats artifact."""
+def normalize_workspace_path(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def result_artifact_match_path() -> str | None:
+    selected = os.environ.get("ACCEPTANCE_RESULT_ARTIFACT_MATCH", "").strip()
+    return normalize_workspace_path(selected) if selected else None
+
+
+def captured_statistics_json_files(record_dir: Path, selected_result_artifact: str | None = None):
+    """Captured JSON payloads matching the selected simulator stats artifact.
+
+    When the harness provides ACCEPTANCE_RESULT_ARTIFACT_MATCH, the numeric
+    checks judge that same JSON instead of searching for a better-scoring file
+    elsewhere in the captured workspace.
+    """
 
     seen = set()
+    selected = normalize_workspace_path(selected_result_artifact) if selected_result_artifact else None
     manifest_path = record_dir / "workspace_delta_manifest.json"
     manifest = {}
     if manifest_path.is_file():
@@ -96,11 +114,13 @@ def captured_statistics_json_files(record_dir: Path):
         for item in manifest.get(key) or []:
             if not isinstance(item, dict):
                 continue
-            path, artifact = str(item.get("path") or ""), item.get("artifact_path")
+            path = normalize_workspace_path(str(item.get("path") or ""))
+            artifact = item.get("artifact_path")
             captured = record_dir / "workspace_delta" / str(artifact) if artifact else None
             if (
-                not path.endswith(".json")
-                or not glob_matches(path.replace("\\", "/"), STATISTICS_ARTIFACT_GLOB)
+                (selected is not None and path != selected)
+                or not path.endswith(".json")
+                or not glob_matches(path, STATISTICS_ARTIFACT_GLOB)
                 or captured is None
                 or not captured.is_file()
                 or path in seen
@@ -197,12 +217,12 @@ def close(value: float, reference: float) -> bool:
 
 
 def find_statistics_output(record_dir: Path, truth: dict):
-    """The captured JSON whose numeric leaves best cover (feature, stat, site)
-    expectations — the run's aggregated statistics artifact."""
+    """The selected result JSON whose numeric leaves best cover expectations."""
 
     best = (None, None, (), 0)
     probe_features = truth["numeric_features"][:5]
-    for rel, captured in captured_statistics_json_files(record_dir):
+    selected = result_artifact_match_path()
+    for rel, captured in captured_statistics_json_files(record_dir, selected):
         try:
             payload = json.loads(captured.read_text(encoding="utf-8", errors="replace"))
         except ValueError:
@@ -390,9 +410,7 @@ def main() -> int:
         if not csv_path(key).is_file() or hashlib.sha256(csv_path(key).read_bytes()).hexdigest() != digest
     ]
     if drift:
-        checks.append(
-            fail("dataset_unchanged", f"dataset drifted from committed ground truth for: {', '.join(drift)}")
-        )
+        checks.append(fail("dataset_unchanged", f"dataset drifted from committed ground truth for: {', '.join(drift)}"))
         print(json.dumps({"checks": checks}))
         return 0
     checks.append(ok("dataset_unchanged", "site CSV hashes match committed ground truth"))
@@ -431,7 +449,9 @@ def main() -> int:
             fail("completeness", f"{len(missing)} feature/stat/site cells missing, e.g. {', '.join(missing[:6])}")
         )
     else:
-        checks.append(ok("completeness", f"{len(features)} features x {len(axes)} site/split cells x count/mean/stddev"))
+        checks.append(
+            ok("completeness", f"{len(features)} features x {len(axes)} site/split cells x count/mean/stddev")
+        )
 
     # 4. Counts are exact constants — the anti-site-mixup / anti-fake check.
     count_errors = []
@@ -472,9 +492,7 @@ def main() -> int:
     #    count/mean/stddev/sum/histogram — min/max and quantiles are optional,
     #    so any of histogram, min+max, or quantile per feature satisfies this.
     def spread_present(feature: str) -> bool:
-        has_histogram = any(
-            path_has_token(path, feature) and path_has_token(path, "histogram") for path in key_paths
-        )
+        has_histogram = any(path_has_token(path, feature) and path_has_token(path, "histogram") for path in key_paths)
         has_minmax = matched_values(leaves, feature, "min", GLOBAL_TOKENS + tuple(SITES)) and matched_values(
             leaves, feature, "max", GLOBAL_TOKENS + tuple(SITES)
         )
