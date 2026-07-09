@@ -117,6 +117,8 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=20260709)
     parser.add_argument("--size", type=int, default=128)
     args = parser.parse_args()
+    if args.size < 2:
+        parser.error("--size must be >= 2")
 
     rng = random.Random(args.seed)
     out = args.out_dir.expanduser()
