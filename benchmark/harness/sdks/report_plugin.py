@@ -93,6 +93,13 @@ class MetricAssessment:
     # The SDK's term for the single summary scalar (NVFLARE "FL-level scalar"); used
     # in partial/missing-metric prose. None -> engine's neutral "single result scalar".
     scalar_term: str | None = None
+    # Some tasks use a non-scalar result artifact as the required output. For those,
+    # the absence of a scalar validation metric is expected and should not render as
+    # "missing".
+    scalar_required: bool = True
+    # SDK-owned path/label for a non-scalar result artifact, when one satisfied the
+    # task result gate.
+    result_artifact: str | None = None
 
 
 @dataclass(frozen=True)

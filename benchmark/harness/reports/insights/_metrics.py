@@ -171,6 +171,18 @@ def result_metric_scalar_available(run: RunEvidence, metric_name: str | None = N
     return metric_value(run, canonical_metric_name(metric_name) if metric_name else None, ev) is not None
 
 
+def _scalar_metric_required(ev: Any = None) -> bool:
+    assessment = getattr(ev, "metric", None) if ev is not None else None
+    if assessment is None:
+        return True
+    return bool(getattr(assessment, "scalar_required", True))
+
+
+def _result_artifact_path(ev: Any = None) -> str:
+    assessment = getattr(ev, "metric", None) if ev is not None else None
+    return str(getattr(assessment, "result_artifact", "") or "")
+
+
 def _quality_check_sources(run: RunEvidence) -> list[Mapping[str, Any]]:
     sources: list[Mapping[str, Any]] = []
     for source in (run.record, run.summary):
@@ -228,6 +240,8 @@ def _failed_critical_quality_check_issues(run: RunEvidence) -> list[str]:
 def _plugin_metric_quality_issue(run: RunEvidence, ev: Any = None) -> str:
     assessment = getattr(ev, "metric", None) if ev is not None else None
     if assessment is None or not getattr(assessment, "gate_phrase", None):
+        return ""
+    if not getattr(assessment, "scalar_required", True):
         return ""
     if not (
         getattr(assessment, "reported", False)
@@ -534,6 +548,11 @@ def metric_display(run: RunEvidence, metric_name: str | None, ev: Any = None) ->
         display_name = "result"
     value = metric_value(run, metric_name, ev)
     if value is None:
+        if not _scalar_metric_required(ev):
+            artifact = _result_artifact_path(ev)
+            if artifact:
+                return f"{display_name} artifact `{artifact}`"
+            return f"{display_name} not required"
         return f"{display_name} NA"
     return f"{display_name} {fmt_number(value)}"
 
@@ -702,6 +721,13 @@ def additional_or_observed_metric_values_display(
 
 
 def run_result_metric_status(run: RunEvidence, ev: Any = None) -> str:
+    if not _scalar_metric_required(ev):
+        assessment = getattr(ev, "metric", None) if ev is not None else None
+        phrase = str(getattr(assessment, "gate_phrase", "") or "task result gate satisfied")
+        artifact = _result_artifact_path(ev)
+        if artifact:
+            return f"not required: {phrase}; result artifact: `{artifact}`"
+        return f"not required: {phrase}"
     metric = run.validation_metric
     if not isinstance(metric, dict) or not metric.get("name"):
         return "missing"

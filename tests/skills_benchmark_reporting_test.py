@@ -4357,6 +4357,50 @@ def test_fedstats_stats_output_artifact_completes_declared_task():
     assert run_quality_issues(evidence, ev) == []
 
 
+def test_fedstats_result_artifact_marks_scalar_metric_not_required():
+    from benchmark.harness.reports.benchmark_insights import metric_display, run_result_metric_status
+    from benchmark.harness.reports.insights._charts import comparison_scorecard
+
+    artifact = (
+        "tmp/nvflare/chest_image_fedstats_sim/chest_image_fedstats/server/"
+        "simulate_job/stats/image_intensity_stats.json"
+    )
+    run = {
+        "available": True,
+        "mode": "with_skills",
+        "label": "With skills",
+        "run_plan_entry": {"evaluation_task": "federated-statistics"},
+        "validation_metric": {
+            "name": None,
+            "value": None,
+            "value_scope": "not_available",
+            "source": "agent_last_message",
+        },
+        "workspace_delta": {
+            "runtime_artifacts": [
+                {
+                    "path": artifact,
+                    "artifact_path": "runtime_artifacts/image_intensity_stats.json",
+                }
+            ]
+        },
+    }
+    evidence = _ev(run)
+    ev = _nv_ev(run)
+
+    assert run_result_metric_status(evidence, ev) == (
+        f"not required: declared federated-statistics result gate satisfied; result artifact: `{artifact}`"
+    )
+    assert metric_display(evidence, None, ev) == f"result artifact `{artifact}`"
+    runs = {
+        "without_skills": _ev({"available": True, "mode": "without_skills", "label": "No skills baseline"}),
+        "with_skills": evidence,
+    }
+    scorecard = comparison_scorecard(runs, _nv_ctx(runs, ["without_skills", "with_skills"]))
+    unwrapped = _unwrap_cells(scorecard)
+    assert f"| Metrics (result) | result NA | result artifact `{artifact}` | not comparable |" in unwrapped
+
+
 def test_reported_scalar_alone_does_not_satisfy_nvflare_result_gate():
     from benchmark.harness.reports.benchmark_insights import benchmark_outcome, run_quality_issues
 

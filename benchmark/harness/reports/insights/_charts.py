@@ -26,6 +26,7 @@ from .._events import as_number, fmt_seconds, run_activity
 from .._text import fmt_number, markdown_cell
 from ..evidence import RunEvidence
 from ._metrics import (
+    _scalar_metric_required,
     comparable_metric_name,
     metric_display,
     metric_name_for_runs,
@@ -252,6 +253,12 @@ def comparison_scorecard(runs: dict[str, RunEvidence], ctx: ReportContext | None
         if metric_is_mixed and item.get("id") == "metric":
             # Show each run's own metric (name + value) instead of the synthetic name.
             displays = [markdown_cell(metric_display(runs[mode], None, ctx.evidence.get(mode))) for mode in modes]
+            lines.append(f"| {label} | " + " | ".join(displays) + f" | {markdown_cell('not comparable')} |")
+            continue
+        if item.get("id") == "metric" and any(not _scalar_metric_required(ctx.evidence.get(mode)) for mode in modes):
+            displays = [
+                markdown_cell(metric_display(runs[mode], comparable_name, ctx.evidence.get(mode))) for mode in modes
+            ]
             lines.append(f"| {label} | " + " | ".join(displays) + f" | {markdown_cell('not comparable')} |")
             continue
         values = [item["value"](runs[mode], ctx.evidence.get(mode)) for mode in modes]
