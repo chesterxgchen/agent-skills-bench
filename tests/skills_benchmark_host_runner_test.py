@@ -669,6 +669,39 @@ def test_pair_compilation_uses_direct_run_selection_flags(tmp_path, monkeypatch)
     assert {entry["job_scale"] for entry in entries} == {"medium"}
 
 
+def test_pair_compilation_infers_fedstats_for_multi_csv_site_dataset(tmp_path, monkeypatch):
+    from benchmark.harness.host.common import parse_host_cli_options
+    from benchmark.harness.host.runner import pair_compilation_from_options
+
+    job_input = tmp_path / "tabular_no_header_v2"
+    for site in ("site-1", "site-2", "site-3"):
+        site_dir = job_input / site
+        site_dir.mkdir(parents=True)
+        (site_dir / "train.csv").write_text("1,2\n3,4\n", encoding="utf-8")
+        (site_dir / "valid.csv").write_text("5,6\n7,8\n", encoding="utf-8")
+    (job_input / "README.md").write_text("The CSV files have no header row.\n1. age\n2. cost\n", encoding="utf-8")
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text(
+        "take this dataset, geneate a federated status job with NVFLARE, each site will calculate "
+        "site stats, simulation and report the final global stats\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("BENCHMARK_WORKFLOW", raising=False)
+
+    options = parse_host_cli_options(
+        ["--prompt", str(prompt), "--agent", "codex", "--model", "codex-test", str(job_input)],
+        "pair",
+    )
+    compilation = pair_compilation_from_options(options)
+    entry = compilation.run_plan["entries"][0]
+
+    assert entry["workflow"] == "FEDSTATS"
+    assert entry["evaluation_task"] == "federated-statistics"
+    assert entry["evaluation_selectors"] == {"data-format": "no_header"}
+    assert entry["result_artifact"]["glob"] == "**/simulate_job/*stat*.json"
+    assert compilation.run_plan["quality_gate"]["required_validation_metric_status"] == ["not_required"]
+
+
 def test_case_config_uses_generic_runtime_auth_overrides(tmp_path, monkeypatch):
     from benchmark.harness.host.common import parse_host_cli_options
     from benchmark.harness.host.runner import RuntimeAuthOptions, case_config_for_entry, pair_compilation_from_options

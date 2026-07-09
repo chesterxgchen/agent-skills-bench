@@ -482,6 +482,66 @@ def clean_pair_result_root(result_root: Path) -> None:
             path.unlink()
 
 
+def _read_small_text(path: Path, *, max_bytes: int = 64_000) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[:max_bytes]
+    except OSError:
+        return ""
+
+
+def _pair_input_guidance_text(job_input: Path, prompt_path: Path) -> str:
+    parts = [job_input.name, _read_small_text(prompt_path)]
+    for pattern in ("README*", "readme*"):
+        for path in sorted(job_input.glob(pattern)):
+            if path.is_file():
+                parts.append(_read_small_text(path))
+    return "\n".join(part for part in parts if part)
+
+
+def _looks_like_site_split_csv_dataset(job_input: Path) -> bool:
+    site_csvs = []
+    for site_dir in sorted(job_input.glob("site-*")):
+        if site_dir.is_dir() and any(path.is_file() for path in site_dir.glob("*.csv")):
+            site_csvs.append(site_dir)
+    return len(site_csvs) >= 2
+
+
+def _infer_pair_evaluation_metadata(options) -> dict[str, object]:
+    """Infer task routing for ad hoc `pair` runs from prompt + input context."""
+
+    text = _pair_input_guidance_text(options.job_input, options.prompt_path).lower()
+    has_fedstats_language = any(
+        phrase in text
+        for phrase in (
+            "federated stats",
+            "federated statistics",
+            "federated status",
+            "fed stats",
+            "fedstats",
+            "global stats",
+            "site stats",
+        )
+    )
+    if not has_fedstats_language or not _looks_like_site_split_csv_dataset(options.job_input):
+        return {}
+
+    selectors: dict[str, str] = {}
+    if any(phrase in text for phrase in ("no header", "no-header", "headerless", "without header")):
+        selectors["data-format"] = "no_header"
+
+    return {
+        "evaluation_task": "federated-statistics",
+        "evaluation_selectors": selectors,
+        "result_artifact": {
+            "glob": "**/simulate_job/*stat*.json",
+            "format": "json",
+            "description": "aggregated federated statistics output from the simulator workspace",
+        },
+        "quality_gate": {"required_validation_metric_status": ["not_required"]},
+        "workflow": "FEDSTATS",
+    }
+
+
 def pair_compilation_from_options(options) -> ScenarioCompilation:
     adapter = agent_adapter_from_options(options)
     agent_model, model_was_explicit = agent_model_from_options(adapter, options)
@@ -492,12 +552,14 @@ def pair_compilation_from_options(options) -> ScenarioCompilation:
     repeats = options.repeats if options.repeats is not None else int(os.environ.get("BENCHMARK_REPEATS") or 1)
     if repeats > 1:
         comparison["repeats"] = repeats
+    inferred = _infer_pair_evaluation_metadata(options)
+    workflow = options.workflow or str(inferred.get("workflow") or os.environ.get("BENCHMARK_WORKFLOW", "default"))
     raw = {
         "name": f"pair {adapter.name} {options.job_input.name}",
         "prompt": str(options.prompt_path),
         "agents": [agent_entry],
         "comparison": comparison,
-        "workflows": [{"name": options.workflow or os.environ.get("BENCHMARK_WORKFLOW", "default")}],
+        "workflows": [{"name": workflow}],
         "jobs": [
             {
                 "name": options.job_input.name,
@@ -507,6 +569,9 @@ def pair_compilation_from_options(options) -> ScenarioCompilation:
             }
         ],
     }
+    for key in ("evaluation_task", "evaluation_selectors", "result_artifact", "quality_gate"):
+        if key in inferred:
+            raw[key] = inferred[key]
     return compile_scenario(raw, base_dir=Path.cwd(), allow_external_prompt=True)
 
 
