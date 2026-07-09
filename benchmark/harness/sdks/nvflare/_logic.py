@@ -361,6 +361,59 @@ def longest_successful_job_span(run: dict[str, Any]) -> dict[str, Any] | None:
     return max(spans, key=lambda span: as_number(span.get("duration_seconds")) or 0)
 
 
+def _command_imports_nvflare(command: str) -> bool:
+    return bool(re.search(r"\b(?:from|import)\s+nvflare(?:\.|\b)", command))
+
+
+def _nvflare_package_available_for_missing_submodule(run: dict[str, Any], event: dict[str, Any]) -> bool:
+    """True when a missing ``nvflare.*`` module is better read as a bad internal path.
+
+    A failed ``from nvflare.x.y import ...`` in an exploratory snippet can look like a
+    missing dependency, but if another captured command imports NVFLARE successfully,
+    the package is installed and the failure is an incorrect submodule path.
+    """
+
+    event_id = str(event.get("id") or "")
+    for candidate in agent_command_events(run):
+        if str(candidate.get("id") or "") == event_id:
+            continue
+        command = str(candidate.get("command") or "")
+        output = str(candidate.get("output") or "")
+        if command_succeeded(candidate) and _command_imports_nvflare(command):
+            return True
+        if "/site-packages/nvflare/" in output.replace("\\", "/"):
+            return True
+    return False
+
+
+def _is_incorrect_nvflare_import_path(run: dict[str, Any], event: dict[str, Any], module_name: str) -> bool:
+    return module_name.startswith("nvflare.") and _nvflare_package_available_for_missing_submodule(run, event)
+
+
+def _missing_module_status_phrase(run: dict[str, Any], event: dict[str, Any], module_name: str) -> str:
+    if _is_incorrect_nvflare_import_path(run, event, module_name):
+        return f"incorrect NVFLARE import path `{module_name}`"
+    return f"missing Python dependency `{module_name}`"
+
+
+def _missing_module_dependency_evidence(run: dict[str, Any], event: dict[str, Any], module_name: str) -> str:
+    if _is_incorrect_nvflare_import_path(run, event, module_name):
+        return "installed top-level `nvflare` package was available; failure was an incorrect import path"
+    return dependency_install_evidence(run)
+
+
+def _missing_module_recovery_summary(run: dict[str, Any], event: dict[str, Any], module_name: str) -> str:
+    if _is_incorrect_nvflare_import_path(run, event, module_name):
+        return (
+            f"earlier incorrect NVFLARE import path `{module_name}` was recovered "
+            "(installed top-level `nvflare` package was available)"
+        )
+    return (
+        f"earlier missing Python dependency `{module_name}` was recovered "
+        f"({dependency_install_evidence_brief(run)})"
+    )
+
+
 def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
     """Realized command-failure diagnostic rows for a run (SDK interpretation).
 
@@ -390,7 +443,7 @@ def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
         missing_module = missing_python_module_name(output)
         root_cause = command_error_summary(output)
         if missing_module:
-            dependency_evidence = dependency_install_evidence(run)
+            dependency_evidence = _missing_module_dependency_evidence(run, event, missing_module)
             timing_reason = _missing_module_timing_reason(run, event, missing_module)
             if timing_reason:
                 root_cause = f"{root_cause}; {timing_reason}"
@@ -1127,8 +1180,8 @@ def job_run_status_reason(run: dict[str, Any]) -> str:
                 missing_module = missing_python_module_name(output)
                 if missing_module:
                     return (
-                        f"simulation command ran but missing Python dependency `{missing_module}` — "
-                        f"{dependency_install_evidence(run)}"
+                        f"simulation command ran but {_missing_module_status_phrase(run, event, missing_module)} — "
+                        f"{_missing_module_dependency_evidence(run, event, missing_module)}"
                     )
                 summary = command_error_summary(output)
                 return f"simulation command ran but exited with error — {truncate(summary, 200)}"
@@ -1138,8 +1191,8 @@ def job_run_status_reason(run: dict[str, Any]) -> str:
                 missing_module = missing_python_module_name(output)
                 if missing_module:
                     return (
-                        f"simulation command ran but missing Python dependency `{missing_module}` — "
-                        f"{dependency_install_evidence(run)}"
+                        f"simulation command ran but {_missing_module_status_phrase(run, event, missing_module)} — "
+                        f"{_missing_module_dependency_evidence(run, event, missing_module)}"
                     )
                 summary = command_error_summary(output)
                 return f"simulation command ran but success was not confirmed — {truncate(summary, 200)}"
@@ -2186,10 +2239,7 @@ def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
         output = str(event.get("output") or "")
         missing_module = missing_python_module_name(output)
         if missing_module:
-            parts.append(
-                f"earlier missing Python dependency `{missing_module}` was recovered "
-                f"({dependency_install_evidence_brief(run)})"
-            )
+            parts.append(_missing_module_recovery_summary(run, event, missing_module))
         else:
             parts.append(f"earlier command failure was recovered ({truncate(command_error_summary(output), 160)})")
         break

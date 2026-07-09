@@ -6930,6 +6930,69 @@ def test_completed_job_run_status_reason_includes_recovered_dependency_failure()
     assert "inspect recovered command failures" in job_run_action(_ev(run), _nv_ev(run).job_execution)
 
 
+def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependency():
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows, job_run_status, job_run_status_reason
+
+    successful_nvflare_probe = {
+        "item": {
+            "aggregated_output": "(name: str, stats_output_path: str)",
+            "command": "python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY",
+            "exit_code": 0,
+            "id": "good_import",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    failed_exploration = {
+        "item": {
+            "aggregated_output": (
+                "Traceback (most recent call last):\n"
+                "  File \"<stdin>\", line 2, in <module>\n"
+                "ModuleNotFoundError: No module named 'nvflare.recipe.recipe'"
+            ),
+            "command": "python - <<'PY'\nfrom nvflare.recipe.recipe import Recipe\nPY",
+            "exit_code": 1,
+            "id": "bad_import",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    successful_job = {
+        "item": {
+            "aggregated_output": "Result can be found in: /tmp/nvflare/server/simulate_job/stats/image_stats.json",
+            "command": "python job.py",
+            "exit_code": 0,
+            "id": "job",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    run = {
+        "available": True,
+        "activity": {
+            "commands": [
+                "python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY",
+                "python - <<'PY'\nfrom nvflare.recipe.recipe import Recipe\nPY",
+                "python job.py",
+            ]
+        },
+        "agent_events_text": "\n".join(
+            json.dumps(event) for event in (successful_nvflare_probe, failed_exploration, successful_job)
+        ),
+    }
+
+    reason = job_run_status_reason(run)
+
+    assert job_run_status(run) == "completed"
+    assert "earlier incorrect NVFLARE import path `nvflare.recipe.recipe` was recovered" in reason
+    assert "missing Python dependency" not in reason
+    assert "no dependency install command" not in reason
+    rows = command_failure_rows(run)
+    assert rows[0]["dependency"] == (
+        "installed top-level `nvflare` package was available; failure was an incorrect import path"
+    )
+
+
 def test_failure_analysis_keeps_recovered_bash_issue_for_passed_run():
     from benchmark.harness.modes import WITH_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import failure_analysis_section
