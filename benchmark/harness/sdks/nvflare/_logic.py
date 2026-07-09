@@ -1871,16 +1871,23 @@ def _native_behavior_profile(run: dict[str, Any]) -> dict[str, str]:
 
 
 def conversion_quality_profile(run: dict[str, Any]) -> dict[str, str]:
-    text = _workspace_text(run)
-    profile = {
-        "training_control": _detect_training_control_path(text),
-        "partitioning": _detect_partitioning(text),
-        "class_weighting": _detect_class_weighting(text),
-        "metric_reporting": _detect_metric_reporting(text),
-        "data_packaging": _detect_data_packaging(text),
-        "execution_model": _detect_execution_model(text),
-        "metric_progression": _round_metric_progression(run),
-    }
+    # The deterministic detectors below are conversion-shaped (training path,
+    # partitioning, round metrics); for any other evaluation task they would
+    # produce misleading evidence, so the profile carries only the native
+    # behavior signals and each task criterion renders "not captured" until
+    # the code-eval agent judges it (or a task detector lands).
+    profile: dict[str, str] = {}
+    if _resolved_evaluation_task(run) == "conversion":
+        text = _workspace_text(run)
+        profile = {
+            "training_control": _detect_training_control_path(text),
+            "partitioning": _detect_partitioning(text),
+            "class_weighting": _detect_class_weighting(text),
+            "metric_reporting": _detect_metric_reporting(text),
+            "data_packaging": _detect_data_packaging(text),
+            "execution_model": _detect_execution_model(text),
+            "metric_progression": _round_metric_progression(run),
+        }
     profile.update(_native_behavior_profile(run))
     return profile
 
@@ -1904,23 +1911,72 @@ def _evaluation_rules_path(run: dict[str, Any] | None) -> Path | None:
     return candidate if candidate and candidate.exists() else None
 
 
-def _conversion_evaluation_rules(run: dict[str, Any] | None = None):
+def _declared_evaluation_task(run: dict[str, Any] | None) -> str:
+    if not isinstance(run, dict):
+        return ""
+    for source in (run, run.get("run"), run.get("run_plan_entry")):
+        task = source.get("evaluation_task") if isinstance(source, dict) else None
+        if isinstance(task, str) and task.strip():
+            return task.strip()
+    return ""
+
+
+def _declared_evaluation_selectors(run: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(run, dict):
+        return {}
+    # Same source order as _declared_evaluation_task: bundle top-level, then
+    # the nested record summary, then the plan entry — so direct and nested
+    # callers resolve identically.
+    for source in (run, run.get("run"), run.get("run_plan_entry")):
+        selectors = source.get("evaluation_selectors") if isinstance(source, dict) else None
+        if isinstance(selectors, dict) and selectors:
+            return {str(key): str(value) for key, value in selectors.items() if value}
+    return {}
+
+
+def _run_evaluation_rules(run: dict[str, Any] | None = None):
+    """Composed rules for the run's DECLARED task (scenario `evaluation_task`).
+
+    Scenario-declared routing fails CLOSED: a typoed task or selector returns a
+    routing-error rules object (empty signals + ``routing_error``) instead of
+    silently scoring different criteria, and the report renders the failure as
+    a bad row. Only the detector-derived framework hint stays lenient — an
+    unregistered detected framework falls back to the task's common rules."""
+
+    declared_selectors = _declared_evaluation_selectors(run)
+    path = _evaluation_rules_path(run)
+    task = _declared_evaluation_task(run) or None
+    if task or declared_selectors:
+        try:
+            load_evaluation_rules("nvflare", path, task=task, selectors=declared_selectors, strict_selectors=True)
+        except ValueError as exc:
+            return {
+                "sdk": "nvflare",
+                "task": task or "",
+                "signals": {},
+                "scoring": {},
+                "routing_error": f"declared evaluation routing is invalid: {exc}",
+            }
+    selectors = dict(declared_selectors)
     framework = _target_framework(run)
-    return load_evaluation_rules(
-        "nvflare",
-        _evaluation_rules_path(run),
-        task="conversion",
-        framework=framework or None,
-    )
+    if framework:
+        selectors.setdefault("framework", framework)
+    return load_evaluation_rules("nvflare", path, task=task, selectors=selectors)
+
+
+def _resolved_evaluation_task(run: dict[str, Any] | None) -> str:
+    # Self-contained rules FILES compose no manifest and carry no task key;
+    # they inherit the declared task, defaulting to conversion (legacy shape).
+    return str(_run_evaluation_rules(run).get("task") or _declared_evaluation_task(run) or "conversion")
 
 
 def conversion_quality_score(signal: str, value: str, run: dict[str, Any] | None = None) -> str:
     # The verdict rules are standard evaluation input (benchmark/config/evaluation/nvflare/,
-    # composed as manifest -> task common -> framework overlay) applied through the
-    # SDK-neutral scorer, so external tools can score the same signal profile
-    # outside the reporting engine and get identical verdicts.
+    # composed as manifest -> task common -> declared/detected overlays) applied
+    # through the SDK-neutral scorer, so external tools can score the same signal
+    # profile outside the reporting engine and get identical verdicts.
     framework = _target_framework(run)
-    rules = _conversion_evaluation_rules(run)
+    rules = _run_evaluation_rules(run)
     return score_signal(rules, signal, value, {"target_framework": framework})
 
 
@@ -2535,11 +2591,13 @@ def _conversion_quality_rows_from_rules(run: dict[str, Any] | None = None) -> tu
     criterion added there appears in the Generated Code Quality table even
     before a detector captures evidence for it (rendered as not captured)."""
 
-    signals = _conversion_evaluation_rules(run).get("signals")
+    rules = _run_evaluation_rules(run)
+    signals = rules.get("signals")
+    task_label = str(rules.get("task") or "conversion").replace("-", " ").title()
     rows: list[tuple[str, str]] = []
     for key, entry in (signals or {}).items():
         label = entry.get("label") if isinstance(entry, dict) else None
-        rows.append((str(key), str(label or f"Conversion: {key}")))
+        rows.append((str(key), str(label or f"{task_label}: {key}")))
     return tuple(rows)
 
 
@@ -2547,7 +2605,7 @@ CONVERSION_QUALITY_ROWS = _conversion_quality_rows_from_rules()
 
 
 def _code_quality_points(run: dict[str, Any] | None = None) -> dict[str, float]:
-    return verdict_points(_conversion_evaluation_rules(run))
+    return verdict_points(_run_evaluation_rules(run))
 
 
 # Module-level view kept for callers/tests; sourced from the evaluation rules file.
@@ -2574,9 +2632,20 @@ def _agent_code_quality_verdicts(run: dict[str, Any]) -> dict[str, dict[str, str
 
 def generated_code_quality_assessments(run: dict[str, Any]) -> list[tuple[str, str, str]]:
     rows = []
-    for label, evidence_getter, assessment_getter in CODE_QUALITY_ROWS:
-        evidence = evidence_getter(run)
-        rows.append((label, assessment_getter(evidence), evidence))
+    # The static detector rows are conversion/training-shaped (loss/optimizer,
+    # per-round metrics, ...): they only render — and only score — for the
+    # conversion task, so another task cannot be dragged down by them.
+    if _resolved_evaluation_task(run) == "conversion":
+        for label, evidence_getter, assessment_getter in CODE_QUALITY_ROWS:
+            evidence = evidence_getter(run)
+            rows.append((label, assessment_getter(evidence), evidence))
+    rules = _run_evaluation_rules(run)
+    routing_error = str(rules.get("routing_error") or "")
+    if routing_error:
+        # Fail closed and visibly: no criteria are scored for a typoed
+        # declaration; the single bad row names the routing failure.
+        rows.append(("Evaluation routing", "bad", routing_error))
+        return rows
     # Prefer an evaluation agent's verdicts when present (it read the code and
     # judged each criterion); fall back to the deterministic detector + rules.
     agent_verdicts = _agent_code_quality_verdicts(run)
@@ -2600,7 +2669,7 @@ def generated_code_quality_overall(run: dict[str, Any]) -> str:
         return "unknown: no generated-code evidence captured"
     points = sum(points_by_status[status] for status, _ in known)
     score_ratio = points / total
-    thresholds = overall_thresholds(_conversion_evaluation_rules(run))
+    thresholds = overall_thresholds(_run_evaluation_rules(run))
     if score_ratio >= thresholds.get("good", 0.8):
         label = "good"
     elif score_ratio >= thresholds.get("caution", 0.5):

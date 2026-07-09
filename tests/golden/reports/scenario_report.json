@@ -298,6 +298,8 @@
       "cost": null,
       "critical_quality_checks_failed": false,
       "elapsed_seconds": 180,
+      "evaluation_selectors": null,
+      "evaluation_task": null,
       "failure_root_cause": null,
       "final_container_exit_code": 0,
       "host_environment": {
@@ -386,6 +388,8 @@
       "cost": null,
       "critical_quality_checks_failed": false,
       "elapsed_seconds": 240,
+      "evaluation_selectors": null,
+      "evaluation_task": null,
       "failure_root_cause": null,
       "final_container_exit_code": 0,
       "host_environment": {

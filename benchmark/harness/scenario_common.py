@@ -80,6 +80,8 @@ SUMMARY_RUN_FIELDS = (
     "job_slug",
     "job_path",
     "job_scale",
+    "evaluation_task",
+    "evaluation_selectors",
     "mode",
     "skills_enabled",
     "prompt_hash",

@@ -125,3 +125,16 @@ scorer, so a federated-statistics run is judged by conversion criteria.
 - Thread that task into `load_evaluation_rules(..., task=...)` in the plugin.
 - Add federated-statistics detectors / a task-dispatched quality profile so the
   report renders the right signal rows per task.
+
+**RESOLVED (2026-07-08):** scenarios declare `evaluation_task` /
+`evaluation_selectors` (plan-time validation in
+`scenario_run_plan.resolve_jobs`), the run record and loader bundle carry
+them, and `_logic._run_evaluation_rules` scores the declared task (conversion
+detectors gate on the resolved task; other tasks are judged by the code-eval
+agent against the task's criteria). Deterministic per-task checks are
+scenario-local data, not harness detectors: `result_artifact` +
+`acceptance_checks` (see `benchmark/harness/acceptance.py` and
+`scenarios/federated-statistics/`). Native skill_evals map to tasks via
+`native_skills` patterns in the evaluation manifest. Onboarding a new skill
+family = criteria YAML + manifest line + scenario YAML (+ optional check
+script); no harness code.

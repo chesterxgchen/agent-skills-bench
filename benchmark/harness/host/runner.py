@@ -30,6 +30,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Iterable
 
+from ..acceptance import ACCEPTANCE_CHECKS_FILENAME, apply_acceptance_gates
 from ..agent_identity import preferred_agent_model
 from ..agents.parsers import parse_cached_usage_and_activity
 from ..agents.registry import DEFAULT_BENCHMARK_AGENT, load_agent_adapter
@@ -828,6 +829,8 @@ def canonicalize_entry_artifacts(result_root: Path, entry: dict[str, object], st
                 "job_slug",
                 "job_path",
                 "job_scale",
+                "evaluation_task",
+                "evaluation_selectors",
                 "mode",
                 "skills_enabled",
                 "prompt_hash",
@@ -835,6 +838,13 @@ def canonicalize_entry_artifacts(result_root: Path, entry: dict[str, object], st
             )
         }
     )
+    # Scenario-declared gates (result artifact + acceptance checks) evaluate
+    # host-side over the captured record, so a run cannot rewrite its own gate.
+    acceptance_payload = apply_acceptance_gates(record_dir, entry, summary)
+    if acceptance_payload:
+        write_json(record_dir / ACCEPTANCE_CHECKS_FILENAME, acceptance_payload)
+    else:
+        (record_dir / ACCEPTANCE_CHECKS_FILENAME).unlink(missing_ok=True)
     summary["agent_model"] = resolved_model
     if resolved_source not in (None, ""):
         summary["model_source"] = resolved_source
@@ -1095,7 +1105,7 @@ def autorun_code_quality_evaluations(
 
     plugin = resolve_from_result_root(result_root)
     runs = collect_benchmark_runs(result_root)
-    targets: list[tuple[str, list[dict[str, str]]]] = []
+    targets: list[tuple[str, list[dict[str, str]], str]] = []
     for mode, bundle in runs.items():
         if not bundle.get("available"):
             continue
@@ -1106,7 +1116,7 @@ def autorun_code_quality_evaluations(
         except Exception:
             criteria = []
         if criteria:
-            targets.append((mode, criteria))
+            targets.append((mode, criteria, str(bundle.get("evaluation_task") or "")))
     if not targets:
         return
     try:
@@ -1116,16 +1126,16 @@ def autorun_code_quality_evaluations(
     except SystemExit as exc:
         emit(f"Auto code-eval skipped: {exc}", logs=logs, stderr=True)
         return
-    modes = ", ".join(mode for mode, _ in targets)
+    modes = ", ".join(mode for mode, _, _ in targets)
     emit(f"Running automatic code-quality evaluation on {modes} (set BENCHMARK_AUTO_CODE_EVAL=0 to disable)", logs=logs)
     evaluated = False
-    for mode, criteria in targets:
+    for mode, criteria, task in targets:
         emit(
             f"Auto code-eval ({mode}, {agent_name}): judging {len(criteria)} criteria (heartbeat every 60s) ...",
             logs=logs,
         )
         try:
-            path = evaluate_code_quality(result_root, mode, invoker, criteria, agent_name=agent_name)
+            path = evaluate_code_quality(result_root, mode, invoker, criteria, agent_name=agent_name, task=task)
         except Exception as exc:
             emit(f"Auto code-eval failed for {mode}: {type(exc).__name__}: {exc}", logs=logs, stderr=True)
             continue

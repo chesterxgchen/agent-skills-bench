@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -97,6 +98,15 @@ class JobSpec:
     name: str
     scale: str
     resource_policy: dict[str, int | None]
+    # Evaluation identity/config declared by the scenario (data, not code): the
+    # task group routes which criteria subtree scores the run, selectors pick
+    # task-declared overlay dimensions, result_artifact declares what captured
+    # artifact proves a real result, and acceptance_checks names a scenario-local
+    # script whose failed critical checks feed the quality gate.
+    evaluation_task: str | None = None
+    evaluation_selectors: dict[str, str] | None = None
+    result_artifact: dict[str, Any] | None = None
+    acceptance_checks: dict[str, Any] | None = None
 
 
 def resolve_agents(raw: Mapping[str, Any]) -> tuple[dict[str, AgentSpec], list[dict[str, Any]]]:
@@ -195,10 +205,103 @@ def resource_policy_for(
     return policy
 
 
+_EVALUATION_TASK_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+def resolve_evaluation_task(value: Any, label: str) -> str | None:
+    """Task-group id routed to the evaluation manifest at scoring time.
+
+    Compile-time validation is shape-only (the scenario is SDK-agnostic; the
+    manifest's task registry is only known once the SDK rules are staged) —
+    the scorer's manifest lookup is the authoritative membership check.
+    """
+
+    if value is None:
+        return None
+    task = require_non_empty_string(value, label)
+    if not _EVALUATION_TASK_PATTERN.match(task):
+        raise ScenarioValidationError(f"{label} must match {_EVALUATION_TASK_PATTERN.pattern}; got {task!r}")
+    return task
+
+
+def resolve_evaluation_selectors(value: Any, label: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    selectors = require_mapping(value, label)
+    resolved = {}
+    for key, selected in selectors.items():
+        dimension = require_non_empty_string(key, f"{label} keys")
+        resolved[dimension] = require_non_empty_string(selected, f"{label}.{dimension}")
+    return resolved
+
+
+RESULT_ARTIFACT_FORMATS = {"json", "text"}
+
+
+def resolve_result_artifact(value: Any, label: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    data = require_mapping(value, label)
+    unknown = set(map(str, data)) - {"glob", "format", "description"}
+    if unknown:
+        raise ScenarioValidationError(f"{label} has unsupported key(s): {', '.join(sorted(unknown))}")
+    pattern = require_non_empty_string(data.get("glob"), f"{label}.glob")
+    if pattern.startswith(("/", "\\")) or ".." in Path(pattern).parts:
+        raise ScenarioValidationError(f"{label}.glob must be a relative workspace pattern; got {pattern!r}")
+    artifact: dict[str, Any] = {"glob": pattern}
+    artifact_format = data.get("format")
+    if artifact_format is not None:
+        artifact_format = require_non_empty_string(artifact_format, f"{label}.format")
+        if artifact_format not in RESULT_ARTIFACT_FORMATS:
+            raise ScenarioValidationError(
+                f"{label}.format must be one of: {', '.join(sorted(RESULT_ARTIFACT_FORMATS))}"
+            )
+        artifact["format"] = artifact_format
+    if data.get("description") is not None:
+        artifact["description"] = require_non_empty_string(data.get("description"), f"{label}.description")
+    return artifact
+
+
+DEFAULT_ACCEPTANCE_CHECK_TIMEOUT_SECONDS = 600
+
+
+def resolve_acceptance_checks(value: Any, label: str, base_dir: Path) -> dict[str, Any] | None:
+    """Acceptance-check scripts are TRUSTED HOST CODE: the harness executes
+    them unsandboxed as the operator's user (same trust as bin/run.sh itself).
+    They must live inside the scenario's own directory tree — scenario-local by
+    construction, so a scenario file cannot point the runner at arbitrary host
+    executables elsewhere."""
+
+    if value is None:
+        return None
+    data = require_mapping(value, label)
+    unknown = set(map(str, data)) - {"script", "timeout_seconds"}
+    if unknown:
+        raise ScenarioValidationError(f"{label} has unsupported key(s): {', '.join(sorted(unknown))}")
+    script_value = require_non_empty_string(data.get("script"), f"{label}.script")
+    script = resolve_path(script_value, base_dir).resolve()
+    if not script.is_file():
+        raise ScenarioValidationError(f"{label}.script must be an existing file: {script}")
+    try:
+        script.relative_to(base_dir.resolve())
+    except ValueError:
+        raise ScenarioValidationError(
+            f"{label}.script must live inside the scenario directory ({base_dir.resolve()}); got {script}"
+        ) from None
+    timeout = data.get("timeout_seconds", DEFAULT_ACCEPTANCE_CHECK_TIMEOUT_SECONDS)
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+        raise ScenarioValidationError(f"{label}.timeout_seconds must be an integer greater than 0; got {timeout!r}")
+    return {"script": str(script), "timeout_seconds": timeout}
+
+
 def resolve_jobs(raw: Mapping[str, Any], base_dir: Path) -> tuple[list[JobSpec], list[dict[str, Any]]]:
     jobs_raw = as_list(raw.get("jobs"), "jobs")
     if not jobs_raw:
         raise ScenarioValidationError("jobs must contain at least one job")
+    scenario_task = resolve_evaluation_task(raw.get("evaluation_task"), "evaluation_task")
+    scenario_selectors = resolve_evaluation_selectors(raw.get("evaluation_selectors"), "evaluation_selectors")
+    scenario_result_artifact = resolve_result_artifact(raw.get("result_artifact"), "result_artifact")
+    scenario_acceptance = resolve_acceptance_checks(raw.get("acceptance_checks"), "acceptance_checks", base_dir)
     jobs = []
     resolved = []
     for index, item in enumerate(jobs_raw):
@@ -213,8 +316,45 @@ def resolve_jobs(raw: Mapping[str, Any], base_dir: Path) -> tuple[list[JobSpec],
             raise ScenarioValidationError(f"jobs[{index}].scale must be one of: {', '.join(sorted(JOB_SCALES))}")
         name = require_non_empty_string(data.get("name") or path.name, f"jobs[{index}].name")
         policy = resource_policy_for(scale, raw, data, f"jobs[{index}].resource_policy")
-        jobs.append(JobSpec(path=path, name=name, scale=scale, resource_policy=policy))
-        resolved.append({"name": name, "path": str(path), "scale": scale, "resource_policy": policy})
+        evaluation_task = (
+            resolve_evaluation_task(data.get("evaluation_task"), f"jobs[{index}].evaluation_task") or scenario_task
+        )
+        selectors = dict(scenario_selectors)
+        selectors.update(
+            resolve_evaluation_selectors(data.get("evaluation_selectors"), f"jobs[{index}].evaluation_selectors")
+        )
+        result_artifact = (
+            resolve_result_artifact(data.get("result_artifact"), f"jobs[{index}].result_artifact")
+            or scenario_result_artifact
+        )
+        acceptance = (
+            resolve_acceptance_checks(data.get("acceptance_checks"), f"jobs[{index}].acceptance_checks", base_dir)
+            or scenario_acceptance
+        )
+        jobs.append(
+            JobSpec(
+                path=path,
+                name=name,
+                scale=scale,
+                resource_policy=policy,
+                evaluation_task=evaluation_task,
+                evaluation_selectors=selectors,
+                result_artifact=result_artifact,
+                acceptance_checks=acceptance,
+            )
+        )
+        resolved.append(
+            {
+                "name": name,
+                "path": str(path),
+                "scale": scale,
+                "resource_policy": policy,
+                "evaluation_task": evaluation_task,
+                "evaluation_selectors": selectors,
+                "result_artifact": result_artifact,
+                "acceptance_checks": acceptance,
+            }
+        )
     return jobs, resolved
 
 
@@ -456,6 +596,10 @@ def build_run_entry(
         "job_path": str(job.path),
         "job_scale": job.scale,
         "resource_policy": job.resource_policy,
+        "evaluation_task": job.evaluation_task,
+        "evaluation_selectors": dict(job.evaluation_selectors or {}),
+        "result_artifact": dict(job.result_artifact) if job.result_artifact else None,
+        "acceptance_checks": dict(job.acceptance_checks) if job.acceptance_checks else None,
         "mode": mode,
         "mode_label": spec.label,
         "skills_enabled": spec.skills_enabled,

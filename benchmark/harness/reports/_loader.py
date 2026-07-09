@@ -295,6 +295,12 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "job_name": run_plan_entry.get("job_name"),
             "job_slug": run_plan_entry.get("job_slug"),
             "job_path": run_plan_entry.get("job_path"),
+            "evaluation_task": first_non_empty(run_plan_entry.get("evaluation_task"), summary.get("evaluation_task")),
+            "evaluation_selectors": first_non_empty(
+                run_plan_entry.get("evaluation_selectors"), summary.get("evaluation_selectors")
+            )
+            or {},
+            "acceptance_checks": load_json(mode_dir / "acceptance_checks.json", {}) if mode_dir.exists() else {},
             "agent": agent,
             "agent_model": agent_model,
             "model_source": model_source,

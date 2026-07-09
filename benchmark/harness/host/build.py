@@ -263,7 +263,29 @@ def nvflare_skill_eval_files(path: Path) -> list[Path]:
     return sorted(candidate for candidate in path.glob("*/evals.json") if candidate.is_file())
 
 
-def _evaluation_task_for_nvflare_skill(skill_name: str) -> str:
+def _native_skill_patterns_by_task(index: dict[str, Any]) -> dict[str, list[str]]:
+    """Skill-name glob patterns each task declares in the manifest (``tasks.<task>.
+    native_skills``). The manifest is the single registry: onboarding a new
+    skill family = declaring its pattern on its task entry, not editing code."""
+
+    tasks = index.get("tasks") if isinstance(index.get("tasks"), dict) else {}
+    patterns: dict[str, list[str]] = {}
+    for task, entry in tasks.items():
+        values = entry.get("native_skills") if isinstance(entry, dict) else None
+        if isinstance(values, list):
+            declared = [str(value) for value in values if str(value or "").strip()]
+            if declared:
+                patterns[str(task)] = declared
+    return patterns
+
+
+def _evaluation_task_for_nvflare_skill(skill_name: str, patterns_by_task: dict[str, list[str]] | None = None) -> str:
+    for task, patterns in (patterns_by_task or {}).items():
+        # fnmatchcase: the manifest patterns are a routing contract — matching
+        # must not vary with the platform's filename case-folding.
+        if any(fnmatch.fnmatchcase(skill_name, pattern) for pattern in patterns):
+            return task
+    # Legacy name heuristics for manifests that predate `native_skills`.
     if "-convert-" in skill_name:
         return "conversion"
     if "-diagnose-" in skill_name:
@@ -316,11 +338,13 @@ def _load_nvflare_skill_eval_documents(path: Path) -> list[dict[str, Any]]:
     return documents
 
 
-def _native_nvflare_behavior_signals(documents: list[dict[str, Any]], task: str) -> dict[str, Any]:
+def _native_nvflare_behavior_signals(
+    documents: list[dict[str, Any]], task: str, patterns_by_task: dict[str, list[str]] | None = None
+) -> dict[str, Any]:
     signals: dict[str, Any] = {}
     for document in documents:
         skill_name = str(document.get("skill_name") or "")
-        if _evaluation_task_for_nvflare_skill(skill_name) != task:
+        if _evaluation_task_for_nvflare_skill(skill_name, patterns_by_task) != task:
             continue
         for eval_case in document.get("evals") or []:
             if not isinstance(eval_case, dict):
@@ -382,21 +406,33 @@ def stage_nvflare_skill_evals_as_evaluation_rules(source: Path, target: Path) ->
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(evals_path, destination)
 
-    # Only conversion-task skills feed report signals today; say so instead of
-    # silently dropping the rest (their raw evals.json copies are still staged).
+    index_path = target / "nvflare" / "index.yaml"
+    index = yaml.safe_load(index_path.read_text(encoding="utf-8")) or {}
+    tasks = index.get("tasks") if isinstance(index.get("tasks"), dict) else {}
+    patterns_by_task = _native_skill_patterns_by_task(index)
+
+    # Every skill whose evals map to a REGISTERED task feeds that task's report
+    # signals; say which skills stay signal-less instead of silently dropping
+    # them (their raw evals.json copies are still staged).
     skipped = sorted(
         {
             str(document["skill_name"])
             for document in documents
-            if _evaluation_task_for_nvflare_skill(str(document["skill_name"])) != "conversion"
+            if _evaluation_task_for_nvflare_skill(str(document["skill_name"]), patterns_by_task) not in tasks
         }
     )
     if skipped:
-        emit(f"Evaluation criteria: no conversion signals derived for non-conversion skills: {', '.join(skipped)}")
-    native_signals = _native_nvflare_behavior_signals(documents, "conversion")
-    if native_signals:
+        emit(f"Evaluation criteria: no registered task derives signals for skills: {', '.join(skipped)}")
+
+    signal_counts: dict[str, int] = {}
+    for task in tasks:
+        native_signals = _native_nvflare_behavior_signals(documents, str(task), patterns_by_task)
+        if not native_signals:
+            continue
+        signal_counts[str(task)] = len(native_signals)
+        native_ref = f"tasks/{task}/native_skill_evals.yaml"
         _write_yaml(
-            target / "nvflare" / "tasks" / "conversion" / "native_skill_evals.yaml",
+            target / "nvflare" / "tasks" / str(task) / "native_skill_evals.yaml",
             {
                 "schema_version": 1,
                 "source_format": "nvflare_skill_evals",
@@ -404,21 +440,23 @@ def stage_nvflare_skill_evals_as_evaluation_rules(source: Path, target: Path) ->
                 "signals": native_signals,
             },
         )
-        index_path = target / "nvflare" / "index.yaml"
-        index = yaml.safe_load(index_path.read_text(encoding="utf-8")) or {}
-        conversion = (index.get("tasks") or {}).get("conversion") or {}
-        compose = conversion.get("compose")
+        entry = tasks.get(task) or {}
+        compose = entry.get("compose")
         if not isinstance(compose, list):
-            compose = [conversion.get("common")] if conversion.get("common") else []
-        native_ref = "tasks/conversion/native_skill_evals.yaml"
+            compose = [entry.get("common")] if entry.get("common") else []
+            entry.pop("common", None)
         if native_ref not in compose:
             compose.append(native_ref)
-        conversion["compose"] = compose
-        index.setdefault("tasks", {})["conversion"] = conversion
+        entry["compose"] = compose
+        tasks[str(task)] = entry
+    if signal_counts:
+        index["tasks"] = tasks
         index.setdefault("native_sources", {})["nvflare_skill_evals"] = {
             "path": "native/nvflare_skill_evals",
             "skill_count": len(documents),
-            "conversion_signal_count": len(native_signals),
+            "signal_counts_by_task": signal_counts,
+            # Kept for readers of the previous single-task layout.
+            "conversion_signal_count": signal_counts.get("conversion", 0),
         }
         _write_yaml(index_path, index)
 
