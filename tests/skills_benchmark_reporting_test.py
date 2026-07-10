@@ -7052,7 +7052,10 @@ def test_completed_job_run_status_reason_includes_recovered_dependency_failure()
 
 
 def test_nvflare_import_probe_evidence_requires_python_execution():
-    from benchmark.harness.sdks.nvflare._logic import _command_imports_nvflare
+    from benchmark.harness.sdks.nvflare._logic import (
+        _command_imports_nvflare,
+        _command_queries_nvflare_runtime_identity,
+    )
 
     assert _command_imports_nvflare("python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY")
     assert _command_imports_nvflare("timeout 30 python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY")
@@ -7074,6 +7077,12 @@ def test_nvflare_import_probe_evidence_requires_python_execution():
         "        pass\n"
         "PY"
     )
+    assert _command_queries_nvflare_runtime_identity('python -c "import nvflare as nf; print(nf.__file__)"')
+    assert _command_queries_nvflare_runtime_identity('python -c "from nvflare import __version__; print(__version__)"')
+    assert _command_queries_nvflare_runtime_identity(
+        "python - <<'PY'\nimport nvflare\nprint(getattr(nvflare, '__version__', 'unknown'))\nPY"
+    )
+    assert not _command_queries_nvflare_runtime_identity("python -c \"import nvflare as nf; print('nf.__version__')\"")
 
 
 def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependency():
@@ -7144,6 +7153,62 @@ def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependenc
     assert rows[0]["dependency"] == (
         "installed top-level `nvflare` package was available; failure was an incorrect import path"
     )
+
+
+def test_nvflare_runtime_identity_probe_variants_mark_later_submodule_failure_as_bad_import_path():
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows
+
+    expected = "installed top-level `nvflare` package was available; failure was an incorrect import path"
+    probe_cases = [
+        (
+            "alias_version_probe",
+            "python - <<'PY'\nimport nvflare as nf\nprint(nf.__version__)\nPY",
+            "2.6.1",
+        ),
+        (
+            "from_import_version_probe",
+            "python - <<'PY'\nfrom nvflare import __version__\nprint(__version__)\nPY",
+            "2.6.1",
+        ),
+        (
+            "getattr_version_probe",
+            "python - <<'PY'\nimport nvflare\nprint(getattr(nvflare, '__version__', 'unknown'))\nPY",
+            "2.6.1",
+        ),
+    ]
+    for probe_id, probe_command, probe_output in probe_cases:
+        successful_probe = {
+            "item": {
+                "aggregated_output": probe_output,
+                "command": probe_command,
+                "exit_code": 0,
+                "id": probe_id,
+                "status": "completed",
+                "type": "command_execution",
+            }
+        }
+        failed_exploration = {
+            "item": {
+                "aggregated_output": (
+                    "Traceback (most recent call last):\n"
+                    '  File "<stdin>", line 2, in <module>\n'
+                    "ModuleNotFoundError: No module named 'nvflare.recipe.recipe'"
+                ),
+                "command": "python - <<'PY'\nfrom nvflare.recipe.recipe import Recipe\nPY",
+                "exit_code": 1,
+                "id": f"bad_import_{probe_id}",
+                "status": "failed",
+                "type": "command_execution",
+            }
+        }
+        run = {
+            "available": True,
+            "agent_events_text": "\n".join(json.dumps(event) for event in (successful_probe, failed_exploration)),
+        }
+
+        rows = command_failure_rows(run)
+
+        assert rows[0]["dependency"] == expected
 
 
 def test_wrapped_static_nvflare_import_without_runtime_identity_does_not_prove_package_available():

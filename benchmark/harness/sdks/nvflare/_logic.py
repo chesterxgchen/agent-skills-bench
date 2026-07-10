@@ -522,6 +522,122 @@ def _python_statement_list_imports_nvflare(statements: list[ast.stmt]) -> bool:
     return False
 
 
+def _python_source_queries_nvflare_runtime_identity(source: str) -> bool:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    return _python_statement_list_queries_nvflare_runtime_identity(tree.body)
+
+
+def _python_statement_list_queries_nvflare_runtime_identity(
+    statements: list[ast.stmt],
+    nvflare_names: set[str] | None = None,
+    nvflare_version_names: set[str] | None = None,
+) -> bool:
+    active_nvflare_names = set(nvflare_names or ())
+    active_version_names = set(nvflare_version_names or ())
+    for node in statements:
+        _python_update_nvflare_runtime_bindings(node, active_nvflare_names, active_version_names)
+        if _python_statement_prints_nvflare_runtime_identity(node, active_nvflare_names, active_version_names):
+            return True
+        if isinstance(node, ast.If) and _python_if_test_is_inline_main_guard(node.test):
+            if _python_statement_list_queries_nvflare_runtime_identity(
+                node.body, active_nvflare_names, active_version_names
+            ):
+                return True
+    return False
+
+
+def _python_update_nvflare_runtime_bindings(
+    node: ast.stmt, nvflare_names: set[str], nvflare_version_names: set[str]
+) -> None:
+    for name in _python_assigned_names(node):
+        nvflare_names.discard(name)
+        nvflare_version_names.discard(name)
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            if alias.name == "nvflare":
+                nvflare_names.add(alias.asname or "nvflare")
+            elif alias.name.startswith("nvflare.") and not alias.asname:
+                nvflare_names.add("nvflare")
+    elif isinstance(node, ast.ImportFrom) and node.module == "nvflare":
+        for alias in node.names:
+            if alias.name == "__version__":
+                nvflare_version_names.add(alias.asname or alias.name)
+
+
+def _python_assigned_names(node: ast.stmt) -> set[str]:
+    names: set[str] = set()
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    elif isinstance(node, (ast.For, ast.AsyncFor)):
+        targets = [node.target]
+    elif isinstance(node, (ast.With, ast.AsyncWith)):
+        targets = [item.optional_vars for item in node.items if item.optional_vars is not None]
+    else:
+        return names
+    for target in targets:
+        names.update(_python_target_names(target))
+    return names
+
+
+def _python_target_names(node: ast.AST) -> set[str]:
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, (ast.Tuple, ast.List)):
+        names: set[str] = set()
+        for element in node.elts:
+            names.update(_python_target_names(element))
+        return names
+    return set()
+
+
+def _python_statement_prints_nvflare_runtime_identity(
+    node: ast.stmt, nvflare_names: set[str], nvflare_version_names: set[str]
+) -> bool:
+    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+        return False
+    call = node.value
+    if not isinstance(call.func, ast.Name) or call.func.id != "print":
+        return False
+    return any(
+        _python_expr_queries_nvflare_runtime_identity(arg, nvflare_names, nvflare_version_names) for arg in call.args
+    )
+
+
+def _python_expr_queries_nvflare_runtime_identity(
+    node: ast.AST, nvflare_names: set[str], nvflare_version_names: set[str]
+) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in nvflare_version_names
+    if isinstance(node, ast.Attribute):
+        return node.attr in {"__file__", "__version__"} and _python_expr_is_nvflare_binding(node.value, nvflare_names)
+    if _python_expr_is_nvflare_identity_getattr(node, nvflare_names):
+        return True
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            continue
+        if _python_expr_queries_nvflare_runtime_identity(child, nvflare_names, nvflare_version_names):
+            return True
+    return False
+
+
+def _python_expr_is_nvflare_binding(node: ast.AST, nvflare_names: set[str]) -> bool:
+    return isinstance(node, ast.Name) and node.id in nvflare_names
+
+
+def _python_expr_is_nvflare_identity_getattr(node: ast.AST, nvflare_names: set[str]) -> bool:
+    if not isinstance(node, ast.Call) or len(node.args) < 2:
+        return False
+    if not isinstance(node.func, ast.Name) or node.func.id != "getattr":
+        return False
+    attr = node.args[1]
+    return _python_expr_is_nvflare_binding(node.args[0], nvflare_names) and (
+        isinstance(attr, ast.Constant) and attr.value in {"__file__", "__version__"}
+    )
+
+
 def _python_if_test_is_inline_main_guard(node: ast.AST) -> bool:
     if not isinstance(node, ast.Compare) or len(node.ops) != 1 or len(node.comparators) != 1:
         return False
@@ -556,7 +672,7 @@ def _command_queries_nvflare_runtime_identity(command: str) -> bool:
         if _is_file_inspection_segment(segment):
             continue
         for source in _python_inline_sources_from_segment(segment):
-            if "nvflare.__file__" in source or "nvflare.__version__" in source:
+            if _python_source_queries_nvflare_runtime_identity(source):
                 return True
     return False
 
