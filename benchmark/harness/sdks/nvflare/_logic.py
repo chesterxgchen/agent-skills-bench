@@ -499,8 +499,8 @@ def _python_source_imports_nvflare(source: str) -> bool:
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        return bool(re.search(r"(?m)^\s*(?:from\s+nvflare(?:\.|\b)|import\s+nvflare(?:\.|\b))", source))
-    for node in ast.walk(tree):
+        return False
+    for node in tree.body:
         if isinstance(node, ast.Import):
             if any(alias.name == "nvflare" or alias.name.startswith("nvflare.") for alias in node.names):
                 return True

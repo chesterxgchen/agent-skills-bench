@@ -7062,6 +7062,8 @@ def test_nvflare_import_probe_evidence_requires_python_execution():
     assert not _command_imports_nvflare(
         "python - <<'PY'\nprint('from nvflare.recipe.fedstats import FedStatsRecipe')\nPY"
     )
+    assert not _command_imports_nvflare("python - <<'PY'\ndef f():\n    import nvflare\nPY")
+    assert not _command_imports_nvflare("python - <<'PY'\ntry:\n    import nvflare\nexcept ImportError:\n    pass\nPY")
 
 
 def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependency():
@@ -7158,6 +7160,43 @@ def test_successful_nvflare_source_write_does_not_prove_package_available():
     run = {
         "available": True,
         "agent_events_text": "\n".join(json.dumps(event) for event in (source_write, failed_exploration)),
+    }
+
+    rows = command_failure_rows(run)
+
+    assert rows[0]["dependency"] == "no dependency install command was captured before the failed job run"
+
+
+def test_successful_guarded_nvflare_import_does_not_prove_package_available():
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows
+
+    guarded_probe = {
+        "item": {
+            "aggregated_output": "",
+            "command": "python - <<'PY'\ntry:\n    import nvflare\nexcept ImportError:\n    pass\nPY",
+            "exit_code": 0,
+            "id": "guarded_probe",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    failed_exploration = {
+        "item": {
+            "aggregated_output": (
+                "Traceback (most recent call last):\n"
+                '  File "<stdin>", line 2, in <module>\n'
+                "ModuleNotFoundError: No module named 'nvflare.recipe.recipe'"
+            ),
+            "command": "python - <<'PY'\nfrom nvflare.recipe.recipe import Recipe\nPY",
+            "exit_code": 1,
+            "id": "bad_import",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join(json.dumps(event) for event in (guarded_probe, failed_exploration)),
     }
 
     rows = command_failure_rows(run)
