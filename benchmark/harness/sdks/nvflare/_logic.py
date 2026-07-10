@@ -500,15 +500,46 @@ def _python_source_imports_nvflare(source: str) -> bool:
         tree = ast.parse(source)
     except SyntaxError:
         return False
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            if any(alias.name == "nvflare" or alias.name.startswith("nvflare.") for alias in node.names):
-                return True
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if module == "nvflare" or module.startswith("nvflare."):
+    return _python_statement_list_imports_nvflare(tree.body)
+
+
+def _python_statement_imports_nvflare(node: ast.stmt) -> bool:
+    if isinstance(node, ast.Import):
+        return any(alias.name == "nvflare" or alias.name.startswith("nvflare.") for alias in node.names)
+    if isinstance(node, ast.ImportFrom):
+        module = node.module or ""
+        return module == "nvflare" or module.startswith("nvflare.")
+    return False
+
+
+def _python_statement_list_imports_nvflare(statements: list[ast.stmt]) -> bool:
+    for node in statements:
+        if _python_statement_imports_nvflare(node):
+            return True
+        if isinstance(node, ast.If) and _python_if_test_is_inline_main_guard(node.test):
+            if _python_statement_list_imports_nvflare(node.body):
                 return True
     return False
+
+
+def _python_if_test_is_inline_main_guard(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Compare) or len(node.ops) != 1 or len(node.comparators) != 1:
+        return False
+    if not isinstance(node.ops[0], ast.Eq):
+        return False
+    left = node.left
+    right = node.comparators[0]
+    return (_is_python_name_dunder_main(left) and _is_python_main_literal(right)) or (
+        _is_python_name_dunder_main(right) and _is_python_main_literal(left)
+    )
+
+
+def _is_python_name_dunder_main(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id == "__name__"
+
+
+def _is_python_main_literal(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value == "__main__"
 
 
 def _command_imports_nvflare(command: str) -> bool:

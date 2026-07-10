@@ -7058,12 +7058,22 @@ def test_nvflare_import_probe_evidence_requires_python_execution():
     assert _command_imports_nvflare("timeout 30 python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY")
     assert _command_imports_nvflare('python -c "import nvflare; print(nvflare.__file__)"')
     assert _command_imports_nvflare('env FOO=1 python -c "import nvflare; print(nvflare.__file__)"')
+    assert _command_imports_nvflare("python - <<'PY'\nif __name__ == '__main__':\n    import nvflare\nPY")
     assert not _command_imports_nvflare("cat > job.py <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY")
     assert not _command_imports_nvflare(
         "python - <<'PY'\nprint('from nvflare.recipe.fedstats import FedStatsRecipe')\nPY"
     )
     assert not _command_imports_nvflare("python - <<'PY'\ndef f():\n    import nvflare\nPY")
     assert not _command_imports_nvflare("python - <<'PY'\ntry:\n    import nvflare\nexcept ImportError:\n    pass\nPY")
+    assert not _command_imports_nvflare(
+        "python - <<'PY'\n"
+        "if __name__ == '__main__':\n"
+        "    try:\n"
+        "        import nvflare\n"
+        "    except ImportError:\n"
+        "        pass\n"
+        "PY"
+    )
 
 
 def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependency():
@@ -7171,6 +7181,51 @@ def test_wrapped_static_nvflare_import_without_runtime_identity_does_not_prove_p
     rows = command_failure_rows(run)
 
     assert rows[0]["dependency"] == "no dependency install command was captured before the failed job run"
+
+
+def test_main_guard_nvflare_probe_marks_later_submodule_failure_as_bad_import_path():
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows
+
+    successful_probe = {
+        "item": {
+            "aggregated_output": "/workspace/venv/lib/python3.11/site-packages/nvflare/__init__.py",
+            "command": (
+                "python - <<'PY'\n"
+                "if __name__ == '__main__':\n"
+                "    import nvflare\n"
+                "    print(nvflare.__file__)\n"
+                "PY"
+            ),
+            "exit_code": 0,
+            "id": "main_guard_probe",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    failed_exploration = {
+        "item": {
+            "aggregated_output": (
+                "Traceback (most recent call last):\n"
+                '  File "<stdin>", line 2, in <module>\n'
+                "ModuleNotFoundError: No module named 'nvflare.recipe.recipe'"
+            ),
+            "command": "python - <<'PY'\nfrom nvflare.recipe.recipe import Recipe\nPY",
+            "exit_code": 1,
+            "id": "bad_import",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join(json.dumps(event) for event in (successful_probe, failed_exploration)),
+    }
+
+    rows = command_failure_rows(run)
+
+    assert rows[0]["dependency"] == (
+        "installed top-level `nvflare` package was available; failure was an incorrect import path"
+    )
 
 
 def test_successful_nvflare_source_write_does_not_prove_package_available():
