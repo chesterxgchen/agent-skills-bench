@@ -92,6 +92,7 @@ from ...reports._text import (
     _shell_command_parts,
     _shell_command_segments,
     _strip_quoted,
+    _strip_execution_prefix_tokens,
     fmt_number,
     markdown_cell,
     strip_ansi,
@@ -472,7 +473,7 @@ def _python_heredoc_body(segment: str) -> str:
 def _python_inline_sources_from_segment(segment: str) -> list[str]:
     heredoc_body = _python_heredoc_body(segment)
     token_source = segment.splitlines()[0] if heredoc_body else segment
-    tokens = _command_tokens(token_source)
+    tokens = _strip_execution_prefix_tokens(_command_tokens(token_source))
     if not tokens or Path(tokens[0]).name.lower() not in {"python", "python3"}:
         return []
     args = tokens[1:]

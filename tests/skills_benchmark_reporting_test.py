@@ -7055,7 +7055,9 @@ def test_nvflare_import_probe_evidence_requires_python_execution():
     from benchmark.harness.sdks.nvflare._logic import _command_imports_nvflare
 
     assert _command_imports_nvflare("python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY")
+    assert _command_imports_nvflare("timeout 30 python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY")
     assert _command_imports_nvflare('python -c "import nvflare; print(nvflare.__file__)"')
+    assert _command_imports_nvflare('env FOO=1 python -c "import nvflare; print(nvflare.__file__)"')
     assert not _command_imports_nvflare("cat > job.py <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY")
     assert not _command_imports_nvflare(
         "python - <<'PY'\nprint('from nvflare.recipe.fedstats import FedStatsRecipe')\nPY"
@@ -7065,10 +7067,11 @@ def test_nvflare_import_probe_evidence_requires_python_execution():
 def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependency():
     from benchmark.harness.sdks.nvflare._logic import command_failure_rows, job_run_status, job_run_status_reason
 
+    successful_probe_command = "timeout 30 python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY"
     successful_nvflare_probe = {
         "item": {
             "aggregated_output": "(name: str, stats_output_path: str)",
-            "command": "python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY",
+            "command": successful_probe_command,
             "exit_code": 0,
             "id": "good_import",
             "status": "completed",
@@ -7103,7 +7106,7 @@ def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependenc
         "available": True,
         "activity": {
             "commands": [
-                "python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY",
+                successful_probe_command,
                 "python - <<'PY'\nfrom nvflare.recipe.recipe import Recipe\nPY",
                 "python job.py",
             ]
