@@ -174,6 +174,13 @@ def structure_required_display(run: RunEvidence, view: Any) -> str:
     text = f"{len(present)}/{len(required_files)} present"
     if missing:
         text += "; missing " + ", ".join(missing)
+    accepted_folders = tuple(getattr(view, "accepted_required_folders", ()) or ())
+    if accepted_folders:
+        rendered = ", ".join(folder or "." for folder in accepted_folders[:3])
+        text += "; generated job folder: " + rendered
+        if len(accepted_folders) > 3:
+            text += f", +{len(accepted_folders) - 3} more"
+        return text
     nested = {
         filename: nested_structure_file_matches(run, filename)
         for filename in required_files
@@ -267,7 +274,7 @@ def structure_correctness_table(
     # Structure is read from the per-run StructureView (realized in collect()).
     ctx = ctx or _report_context(runs, modes)
     rows = [
-        ("Required converted files", lambda run, view: structure_required_display(run, view)),
+        (lambda _run, view: getattr(view, "required_label", None) or "Required converted files", structure_required_display),
         ("Nested generated job source", lambda run, view: nested_generated_structure_display(run, view)),
         ("Optional helper files", lambda run, view: structure_optional_display(run, view)),
         (
@@ -288,8 +295,20 @@ def structure_correctness_table(
         "|---|" + "|".join("---" for _ in modes) + "|",
     ]
     for label, getter in rows:
+        row_label = (
+            next(
+                (
+                    str(label(runs[mode], ctx.structure_view(mode)))
+                    for mode in modes
+                    if str(label(runs[mode], ctx.structure_view(mode)))
+                ),
+                "Structure signal",
+            )
+            if callable(label)
+            else str(label)
+        )
         lines.append(
-            f"| {markdown_cell(label)} | "
+            f"| {markdown_cell(row_label)} | "
             + " | ".join(markdown_cell(getter(runs[mode], ctx.structure_view(mode))) for mode in modes)
             + " |"
         )

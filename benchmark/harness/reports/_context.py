@@ -73,6 +73,8 @@ class StructureView:
     optional_files: tuple = ()
     present_required: tuple = ()
     present_optional: tuple = ()
+    required_label: str = "Required converted files"
+    accepted_required_folders: tuple = ()
 
 
 @dataclass(frozen=True)

@@ -100,12 +100,71 @@ from ...reports._text import (
 # Product-specific structure contract: the core converted source files an
 # NVFLARE job is expected to produce.
 REQUIRED_STRUCTURE_FILES = ("client.py", "model.py", "job.py")
+FEDERATED_STATISTICS_STRUCTURE_FILES = ("client.py", "job.py")
 OPTIONAL_STRUCTURE_FILES = ("prepare_data.py", "download_data.py")
 
 
 def current_workspace_structure_file_matches(run: dict[str, Any], filename: str) -> list[str]:
     paths = unique_paths(manifest_paths(run, "final_structure_files"))
     return [path for path in paths if Path(path).name == filename and len(Path(path).parts) == 1]
+
+
+def _generated_source_file_paths(run: dict[str, Any], filenames: tuple[str, ...]) -> list[str]:
+    paths = []
+    seen: set[str] = set()
+    for key in ("final_structure_files", "changed_files", "final_files"):
+        for path in manifest_paths(run, key):
+            rel_path = Path(path)
+            if rel_path.name not in filenames:
+                continue
+            if _workspace_runtime_or_export_tree_root(path):
+                continue
+            if path not in seen:
+                paths.append(path)
+                seen.add(path)
+    return paths
+
+
+def _federated_statistics_generated_job_folders(run: dict[str, Any]) -> list[str]:
+    folders: dict[str, set[str]] = {}
+    for path in _generated_source_file_paths(run, FEDERATED_STATISTICS_STRUCTURE_FILES):
+        rel_path = Path(path)
+        folder = str(rel_path.parent) if len(rel_path.parts) > 1 else ""
+        folders.setdefault(folder, set()).add(rel_path.name)
+    required = set(FEDERATED_STATISTICS_STRUCTURE_FILES)
+    return sorted(folder for folder, names in folders.items() if required.issubset(names))
+
+
+def _federated_statistics_structure_file_matches(run: dict[str, Any], filename: str) -> list[str]:
+    return [path for path in _generated_source_file_paths(run, FEDERATED_STATISTICS_STRUCTURE_FILES) if Path(path).name == filename]
+
+
+def structure_required_files(run: dict[str, Any]) -> tuple[str, ...]:
+    if _resolved_evaluation_task(run) == "federated-statistics":
+        return FEDERATED_STATISTICS_STRUCTURE_FILES
+    return REQUIRED_STRUCTURE_FILES
+
+
+def structure_optional_files(run: dict[str, Any]) -> tuple[str, ...]:
+    return OPTIONAL_STRUCTURE_FILES
+
+
+def structure_required_label(run: dict[str, Any]) -> str:
+    if _resolved_evaluation_task(run) == "federated-statistics":
+        return "Required federated-statistics job files"
+    return "Required converted files"
+
+
+def structure_accepted_required_folders(run: dict[str, Any]) -> tuple[str, ...]:
+    if _resolved_evaluation_task(run) == "federated-statistics":
+        return tuple(_federated_statistics_generated_job_folders(run))
+    return ()
+
+
+def structure_file_matches(run: dict[str, Any], filename: str) -> list[str]:
+    if _resolved_evaluation_task(run) == "federated-statistics":
+        return _federated_statistics_structure_file_matches(run, filename)
+    return current_workspace_structure_file_matches(run, filename)
 
 
 def _workspace_runtime_or_export_tree_root(path: str) -> str:
@@ -137,7 +196,11 @@ def _workspace_runtime_or_export_tree_roots(run: dict[str, Any]) -> list[str]:
 def _nested_runtime_or_export_source_folders(run: dict[str, Any]) -> list[str]:
     folders = []
     seen: set[str] = set()
-    source_names = set(REQUIRED_STRUCTURE_FILES) | {"fl_data.py", "train.py", "fl_train.py"}
+    source_names = set(REQUIRED_STRUCTURE_FILES) | set(FEDERATED_STATISTICS_STRUCTURE_FILES) | {
+        "fl_data.py",
+        "train.py",
+        "fl_train.py",
+    }
     for key in ("changed_files", "final_structure_files", "final_files"):
         for path in manifest_paths(run, key):
             rel_path = Path(path)
@@ -164,8 +227,9 @@ def _short_path_list(paths: list[str], *, limit: int = 3) -> str:
 def structure_score(run: dict[str, Any]) -> float | None:
     if not run.get("available"):
         return None
-    present = sum(1 for filename in REQUIRED_STRUCTURE_FILES if current_workspace_structure_file_matches(run, filename))
-    return present / len(REQUIRED_STRUCTURE_FILES)
+    required = structure_required_files(run)
+    present = sum(1 for filename in required if structure_file_matches(run, filename))
+    return present / len(required)
 
 
 # --- NVFLARE command / job / simulator classification (step 5) --------------

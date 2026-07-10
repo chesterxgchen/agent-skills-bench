@@ -76,13 +76,17 @@ class NvflareReportPlugin(ReportPlugin):
 
     def _structure_view(self, run: RunEvidence) -> StructureView:
         raw = run.raw
-        matches = _logic.current_workspace_structure_file_matches
+        required_files = _logic.structure_required_files(raw)
+        optional_files = _logic.structure_optional_files(raw)
+        matches = _logic.structure_file_matches
         return StructureView(
             score=_logic.structure_score(raw),
-            required_files=_logic.REQUIRED_STRUCTURE_FILES,
-            optional_files=_logic.OPTIONAL_STRUCTURE_FILES,
-            present_required=tuple(f for f in _logic.REQUIRED_STRUCTURE_FILES if matches(raw, f)),
-            present_optional=tuple(f for f in _logic.OPTIONAL_STRUCTURE_FILES if matches(raw, f)),
+            required_files=required_files,
+            optional_files=optional_files,
+            present_required=tuple(f for f in required_files if matches(raw, f)),
+            present_optional=tuple(f for f in optional_files if matches(raw, f)),
+            required_label=_logic.structure_required_label(raw),
+            accepted_required_folders=_logic.structure_accepted_required_folders(raw),
         )
 
     def _job_execution(self, run: RunEvidence) -> JobExecutionSignal:
