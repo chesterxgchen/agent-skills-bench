@@ -425,8 +425,70 @@ def longest_successful_job_span(run: dict[str, Any]) -> dict[str, Any] | None:
     return max(spans, key=lambda span: as_number(span.get("duration_seconds")) or 0)
 
 
+def _python_heredoc_body(segment: str) -> str:
+    lines = str(segment or "").splitlines()
+    if len(lines) < 2:
+        return ""
+    match = re.search(r"<<-?\s*['\"]?(?P<tag>[A-Za-z_][A-Za-z0-9_]*)['\"]?", lines[0])
+    if not match:
+        return ""
+    tag = match.group("tag")
+    body: list[str] = []
+    for line in lines[1:]:
+        if line.strip() == tag:
+            return "\n".join(body)
+        body.append(line)
+    return "\n".join(body)
+
+
+def _python_inline_sources_from_segment(segment: str) -> list[str]:
+    heredoc_body = _python_heredoc_body(segment)
+    token_source = segment.splitlines()[0] if heredoc_body else segment
+    tokens = _command_tokens(token_source)
+    if not tokens or Path(tokens[0]).name.lower() not in {"python", "python3"}:
+        return []
+    args = tokens[1:]
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "-c":
+            return [args[index + 1]] if index + 1 < len(args) else []
+        if arg.startswith("-c") and len(arg) > 2:
+            return [arg[2:]]
+        if arg == "-" or arg.startswith("<<"):
+            return [heredoc_body] if heredoc_body else []
+        if arg in {"-m", "--"}:
+            return []
+        if arg.startswith("-"):
+            index += 2 if arg in {"-W", "-X"} and index + 1 < len(args) else 1
+            continue
+        return []
+    return [heredoc_body] if heredoc_body else []
+
+
+def _python_source_imports_nvflare(source: str) -> bool:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return bool(re.search(r"(?m)^\s*(?:from\s+nvflare(?:\.|\b)|import\s+nvflare(?:\.|\b))", source))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name == "nvflare" or alias.name.startswith("nvflare.") for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == "nvflare" or module.startswith("nvflare."):
+                return True
+    return False
+
+
 def _command_imports_nvflare(command: str) -> bool:
-    return bool(re.search(r"\b(?:from|import)\s+nvflare(?:\.|\b)", command))
+    for segment in _shell_command_segments(command):
+        if _is_file_inspection_segment(segment):
+            continue
+        if any(_python_source_imports_nvflare(source) for source in _python_inline_sources_from_segment(segment)):
+            return True
+    return False
 
 
 def _nvflare_package_available_for_missing_submodule(run: dict[str, Any], event: dict[str, Any]) -> bool:

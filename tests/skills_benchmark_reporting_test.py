@@ -7034,6 +7034,17 @@ def test_completed_job_run_status_reason_includes_recovered_dependency_failure()
     assert "inspect recovered command failures" in job_run_action(_ev(run), _nv_ev(run).job_execution)
 
 
+def test_nvflare_import_probe_evidence_requires_python_execution():
+    from benchmark.harness.sdks.nvflare._logic import _command_imports_nvflare
+
+    assert _command_imports_nvflare("python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY")
+    assert _command_imports_nvflare('python -c "import nvflare; print(nvflare.__file__)"')
+    assert not _command_imports_nvflare("cat > job.py <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY")
+    assert not _command_imports_nvflare(
+        "python - <<'PY'\nprint('from nvflare.recipe.fedstats import FedStatsRecipe')\nPY"
+    )
+
+
 def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependency():
     from benchmark.harness.sdks.nvflare._logic import command_failure_rows, job_run_status, job_run_status_reason
 
@@ -7095,6 +7106,43 @@ def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependenc
     assert rows[0]["dependency"] == (
         "installed top-level `nvflare` package was available; failure was an incorrect import path"
     )
+
+
+def test_successful_nvflare_source_write_does_not_prove_package_available():
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows
+
+    source_write = {
+        "item": {
+            "aggregated_output": "",
+            "command": "cat > job.py <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY",
+            "exit_code": 0,
+            "id": "write_source",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    failed_exploration = {
+        "item": {
+            "aggregated_output": (
+                "Traceback (most recent call last):\n"
+                '  File "<stdin>", line 2, in <module>\n'
+                "ModuleNotFoundError: No module named 'nvflare.recipe.recipe'"
+            ),
+            "command": "python - <<'PY'\nfrom nvflare.recipe.recipe import Recipe\nPY",
+            "exit_code": 1,
+            "id": "bad_import",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join(json.dumps(event) for event in (source_write, failed_exploration)),
+    }
+
+    rows = command_failure_rows(run)
+
+    assert rows[0]["dependency"] == "no dependency install command was captured before the failed job run"
 
 
 def test_failure_analysis_keeps_recovered_bash_issue_for_passed_run():
