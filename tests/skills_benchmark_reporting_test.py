@@ -7069,10 +7069,16 @@ def test_nvflare_import_probe_evidence_requires_python_execution():
 def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependency():
     from benchmark.harness.sdks.nvflare._logic import command_failure_rows, job_run_status, job_run_status_reason
 
-    successful_probe_command = "timeout 30 python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY"
+    successful_probe_command = (
+        "timeout 30 python - <<'PY'\n"
+        "import nvflare\n"
+        "from nvflare.recipe.fedstats import FedStatsRecipe\n"
+        "print(nvflare.__file__)\n"
+        "PY"
+    )
     successful_nvflare_probe = {
         "item": {
-            "aggregated_output": "(name: str, stats_output_path: str)",
+            "aggregated_output": "/workspace/venv/lib/python3.11/site-packages/nvflare/__init__.py",
             "command": successful_probe_command,
             "exit_code": 0,
             "id": "good_import",
@@ -7128,6 +7134,43 @@ def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependenc
     assert rows[0]["dependency"] == (
         "installed top-level `nvflare` package was available; failure was an incorrect import path"
     )
+
+
+def test_wrapped_static_nvflare_import_without_runtime_identity_does_not_prove_package_available():
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows
+
+    static_probe = {
+        "item": {
+            "aggregated_output": "",
+            "command": 'env FOO=1 python -c "import nvflare"',
+            "exit_code": 0,
+            "id": "static_probe",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    failed_exploration = {
+        "item": {
+            "aggregated_output": (
+                "Traceback (most recent call last):\n"
+                '  File "<stdin>", line 2, in <module>\n'
+                "ModuleNotFoundError: No module named 'nvflare.recipe.recipe'"
+            ),
+            "command": "python - <<'PY'\nfrom nvflare.recipe.recipe import Recipe\nPY",
+            "exit_code": 1,
+            "id": "bad_import",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join(json.dumps(event) for event in (static_probe, failed_exploration)),
+    }
+
+    rows = command_failure_rows(run)
+
+    assert rows[0]["dependency"] == "no dependency install command was captured before the failed job run"
 
 
 def test_successful_nvflare_source_write_does_not_prove_package_available():

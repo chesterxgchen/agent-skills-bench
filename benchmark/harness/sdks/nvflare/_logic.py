@@ -520,6 +520,38 @@ def _command_imports_nvflare(command: str) -> bool:
     return False
 
 
+def _command_queries_nvflare_runtime_identity(command: str) -> bool:
+    for segment in _shell_command_segments(command):
+        if _is_file_inspection_segment(segment):
+            continue
+        for source in _python_inline_sources_from_segment(segment):
+            if "nvflare.__file__" in source or "nvflare.__version__" in source:
+                return True
+    return False
+
+
+def _output_mentions_nvflare_package_path(output: str) -> bool:
+    normalized = str(output or "").replace("\\", "/")
+    return bool(
+        re.search(
+            r"(?i)(?:^|[\s\"'`=:(])(?:[A-Za-z]:)?[^\s\"'`]*?(?:site|dist)-packages/nvflare(?:/|$)",
+            normalized,
+        )
+    )
+
+
+def _output_mentions_version(value: str) -> bool:
+    return bool(re.search(r"\b(?:\d+!)?\d+(?:\.\d+)+(?:[A-Za-z0-9_.!+-]*)?\b", str(value or "")))
+
+
+def _command_output_proves_nvflare_import(command: str, output: str) -> bool:
+    if not _command_imports_nvflare(command):
+        return False
+    if _output_mentions_nvflare_package_path(output):
+        return True
+    return _command_queries_nvflare_runtime_identity(command) and _output_mentions_version(output)
+
+
 def _nvflare_package_available_for_missing_submodule(run: dict[str, Any], event: dict[str, Any]) -> bool:
     """True when a missing ``nvflare.*`` module is better read as a bad internal path.
 
@@ -534,9 +566,9 @@ def _nvflare_package_available_for_missing_submodule(run: dict[str, Any], event:
             continue
         command = str(candidate.get("command") or "")
         output = str(candidate.get("output") or "")
-        if command_succeeded(candidate) and _command_imports_nvflare(command):
+        if command_succeeded(candidate) and _command_output_proves_nvflare_import(command, output):
             return True
-        if "/site-packages/nvflare/" in output.replace("\\", "/"):
+        if _output_mentions_nvflare_package_path(output):
             return True
     return False
 
