@@ -125,18 +125,34 @@ def _generated_source_file_paths(run: dict[str, Any], filenames: tuple[str, ...]
     return paths
 
 
-def _federated_statistics_generated_job_folders(run: dict[str, Any]) -> list[str]:
+def _federated_statistics_required_file_folders(run: dict[str, Any]) -> dict[str, set[str]]:
     folders: dict[str, set[str]] = {}
     for path in _generated_source_file_paths(run, FEDERATED_STATISTICS_STRUCTURE_FILES):
         rel_path = Path(path)
         folder = str(rel_path.parent) if len(rel_path.parts) > 1 else ""
         folders.setdefault(folder, set()).add(rel_path.name)
+    return folders
+
+
+def _federated_statistics_generated_job_folders(run: dict[str, Any]) -> list[str]:
+    folders = _federated_statistics_required_file_folders(run)
     required = set(FEDERATED_STATISTICS_STRUCTURE_FILES)
     return sorted(folder for folder, names in folders.items() if required.issubset(names))
 
 
 def _federated_statistics_structure_file_matches(run: dict[str, Any], filename: str) -> list[str]:
-    return [path for path in _generated_source_file_paths(run, FEDERATED_STATISTICS_STRUCTURE_FILES) if Path(path).name == filename]
+    return [path for path in _generated_source_file_paths(run, (filename,)) if Path(path).name == filename]
+
+
+def _federated_statistics_best_required_file_names(run: dict[str, Any]) -> set[str]:
+    required = set(FEDERATED_STATISTICS_STRUCTURE_FILES)
+    folders = _federated_statistics_required_file_folders(run)
+    if not folders:
+        return set()
+    return max(
+        (names & required for _folder, names in sorted(folders.items())),
+        key=lambda names: (len(names), tuple(filename in names for filename in FEDERATED_STATISTICS_STRUCTURE_FILES)),
+    )
 
 
 def structure_required_files(run: dict[str, Any]) -> tuple[str, ...]:
@@ -165,6 +181,18 @@ def structure_file_matches(run: dict[str, Any], filename: str) -> list[str]:
     if _resolved_evaluation_task(run) == "federated-statistics":
         return _federated_statistics_structure_file_matches(run, filename)
     return current_workspace_structure_file_matches(run, filename)
+
+
+def structure_present_required_files(run: dict[str, Any]) -> tuple[str, ...]:
+    required = structure_required_files(run)
+    if _resolved_evaluation_task(run) == "federated-statistics":
+        present = _federated_statistics_best_required_file_names(run)
+        return tuple(filename for filename in required if filename in present)
+    return tuple(filename for filename in required if structure_file_matches(run, filename))
+
+
+def structure_present_optional_files(run: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(filename for filename in structure_optional_files(run) if structure_file_matches(run, filename))
 
 
 def _workspace_runtime_or_export_tree_root(path: str) -> str:
@@ -228,7 +256,7 @@ def structure_score(run: dict[str, Any]) -> float | None:
     if not run.get("available"):
         return None
     required = structure_required_files(run)
-    present = sum(1 for filename in required if structure_file_matches(run, filename))
+    present = len(structure_present_required_files(run))
     return present / len(required)
 
 

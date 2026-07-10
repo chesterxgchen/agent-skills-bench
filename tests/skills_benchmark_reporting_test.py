@@ -3167,10 +3167,11 @@ def test_fedstats_structure_score_accepts_generated_job_folder():
     from benchmark.harness.reports.benchmark_insights import (
         nested_generated_structure_display,
         structure_correctness_table,
+        structure_optional_display,
         structure_required_display,
     )
     from benchmark.harness.reports.evidence import _run_evidence_from_bundle
-    from benchmark.harness.sdks.nvflare._logic import structure_score
+    from benchmark.harness.sdks.nvflare._logic import structure_file_matches, structure_score
     from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
 
     run = {
@@ -3182,20 +3183,17 @@ def test_fedstats_structure_score_accepts_generated_job_folder():
             "final_structure_files": [
                 {"path": "nvflare_fedstats_image/client.py"},
                 {"path": "nvflare_fedstats_image/job.py"},
+                {"path": "nvflare_fedstats_image/prepare_data.py"},
             ],
             "changed_files": [
                 {"path": "nvflare_fedstats_image/__init__.py"},
                 {"path": "nvflare_fedstats_image/client.py"},
                 {"path": "nvflare_fedstats_image/job.py"},
+                {"path": "nvflare_fedstats_image/prepare_data.py"},
                 {"path": "validation/validate_image_stats.py"},
             ],
             "runtime_artifacts": [
-                {
-                    "path": (
-                        "tmp/nvflare_fedstats_chest_image/chest_image_fedstats/server/"
-                        "simulate_job/stats.json"
-                    )
-                }
+                {"path": ("tmp/nvflare_fedstats_chest_image/chest_image_fedstats/server/" "simulate_job/stats.json")}
             ],
         },
     }
@@ -3207,8 +3205,11 @@ def test_fedstats_structure_score_accepts_generated_job_folder():
     assert view.required_label == "Required federated-statistics job files"
     assert view.required_files == ("client.py", "job.py")
     assert view.present_required == ("client.py", "job.py")
+    assert view.present_optional == ("prepare_data.py",)
+    assert structure_file_matches(run, "prepare_data.py") == ["nvflare_fedstats_image/prepare_data.py"]
     required = structure_required_display(evidence, view)
     assert required == "2/2 present; generated job folder: nvflare_fedstats_image"
+    assert structure_optional_display(evidence, view) == "prepare_data.py"
     assert "nested copies ignored" not in required
     assert nested_generated_structure_display(evidence, view) == "nvflare_fedstats_image (client.py, job.py)"
     table = structure_correctness_table({"with_skills": evidence}, ["with_skills"], _nv_ctx({"with_skills": evidence}))
@@ -3221,6 +3222,22 @@ def test_fedstats_structure_score_accepts_generated_job_folder():
         "workspace_delta": {"final_structure_files": [{"path": "job.py"}]},
     }
     assert structure_score(partial) == 0.5
+
+    split = {
+        "available": True,
+        "run_plan_entry": {"evaluation_task": "federated-statistics"},
+        "workspace_delta": {
+            "final_structure_files": [
+                {"path": "fedstats_client/client.py"},
+                {"path": "fedstats_job/job.py"},
+            ],
+        },
+    }
+    assert structure_score(split) == 0.5
+    split_view = NvflareReportPlugin().collect(_run_evidence_from_bundle(split)).structure_view
+    assert split_view.score == 0.5
+    assert split_view.accepted_required_folders == ()
+    assert set(split_view.present_required) != {"client.py", "job.py"}
 
 
 def test_generated_code_quality_section_reports_evidence_without_gate_language(tmp_path):

@@ -78,13 +78,12 @@ class NvflareReportPlugin(ReportPlugin):
         raw = run.raw
         required_files = _logic.structure_required_files(raw)
         optional_files = _logic.structure_optional_files(raw)
-        matches = _logic.structure_file_matches
         return StructureView(
             score=_logic.structure_score(raw),
             required_files=required_files,
             optional_files=optional_files,
-            present_required=tuple(f for f in required_files if matches(raw, f)),
-            present_optional=tuple(f for f in optional_files if matches(raw, f)),
+            present_required=_logic.structure_present_required_files(raw),
+            present_optional=_logic.structure_present_optional_files(raw),
             required_label=_logic.structure_required_label(raw),
             accepted_required_folders=_logic.structure_accepted_required_folders(raw),
         )
