@@ -4434,9 +4434,42 @@ def test_fedstats_stats_output_artifact_completes_declared_task():
     assert run_quality_issues(evidence, ev) == []
 
 
+def test_fedstats_statistics_dir_artifact_completes_declared_task():
+    from benchmark.harness.reports.benchmark_insights import run_quality_issues
+    from benchmark.harness.sdks.nvflare import _logic
+
+    artifact = (
+        "tmp/nvflare/image_stats_sim/image_stats/server/"
+        "simulate_job/statistics/image_intensity.json"
+    )
+    run = {
+        "available": True,
+        "mode": "with_skills",
+        "label": "With skills",
+        "run_plan_entry": {"evaluation_task": "federated-statistics"},
+        "workspace_delta": {
+            "runtime_artifacts": [
+                {
+                    "path": artifact,
+                    "artifact_path": "runtime_artifacts/image_intensity.json",
+                }
+            ]
+        },
+    }
+
+    evidence = _ev(run)
+    ev = _nv_ev(run)
+
+    assert _logic._captured_federated_statistics_artifact(run) == artifact
+    assert _logic.job_run_status(run) == "completed"
+    assert "captured federated-statistics result artifact" in _logic.job_run_status_reason(run)
+    assert run_quality_issues(evidence, ev) == []
+
+
 def test_fedstats_result_artifact_marks_scalar_metric_not_required():
     from benchmark.harness.reports.benchmark_insights import metric_display, run_result_metric_status
     from benchmark.harness.reports.insights._charts import comparison_scorecard
+    from benchmark.harness.reports.insights._sections import quality_signal_table
 
     artifact = (
         "tmp/nvflare/chest_image_fedstats_sim/chest_image_fedstats/server/"
@@ -4476,6 +4509,10 @@ def test_fedstats_result_artifact_marks_scalar_metric_not_required():
     scorecard = comparison_scorecard(runs, _nv_ctx(runs, ["without_skills", "with_skills"]))
     unwrapped = _unwrap_cells(scorecard)
     assert f"| Metrics (result) | result NA | result artifact `{artifact}` | not comparable |" in unwrapped
+    quality_table = quality_signal_table(runs, ["with_skills"], _nv_ctx(runs, ["with_skills"]))
+    assert f"| With skills | NA | result artifact `{artifact}` | artifact_available |" in _unwrap_cells(
+        quality_table
+    )
 
 
 def test_reported_scalar_alone_does_not_satisfy_nvflare_result_gate():
@@ -6973,6 +7010,113 @@ def test_failure_analysis_formats_multiline_recovered_command_as_single_line():
     assert "| Command | Exit | Recovery | Root cause | Dependency evidence |" in section
     assert "python3 -m py_compile client.py job.py && python3 - <<'EOF' ... EOF" in section
     assert "print('check')\nEOF" not in section
+
+
+def test_metrics_report_surfaces_recovered_issues_for_passed_run(tmp_path):
+    from benchmark.harness.modes import WITH_SKILLS_MODE
+    from benchmark.harness.reports import metrics_report
+    from benchmark.harness.reports.benchmark_insights import _executive_summary_section, status_table
+
+    failed_shape_check = {
+        "item": {
+            "aggregated_output": (
+                "Traceback (most recent call last):\n"
+                "  File \"validation/parity_check.py\", line 31, in <module>\n"
+                "TypeError: list indices must be integers or slices, not str"
+            ),
+            "command": "cd /workspace/run/with_skills/workspace python validation/parity_check.py 2>&1",
+            "exit_code": 1,
+            "id": "item_1",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    failed_scalar_check = {
+        "item": {
+            "aggregated_output": (
+                "Traceback (most recent call last):\n"
+                "  File \"validation/parity_check.py\", line 42, in <module>\n"
+                "TypeError: 'int' object is not subscriptable"
+            ),
+            "command": "cd /workspace/run/with_skills/workspace python validation/parity_check.py 2>&1",
+            "exit_code": 1,
+            "id": "item_2",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    recovered_check = {
+        "item": {
+            "aggregated_output": "Parity check passed.",
+            "command": "cd /workspace/run/with_skills/workspace python validation/parity_check.py 2>&1",
+            "exit_code": 0,
+            "id": "item_3",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    successful_job = {
+        "item": {
+            "aggregated_output": "Finished FedStats.",
+            "command": "python job.py",
+            "exit_code": 0,
+            "id": "item_4",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    artifact = "image_stats/server/simulate_job/statistics/image_statistics.json"
+    run = {
+        "available": True,
+        "mode": WITH_SKILLS_MODE,
+        "label": "With skills",
+        "agent": "codex",
+        "agent_model": "default",
+        "run_plan_entry": {"evaluation_task": "federated-statistics"},
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0},
+        "activity": {"command_count": 4},
+        "workspace_delta": {
+            "runtime_artifacts": [
+                {
+                    "path": artifact,
+                    "artifact_path": "runtime_artifacts/image_statistics.json",
+                }
+            ]
+        },
+        "agent_events_text": "\n".join(
+            json.dumps(event) for event in (failed_shape_check, failed_scalar_check, recovered_check, successful_job)
+        ),
+    }
+    runs = _evruns({WITH_SKILLS_MODE: run})
+    ctx = _nv_ctx({WITH_SKILLS_MODE: run}, [WITH_SKILLS_MODE])
+    summary = {
+        "title": "Synthetic Metrics",
+        "result_root": str(tmp_path),
+        "status": "With skills: passed",
+        "runs": [
+            {
+                "mode": WITH_SKILLS_MODE,
+                "label": "With skills",
+                "summary": {"elapsed_seconds": 10, "token_count": 100},
+                "activity": {"command_count": 4},
+            }
+        ],
+        "comparison": {},
+    }
+
+    markdown = metrics_report.markdown_report(summary, runs, ctx)
+    insights_status = status_table(runs, [WITH_SKILLS_MODE], ctx)
+    executive_summary = _executive_summary_section(runs, [WITH_SKILLS_MODE], ctx)
+
+    assert "Status: With skills: passed with recovered issues" in markdown
+    assert "| With skills | codex | default |" in markdown
+    assert "passed with recovered issues" in insights_status
+    assert "| With skills | passed with recovered issues | completed | pass |" in executive_summary
+    assert "## Recovered Issues" in markdown
+    assert "validation/parity_check.py" in markdown
+    assert "TypeError: list indices must be integers or slices, not str" in markdown
+    assert "TypeError: 'int' object is not subscriptable" in markdown
 
 
 def test_job_run_status_reason_includes_failed_job_command_error():

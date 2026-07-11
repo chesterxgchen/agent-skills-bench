@@ -1592,12 +1592,68 @@ def _has_runtime_scalar_result_metric(run: dict[str, Any]) -> bool:
     return artifact_validation_metric_is_runtime_evidence(run)
 
 
+def _normalized_stats_output_path(value: Any) -> str:
+    text = str(value or "").replace("\\", "/").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    return text.lstrip("/")
+
+
+def _configured_fedstats_output_paths(run: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for _key, item in _server_config_items(run):
+        path = _workspace_artifact_path(run, item)
+        if not path or not path.exists():
+            continue
+        config = load_json(path, {}) or {}
+        components = config.get("components") if isinstance(config, dict) else None
+        if not isinstance(components, list):
+            continue
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+            component_path = str(component.get("path") or "")
+            component_id = str(component.get("id") or "")
+            if "JsonStatsFileWriter" not in component_path and component_id != "stats_writer":
+                continue
+            args = component.get("args") if isinstance(component.get("args"), dict) else {}
+            output_path = _normalized_stats_output_path(args.get("output_path"))
+            if output_path and output_path not in paths:
+                paths.append(output_path)
+    return paths
+
+
+def _artifact_matches_fedstats_output_path(label: str, output_path: str) -> bool:
+    normalized_label = label.replace("\\", "/")
+    normalized_output = _normalized_stats_output_path(output_path)
+    if not normalized_output:
+        return False
+    return bool(
+        re.search(
+            rf"(^|/)server/simulate_job/{re.escape(normalized_output)}$",
+            normalized_label,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _captured_federated_statistics_artifact(run: dict[str, Any]) -> str:
+    configured_output_paths = _configured_fedstats_output_paths(run)
+    for item in _runtime_artifacts(run):
+        label = _artifact_label(item).replace("\\", "/")
+        if not re.search(r"(^|/)server/simulate_job/", label):
+            continue
+        if any(_artifact_matches_fedstats_output_path(label, output_path) for output_path in configured_output_paths):
+            return label
+    if configured_output_paths:
+        return ""
     for item in _runtime_artifacts(run):
         label = _artifact_label(item).replace("\\", "/")
         if not re.search(r"(^|/)server/simulate_job/", label):
             continue
         if re.search(r"(?:fedstats|global_stats|statistics|stats)[^/]*\.json$", label, re.IGNORECASE):
+            return label
+        if re.search(r"(^|/)server/simulate_job/(?:statistics|stats|stats_output|results)/[^/]+\.json$", label):
             return label
     return ""
 

@@ -95,6 +95,7 @@ from .insights._charts import comparison_scorecard, embedded_bar_chart, interpre
 from .insights._code_quality import *  # noqa: F401,F403
 from .insights._code_quality import fl_algorithm_display, generated_code_quality_section
 from .insights._diagnostics import *  # noqa: F401,F403
+from .insights._diagnostics import command_failure_diagnostics_table
 from .insights._metrics import *  # noqa: F401,F403
 from .insights._metrics import benchmark_outcome, run_quality_issues, run_result_metric_status, status_summary
 
@@ -140,6 +141,8 @@ def _compact_overall_status(status: str) -> str:
         return "warn"
     if status.startswith("failed"):
         return "failed"
+    if status.startswith("passed with recovered issues"):
+        return "passed with recovered issues"
     if status.startswith("passed"):
         return "passed"
     if status.startswith("missing"):
@@ -157,6 +160,15 @@ def _compact_result_gate(outcome: str) -> str:
     if outcome.startswith("partial:"):
         return "partial"
     return outcome or "NA"
+
+
+def _overall_status_for_display(run: RunEvidence, mode: str, ctx: ReportContext, ev: Any = None) -> str:
+    status = human_readable_status(run, ev)
+    if status == "passed":
+        job_exec = ctx.job_execution(mode)
+        if job_exec.recovered_summary or command_failure_diagnostics_table(run, recovered_only=True, ev=ev):
+            return "passed with recovered issues"
+    return status
 
 
 def _first_run_value(runs: dict[str, RunEvidence], *keys: str) -> str:
@@ -491,7 +503,7 @@ def _executive_summary_section(
         job_status = job_exec.status
         if job_exec.status_reason:
             job_status = f"{job_status}: {job_exec.status_reason}"
-        overall_status = human_readable_status(run, ev)
+        overall_status = _overall_status_for_display(run, mode, ctx, ev)
         result_gate = benchmark_outcome(run, ev)
         metric_status = run_result_metric_status(run, ev)
         status_lines.append(

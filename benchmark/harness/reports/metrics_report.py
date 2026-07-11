@@ -58,6 +58,7 @@ from .benchmark_insights import (
     why_section,
 )
 from .evidence import RunEvidence, _run_evidence_from_bundle
+from .insights._diagnostics import command_failure_diagnostics_table
 from .insights._structure import run_host_os_display
 
 
@@ -390,10 +391,11 @@ def report_summary(
     insight_runs = runs_by_mode_for_insights(root, rows) if insight_runs is None else insight_runs
     ctx = ctx if ctx is not None else _insights_context(root, insight_runs)
     metric_name = metric_name_for_runs(insight_runs)
+    modes = [spec.mode for spec in BENCHMARK_RUNS if spec.mode in insight_runs]
     return {
         "title": title,
         "result_root": str(root),
-        "status": status_summary(insight_runs, ctx=ctx),
+        "status": _display_status_summary(insight_runs, modes, ctx),
         "metric_name": metric_name,
         "runs": rows,
         "comparison": numeric_comparison(rows, insight_runs, ctx),
@@ -419,6 +421,69 @@ def comparison_label(key: str) -> str:
     return key
 
 
+def _recovered_issue_note(run: RunEvidence, mode: str, ctx: ReportContext, ev: Any = None) -> str:
+    job_exec = ctx.job_execution(mode)
+    if job_exec.recovered_summary:
+        return job_exec.recovered_summary
+    if command_failure_diagnostics_table(run, recovered_only=True, ev=ev):
+        return "recovered command failures were captured"
+    return ""
+
+
+def _display_status(run: RunEvidence, mode: str, ctx: ReportContext, ev: Any = None) -> str:
+    status = human_readable_status(run, ev)
+    if status == "passed" and _recovered_issue_note(run, mode, ctx, ev):
+        return "passed with recovered issues"
+    return status
+
+
+def _display_analysis(run: RunEvidence, mode: str, ctx: ReportContext, ev: Any = None) -> str:
+    status = human_readable_status(run, ev)
+    if status == "passed":
+        return _recovered_issue_note(run, mode, ctx, ev) or "NA"
+    return run_analysis(run, ev)
+
+
+def _display_status_summary(runs: dict[str, RunEvidence], modes: list[str], ctx: ReportContext) -> str:
+    if not modes:
+        return status_summary(runs, ctx=ctx)
+    parts = []
+    for mode in modes:
+        run = runs[mode]
+        parts.append(f"{run.label or mode}: {_display_status(run, mode, ctx, ctx.evidence.get(mode))}")
+    return "; ".join(parts)
+
+
+def _recovered_issues_section(
+    summary: dict[str, Any],
+    insight_runs: dict[str, RunEvidence],
+    ctx: ReportContext,
+    *,
+    include_heading: bool = True,
+) -> str:
+    lines: list[str] = []
+    for row in summary["runs"]:
+        mode = row["mode"]
+        run = insight_runs[mode]
+        ev = ctx.evidence.get(mode)
+        table = command_failure_diagnostics_table(run, recovered_only=True, ev=ev)
+        note = _recovered_issue_note(run, mode, ctx, ev)
+        if not table and not note:
+            continue
+        if not lines:
+            if include_heading:
+                lines.extend(["## Recovered Issues", ""])
+            lines.append(
+                "These did not fail the final result gate, but they show errors, retries, or generated-helper failures that should be reviewed."
+            )
+        lines.extend(["", f"### {row['label']}"])
+        if note:
+            lines.extend(["", f"- Summary: {note}"])
+        if table:
+            lines.extend(["", table])
+    return "\n".join(lines)
+
+
 def markdown_report(
     summary: dict[str, Any],
     insight_runs: dict[str, RunEvidence] | None = None,
@@ -427,12 +492,13 @@ def markdown_report(
     root = Path(summary["result_root"])
     insight_runs = runs_by_mode_for_insights(root, summary["runs"]) if insight_runs is None else insight_runs
     ctx = ctx if ctx is not None else _insights_context(root, insight_runs)
+    modes = [spec.mode for spec in BENCHMARK_RUNS if spec.mode in insight_runs]
     lines = [
         f"# {summary['title']}",
         "",
         f"Result root: `{summary['result_root']}`",
         "",
-        f"Status: {summary['status']}",
+        f"Status: {_display_status_summary(insight_runs, modes, ctx)}",
         "",
         "## Runs",
         "",
@@ -444,11 +510,12 @@ def markdown_report(
         run_summary = row["summary"]
         activity = row["activity"]
         ev = ctx.evidence.get(row["mode"])
-        root_cause = "NA" if human_readable_status(run, ev) == "passed" else run_analysis(run, ev)
+        status = _display_status(run, row["mode"], ctx, ev)
+        root_cause = _display_analysis(run, row["mode"], ctx, ev)
         lines.append(
             f"| {markdown_cell(row['label'])} | {markdown_cell(run.agent)} | "
             f"{markdown_cell(run.agent_model)} | {markdown_cell(run_host_os_display(run))} | "
-            f"{markdown_cell(human_readable_status(run, ev))} | "
+            f"{markdown_cell(status)} | "
             f"{markdown_cell(_run_skill_available_display(run))} | "
             f"{markdown_cell(_run_skill_inspection_display(run))} | "
             f"{markdown_cell(_run_skill_display(run))} | {markdown_cell(_run_shared_skill_display(run))} | "
@@ -456,7 +523,9 @@ def markdown_report(
             f"{fmt(run_summary.get('token_count'))} | {fmt(activity.get('command_count'))} | "
             f"{markdown_cell(root_cause)} |"
         )
-    modes = [spec.mode for spec in BENCHMARK_RUNS if spec.mode in insight_runs]
+    recovered_issues = _recovered_issues_section(summary, insight_runs, ctx)
+    if recovered_issues:
+        lines.extend(["", recovered_issues])
     lines.extend(
         [
             "",
@@ -488,26 +557,33 @@ def html_report(
     root = Path(summary["result_root"])
     insight_runs = runs_by_mode_for_insights(root, summary["runs"]) if insight_runs is None else insight_runs
     ctx = ctx if ctx is not None else _insights_context(root, insight_runs)
+    modes = [spec.mode for spec in BENCHMARK_RUNS if spec.mode in insight_runs]
     rows = []
     for row in summary["runs"]:
         run = insight_runs[row["mode"]]
         run_summary = row["summary"]
+        ev = ctx.evidence.get(row["mode"])
         rows.append(
             "<tr>"
             f"<td>{html.escape(row['label'])}</td>"
             f"<td>{html.escape(fmt(run.agent))}</td>"
             f"<td>{html.escape(fmt(run.agent_model))}</td>"
             f"<td>{html.escape(run_host_os_display(run))}</td>"
-            f"<td>{html.escape(human_readable_status(run, ctx.evidence.get(row['mode'])))}</td>"
+            f"<td>{html.escape(_display_status(run, row['mode'], ctx, ev))}</td>"
             f"<td>{html.escape(_run_skill_available_display(run))}</td>"
             f"<td>{html.escape(_run_skill_inspection_display(run))}</td>"
             f"<td>{html.escape(_run_skill_display(run))}</td>"
             f"<td>{html.escape(_run_shared_skill_display(run))}</td>"
             f"<td>{html.escape(fmt(run_summary.get('elapsed_seconds')))}</td>"
             f"<td>{html.escape(fmt(run_summary.get('token_count')))}</td>"
+            f"<td>{html.escape(_display_analysis(run, row['mode'], ctx, ev))}</td>"
             "</tr>"
         )
     chart = embedded_bar_chart(insight_runs, ctx)
+    recovered_issues = _recovered_issues_section(summary, insight_runs, ctx, include_heading=False)
+    recovered_html = (
+        f"<h2>Recovered Issues</h2><pre>{html.escape(recovered_issues)}</pre>" if recovered_issues else ""
+    )
     return f"""<!doctype html>
 <html>
 <head>
@@ -526,11 +602,12 @@ def html_report(
 <body>
   <h1>{html.escape(summary['title'])}</h1>
   <p>Result root: <code>{html.escape(summary['result_root'])}</code></p>
-  <p>Status: {html.escape(summary['status'])}</p>
+  <p>Status: {html.escape(_display_status_summary(insight_runs, modes, ctx))}</p>
   <table>
-    <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Host OS</th><th>Status</th><th>Skills available</th><th>Skills inspected</th><th>Skills applied/used</th><th>Shared refs read</th><th>Elapsed seconds</th><th>Tokens</th></tr></thead>
+    <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Host OS</th><th>Status</th><th>Skills available</th><th>Skills inspected</th><th>Skills applied/used</th><th>Shared refs read</th><th>Elapsed seconds</th><th>Tokens</th><th>Root cause</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
+  {recovered_html}
   {chart}
 </body>
 </html>

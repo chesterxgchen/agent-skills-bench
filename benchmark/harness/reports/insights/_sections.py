@@ -157,6 +157,11 @@ def quality_signal_table(runs: dict[str, RunEvidence], modes: list[str], ctx: Re
             result = f"{result} ({label})"
         evidence = artifact_validation_metric_evidence(run.raw) or signal.get("evidence") or "NA"
         status = signal.get("status") or "NA"
+        assessment = getattr(ev, "metric", None)
+        if assessment is not None and not getattr(assessment, "scalar_required", True):
+            artifact = getattr(assessment, "result_artifact", None)
+            status = "artifact_available" if artifact else "not_required"
+            evidence = getattr(assessment, "gate_phrase", None) or "scalar metric not required"
         response_gap = final_response_metric_reporting_gap(run, ev)
         if response_gap:
             status = "artifact metric present; final response gap"
@@ -406,9 +411,15 @@ def status_table(runs: dict[str, RunEvidence], modes: list[str], ctx: ReportCont
     for mode in modes:
         run = runs[mode]
         ev = ctx.evidence.get(mode)
+        status = human_readable_status(run, ev)
+        analysis = run_analysis(run, ev)
+        job_exec = ctx.job_execution(mode)
+        if status == "passed" and job_exec.recovered_summary:
+            status = "passed with recovered issues"
+            analysis = job_exec.recovered_summary
         lines.append(
-            f"| {markdown_cell(run.label)} | {markdown_cell(human_readable_status(run, ev))} | "
-            f"{markdown_cell(run_analysis(run, ev))} |"
+            f"| {markdown_cell(run.label)} | {markdown_cell(status)} | "
+            f"{markdown_cell(analysis)} |"
         )
     return "\n".join(lines)
 
