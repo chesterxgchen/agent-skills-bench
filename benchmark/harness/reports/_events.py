@@ -932,6 +932,7 @@ def command_error_summary(output: str) -> str:
         r"ConfigError: [^\n]+",
         r"RuntimeError: [^\n]+",
         r"ModuleNotFoundError: [^\n]+",
+        r"ImportError: [^\n]+",
         r"ProtocolError: [^\n]+",
         r"IncompleteRead\([^\n]+",
         r"Connection broken: [^\n]+",

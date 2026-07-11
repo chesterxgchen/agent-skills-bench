@@ -7317,6 +7317,48 @@ def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependenc
     )
 
 
+def test_command_failure_rows_surface_plain_import_error_detail():
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows
+
+    failed_exploration = {
+        "item": {
+            "aggregated_output": (
+                "Exit code 1\n"
+                "/workspace/venv/lib/python3.11/site-packages/nvflare/recipe/run.py:22:class Run:\n"
+                "---\n"
+                "Traceback (most recent call last):\n"
+                '  File "<stdin>", line 2, in <module>\n'
+                "ImportError: cannot import name 'Run' from 'nvflare.recipe.spec' "
+                "(/workspace/venv/lib/python3.11/site-packages/nvflare/recipe/spec.py)"
+            ),
+            "command": (
+                'NV=$(python -c "import nvflare, os; print(os.path.dirname(nvflare.__file__))")\n'
+                'grep -rn "class Run" "$NV/recipe/"*.py\n'
+                'echo "---"\n'
+                "python - <<'PY'\n"
+                "from nvflare.recipe.spec import Run\n"
+                "PY"
+            ),
+            "exit_code": 1,
+            "id": "bad_import",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    run = {
+        "available": True,
+        "agent_events_text": json.dumps(failed_exploration),
+    }
+
+    rows = command_failure_rows(run)
+
+    assert rows
+    assert rows[0]["root_cause"].startswith(
+        "ImportError: cannot import name 'Run' from 'nvflare.recipe.spec'"
+    )
+    assert rows[0]["root_cause"] != "Error: Exit code 1"
+
+
 def test_nvflare_runtime_identity_probe_variants_mark_later_submodule_failure_as_bad_import_path():
     from benchmark.harness.sdks.nvflare._logic import command_failure_rows
 
