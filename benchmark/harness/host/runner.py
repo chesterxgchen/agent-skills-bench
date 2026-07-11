@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -59,6 +60,7 @@ from .common import (
     docker_args_for_case,
     docker_env,
     emit,
+    force_remove_container,
     host_idle_sleep_prevention_command,
     parse_host_cli_options,
     prepare_result_mount,
@@ -148,17 +150,32 @@ def run_one_case(config: CaseConfig, *, logs: Iterable[Path] = (), prefix: str |
     emit(f"Job folder: {config.job_input_dir} -> /workspace/input", logs=logs, prefix=prefix)
     emit(f"Prompt file: {config.prompt_path} -> {CONTAINER_PROMPT_PATH}", logs=logs, prefix=prefix)
     write_runtime_image(config)
+    container_name = f"agent-benchmark-{config.mode}-{uuid.uuid4().hex[:12]}"
     with tempfile.TemporaryDirectory(prefix="agent-benchmark-auth-") as auth_staging:
-        command = docker_args_for_case(config, logs=logs, prefix=prefix, auth_staging_dir=Path(auth_staging))
+        command = docker_args_for_case(
+            config,
+            logs=logs,
+            prefix=prefix,
+            auth_staging_dir=Path(auth_staging),
+            container_name=container_name,
+        )
         command = host_idle_sleep_prevention_command(command)
         if command[:2] == ["caffeinate", "-i"]:
             emit("Host idle-sleep prevention enabled: caffeinate -i", logs=logs, prefix=prefix)
-        status = stream_command(
-            command,
-            logs=logs,
-            prefix=prefix,
-            timeout_seconds=config.container_timeout_seconds,
-        )
+        try:
+            status = stream_command(
+                command,
+                logs=logs,
+                prefix=prefix,
+                timeout_seconds=config.container_timeout_seconds,
+            )
+        except BaseException:
+            force_remove_container(container_name, logs=logs, prefix=prefix)
+            raise
+        if status == 124:
+            # The group kill stops caffeinate and the docker run client, but a
+            # SIGKILLed client cannot stop the container; remove it by name.
+            force_remove_container(container_name, logs=logs, prefix=prefix)
     write_json(config.result_dir / "container_exit_code.json", {"exit_code": status})
     if status != 0:
         emit_case_failure_summary(config, status, logs=logs, prefix=prefix)

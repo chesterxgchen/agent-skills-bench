@@ -234,6 +234,104 @@ def test_run_one_case_uses_host_idle_sleep_prevention_wrapper(tmp_path, monkeypa
     assert captured["command"] == ["caffeinate", "-i", "docker", "run", "image"]
 
 
+def test_host_docker_args_include_container_name_when_given(tmp_path):
+    from benchmark.harness.agents.registry import load_agent_adapter
+    from benchmark.harness.host.common import CaseConfig, ImageConfig, docker_args_for_case
+
+    job_input = tmp_path / "job"
+    prompt_path = tmp_path / "prompt.txt"
+    job_input.mkdir()
+    prompt_path.write_text("convert this job\n", encoding="utf-8")
+    config = CaseConfig(
+        mode="with_skills",
+        use_preinstalled_skills=True,
+        job_input_dir=job_input,
+        result_dir=tmp_path / "results",
+        prompt_path=prompt_path,
+        images=ImageConfig(
+            image_name="agent-skills-benchmark:codex-skills",
+            baseline_image_name="agent-skills-benchmark:codex-baseline",
+            report_image_name="agent-skills-benchmark:codex-skills",
+        ),
+        progress_interval_seconds="0",
+        agent="codex",
+        agent_model="unspecified_default",
+        model_was_explicit=False,
+        adapter=load_agent_adapter("codex"),
+        host_agent_home=tmp_path / ".codex",
+        mount_host_agent_auth=False,
+    )
+
+    named = docker_args_for_case(config, container_name="agent-benchmark-with_skills-abc123")
+    unnamed = docker_args_for_case(config)
+
+    name_index = named.index("--name")
+    assert named[name_index + 1] == "agent-benchmark-with_skills-abc123"
+    assert "--name" not in unnamed
+
+
+def test_run_one_case_force_removes_named_container_on_timeout(tmp_path, monkeypatch):
+    from benchmark.harness.agents.registry import load_agent_adapter
+    from benchmark.harness.host import runner
+    from benchmark.harness.host.common import CaseConfig, ImageConfig
+
+    job_input = tmp_path / "job"
+    prompt_path = tmp_path / "prompt.txt"
+    job_input.mkdir()
+    prompt_path.write_text("convert this job\n", encoding="utf-8")
+    config = CaseConfig(
+        mode="with_skills",
+        use_preinstalled_skills=True,
+        job_input_dir=job_input,
+        result_dir=tmp_path / "results",
+        prompt_path=prompt_path,
+        images=ImageConfig(
+            image_name="agent-skills-benchmark:codex-skills",
+            baseline_image_name="agent-skills-benchmark:codex-baseline",
+            report_image_name="agent-skills-benchmark:codex-skills",
+        ),
+        progress_interval_seconds="0",
+        agent="codex",
+        agent_model="unspecified_default",
+        model_was_explicit=False,
+        adapter=load_agent_adapter("codex"),
+        host_agent_home=tmp_path / ".codex",
+        mount_host_agent_auth=False,
+    )
+    captured = {}
+
+    def fake_docker_args(config_arg, **kwargs):
+        captured["container_name"] = kwargs.get("container_name")
+        return ["docker", "run", "image"]
+
+    monkeypatch.setattr(runner, "docker_args_for_case", fake_docker_args)
+    monkeypatch.setattr(runner, "stream_command", lambda command, **_kwargs: 124)
+    monkeypatch.setattr(runner, "force_remove_container", lambda name, **_kwargs: captured.setdefault("removed", name))
+
+    runner.run_one_case(config)
+
+    assert captured["container_name"]
+    assert captured["removed"] == captured["container_name"]
+
+
+def test_force_remove_container_invokes_docker_rm(tmp_path, monkeypatch):
+    from benchmark.harness.host import common
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(common.subprocess, "run", fake_run)
+    log = tmp_path / "console.log"
+
+    common.force_remove_container("agent-benchmark-with_skills-abc123", logs=(log,), prefix="run_00001")
+
+    assert calls == [["docker", "rm", "-f", "agent-benchmark-with_skills-abc123"]]
+    assert "Removed lingering container" in log.read_text(encoding="utf-8")
+
+
 def test_prepare_result_mount_allows_non_root_container_writes(tmp_path):
     from benchmark.harness.host.common import prepare_result_mount
 

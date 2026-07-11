@@ -60,6 +60,7 @@ __all__ = [
     "emit",
     "env_bool",
     "expand_home_path",
+    "force_remove_container",
     "host_idle_sleep_prevention_command",
     "optional_int_env",
     "parse_host_cli_options",
@@ -421,6 +422,31 @@ def host_idle_sleep_prevention_command(command: list[str]) -> list[str]:
     return ["caffeinate", "-i", *rendered]
 
 
+def force_remove_container(name: str, *, logs: Iterable[Path] = (), prefix: str | None = None) -> None:
+    """Remove a container by name after a group kill; killing the docker run
+    client (especially with SIGKILL) does not stop the container itself."""
+
+    try:
+        result = subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        emit(f"Failed to remove container {name}: {type(exc).__name__}: {exc}", logs=logs, prefix=prefix, stderr=True)
+        return
+    if result.returncode == 0:
+        emit(f"Removed lingering container {name}.", logs=logs, prefix=prefix)
+    elif "no such container" not in (result.stderr or "").lower():
+        emit(
+            f"docker rm -f {name} exited {result.returncode}: {(result.stderr or '').strip()}",
+            logs=logs,
+            prefix=prefix,
+            stderr=True,
+        )
+
+
 def command_stdout_to_file(
     command: list[str],
     output_path: Path,
@@ -635,12 +661,14 @@ def docker_args_for_case(
     logs: Iterable[Path] = (),
     prefix: str | None = None,
     auth_staging_dir: Path | None = None,
+    container_name: str | None = None,
 ) -> list[str]:
     runtime_env = config.adapter.runtime_env(config)
     args = [
         "docker",
         "run",
         "--rm",
+        *(["--name", container_name] if container_name else []),
         "-v",
         f"{config.job_input_dir}:/workspace/input:ro",
         "-v",
