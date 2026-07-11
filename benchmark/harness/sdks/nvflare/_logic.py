@@ -225,11 +225,15 @@ def _workspace_runtime_or_export_tree_roots(run: dict[str, Any]) -> list[str]:
 def _nested_runtime_or_export_source_folders(run: dict[str, Any]) -> list[str]:
     folders = []
     seen: set[str] = set()
-    source_names = set(REQUIRED_STRUCTURE_FILES) | set(FEDERATED_STATISTICS_STRUCTURE_FILES) | {
-        "fl_data.py",
-        "train.py",
-        "fl_train.py",
-    }
+    source_names = (
+        set(REQUIRED_STRUCTURE_FILES)
+        | set(FEDERATED_STATISTICS_STRUCTURE_FILES)
+        | {
+            "fl_data.py",
+            "train.py",
+            "fl_train.py",
+        }
+    )
     for key in ("changed_files", "final_structure_files", "final_files"):
         for path in manifest_paths(run, key):
             rel_path = Path(path)
@@ -534,16 +538,25 @@ def _python_statement_list_queries_nvflare_runtime_identity(
     statements: list[ast.stmt],
     nvflare_names: set[str] | None = None,
     nvflare_version_names: set[str] | None = None,
+    *,
+    copy_bindings: bool = True,
 ) -> bool:
-    active_nvflare_names = set(nvflare_names or ())
-    active_version_names = set(nvflare_version_names or ())
+    if copy_bindings:
+        active_nvflare_names = set(nvflare_names or ())
+        active_version_names = set(nvflare_version_names or ())
+    else:
+        active_nvflare_names = nvflare_names if nvflare_names is not None else set()
+        active_version_names = nvflare_version_names if nvflare_version_names is not None else set()
     for node in statements:
         _python_update_nvflare_runtime_bindings(node, active_nvflare_names, active_version_names)
         if _python_statement_prints_nvflare_runtime_identity(node, active_nvflare_names, active_version_names):
             return True
         if isinstance(node, ast.If) and _python_if_test_is_inline_main_guard(node.test):
             if _python_statement_list_queries_nvflare_runtime_identity(
-                node.body, active_nvflare_names, active_version_names
+                node.body,
+                active_nvflare_names,
+                active_version_names,
+                copy_bindings=False,
             ):
                 return True
     return False

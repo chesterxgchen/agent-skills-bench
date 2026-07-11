@@ -4438,10 +4438,7 @@ def test_fedstats_statistics_dir_artifact_completes_declared_task():
     from benchmark.harness.reports.benchmark_insights import run_quality_issues
     from benchmark.harness.sdks.nvflare import _logic
 
-    artifact = (
-        "tmp/nvflare/image_stats_sim/image_stats/server/"
-        "simulate_job/statistics/image_intensity.json"
-    )
+    artifact = "tmp/nvflare/image_stats_sim/image_stats/server/" "simulate_job/statistics/image_intensity.json"
     run = {
         "available": True,
         "mode": "with_skills",
@@ -4510,9 +4507,7 @@ def test_fedstats_result_artifact_marks_scalar_metric_not_required():
     unwrapped = _unwrap_cells(scorecard)
     assert f"| Metrics (result) | result NA | result artifact `{artifact}` | not comparable |" in unwrapped
     quality_table = quality_signal_table(runs, ["with_skills"], _nv_ctx(runs, ["with_skills"]))
-    assert f"| With skills | NA | result artifact `{artifact}` | artifact_available |" in _unwrap_cells(
-        quality_table
-    )
+    assert f"| With skills | NA | result artifact `{artifact}` | artifact_available |" in _unwrap_cells(quality_table)
 
 
 def test_reported_scalar_alone_does_not_satisfy_nvflare_result_gate():
@@ -7021,7 +7016,7 @@ def test_metrics_report_surfaces_recovered_issues_for_passed_run(tmp_path):
         "item": {
             "aggregated_output": (
                 "Traceback (most recent call last):\n"
-                "  File \"validation/parity_check.py\", line 31, in <module>\n"
+                '  File "validation/parity_check.py", line 31, in <module>\n'
                 "TypeError: list indices must be integers or slices, not str"
             ),
             "command": "cd /workspace/run/with_skills/workspace python validation/parity_check.py 2>&1",
@@ -7035,7 +7030,7 @@ def test_metrics_report_surfaces_recovered_issues_for_passed_run(tmp_path):
         "item": {
             "aggregated_output": (
                 "Traceback (most recent call last):\n"
-                "  File \"validation/parity_check.py\", line 42, in <module>\n"
+                '  File "validation/parity_check.py", line 42, in <module>\n'
                 "TypeError: 'int' object is not subscriptable"
             ),
             "command": "cd /workspace/run/with_skills/workspace python validation/parity_check.py 2>&1",
@@ -7202,7 +7197,9 @@ def test_nvflare_import_probe_evidence_requires_python_execution():
     )
 
     assert _command_imports_nvflare("python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY")
-    assert _command_imports_nvflare("timeout 30 python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY")
+    assert _command_imports_nvflare(
+        "timeout 30 python - <<'PY'\nfrom nvflare.recipe.fedstats import FedStatsRecipe\nPY"
+    )
     assert _command_imports_nvflare('python -c "import nvflare; print(nvflare.__file__)"')
     assert _command_imports_nvflare('env FOO=1 python -c "import nvflare; print(nvflare.__file__)"')
     assert _command_imports_nvflare("python - <<'PY'\nif __name__ == '__main__':\n    import nvflare\nPY")
@@ -7225,6 +7222,12 @@ def test_nvflare_import_probe_evidence_requires_python_execution():
     assert _command_queries_nvflare_runtime_identity('python -c "from nvflare import __version__; print(__version__)"')
     assert _command_queries_nvflare_runtime_identity(
         "python - <<'PY'\nimport nvflare\nprint(getattr(nvflare, '__version__', 'unknown'))\nPY"
+    )
+    assert _command_queries_nvflare_runtime_identity(
+        "python - <<'PY'\n" "if __name__ == '__main__':\n" "    import nvflare as nf\n" "print(nf.__version__)\n" "PY"
+    )
+    assert _command_queries_nvflare_runtime_identity(
+        "python -c \"if __name__ == '__main__':\n" "    from nvflare import __version__\n" 'print(__version__)"'
     )
     assert not _command_queries_nvflare_runtime_identity("python -c \"import nvflare as nf; print('nf.__version__')\"")
 
@@ -7253,7 +7256,7 @@ def test_recovered_nvflare_submodule_import_is_not_reported_as_missing_dependenc
         "item": {
             "aggregated_output": (
                 "Traceback (most recent call last):\n"
-                "  File \"<stdin>\", line 2, in <module>\n"
+                '  File "<stdin>", line 2, in <module>\n'
                 "ModuleNotFoundError: No module named 'nvflare.recipe.recipe'"
             ),
             "command": "python - <<'PY'\nfrom nvflare.recipe.recipe import Recipe\nPY",
@@ -7317,6 +7320,24 @@ def test_nvflare_runtime_identity_probe_variants_mark_later_submodule_failure_as
         (
             "getattr_version_probe",
             "python - <<'PY'\nimport nvflare\nprint(getattr(nvflare, '__version__', 'unknown'))\nPY",
+            "2.6.1",
+        ),
+        (
+            "main_guard_alias_version_probe",
+            "python - <<'PY'\n"
+            "if __name__ == '__main__':\n"
+            "    import nvflare as nf\n"
+            "print(nf.__version__)\n"
+            "PY",
+            "2.6.1",
+        ),
+        (
+            "main_guard_from_import_version_probe",
+            "python - <<'PY'\n"
+            "if __name__ == '__main__':\n"
+            "    from nvflare import __version__\n"
+            "print(__version__)\n"
+            "PY",
             "2.6.1",
         ),
     ]
