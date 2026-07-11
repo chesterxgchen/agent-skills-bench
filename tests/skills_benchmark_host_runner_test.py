@@ -162,6 +162,78 @@ def test_host_docker_args_use_migrated_container_entrypoint(tmp_path):
     assert "RECORDS_DIR=/workspace/results/records" in args
 
 
+def test_host_idle_sleep_prevention_wraps_with_caffeinate_on_macos(monkeypatch):
+    from benchmark.harness.host import common
+
+    monkeypatch.setattr(common.sys, "platform", "darwin")
+    monkeypatch.setattr(common.shutil, "which", lambda name: "/usr/bin/caffeinate" if name == "caffeinate" else None)
+
+    assert common.host_idle_sleep_prevention_command(["docker", "run", "image"]) == [
+        "caffeinate",
+        "-i",
+        "docker",
+        "run",
+        "image",
+    ]
+
+
+def test_host_idle_sleep_prevention_is_noop_off_macos(monkeypatch):
+    from benchmark.harness.host import common
+
+    monkeypatch.setattr(common.sys, "platform", "linux")
+    monkeypatch.setattr(common.shutil, "which", lambda name: "/usr/bin/caffeinate")
+
+    assert common.host_idle_sleep_prevention_command(["docker", "run", "image"]) == ["docker", "run", "image"]
+
+
+def test_run_one_case_uses_host_idle_sleep_prevention_wrapper(tmp_path, monkeypatch):
+    from benchmark.harness.agents.registry import load_agent_adapter
+    from benchmark.harness.host import runner
+    from benchmark.harness.host.common import CaseConfig, ImageConfig
+
+    job_input = tmp_path / "job"
+    result_dir = tmp_path / "results"
+    prompt_path = tmp_path / "prompt.txt"
+    job_input.mkdir()
+    prompt_path.write_text("convert this job\n", encoding="utf-8")
+    config = CaseConfig(
+        mode="with_skills",
+        use_preinstalled_skills=True,
+        job_input_dir=job_input,
+        result_dir=result_dir,
+        prompt_path=prompt_path,
+        images=ImageConfig(
+            image_name="agent-skills-benchmark:codex-skills",
+            baseline_image_name="agent-skills-benchmark:codex-baseline",
+            report_image_name="agent-skills-benchmark:codex-skills",
+        ),
+        progress_interval_seconds="0",
+        agent="codex",
+        agent_model="unspecified_default",
+        model_was_explicit=False,
+        adapter=load_agent_adapter("codex"),
+        host_agent_home=tmp_path / ".codex",
+        mount_host_agent_auth=False,
+    )
+    captured = {}
+
+    monkeypatch.setattr(runner, "docker_args_for_case", lambda *args, **kwargs: ["docker", "run", "image"])
+    monkeypatch.setattr(
+        runner,
+        "host_idle_sleep_prevention_command",
+        lambda command: ["caffeinate", "-i", *command],
+    )
+
+    def fake_stream_command(command, **_kwargs):
+        captured["command"] = command
+        return 0
+
+    monkeypatch.setattr(runner, "stream_command", fake_stream_command)
+
+    assert runner.run_one_case(config) == 0
+    assert captured["command"] == ["caffeinate", "-i", "docker", "run", "image"]
+
+
 def test_prepare_result_mount_allows_non_root_container_writes(tmp_path):
     from benchmark.harness.host.common import prepare_result_mount
 

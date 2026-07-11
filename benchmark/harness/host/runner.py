@@ -59,6 +59,7 @@ from .common import (
     docker_args_for_case,
     docker_env,
     emit,
+    host_idle_sleep_prevention_command,
     parse_host_cli_options,
     prepare_result_mount,
     stream_command,
@@ -148,8 +149,12 @@ def run_one_case(config: CaseConfig, *, logs: Iterable[Path] = (), prefix: str |
     emit(f"Prompt file: {config.prompt_path} -> {CONTAINER_PROMPT_PATH}", logs=logs, prefix=prefix)
     write_runtime_image(config)
     with tempfile.TemporaryDirectory(prefix="agent-benchmark-auth-") as auth_staging:
+        command = docker_args_for_case(config, logs=logs, prefix=prefix, auth_staging_dir=Path(auth_staging))
+        command = host_idle_sleep_prevention_command(command)
+        if command[:2] == ["caffeinate", "-i"]:
+            emit("Host idle-sleep prevention enabled: caffeinate -i", logs=logs, prefix=prefix)
         status = stream_command(
-            docker_args_for_case(config, logs=logs, prefix=prefix, auth_staging_dir=Path(auth_staging)),
+            command,
             logs=logs,
             prefix=prefix,
             timeout_seconds=config.container_timeout_seconds,

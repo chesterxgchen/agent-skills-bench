@@ -7090,13 +7090,26 @@ def test_metrics_report_surfaces_recovered_issues_for_passed_run(tmp_path):
         "result_root": str(tmp_path),
         "status": "With skills: passed",
         "runs": [
-            {
-                "mode": WITH_SKILLS_MODE,
-                "label": "With skills",
-                "summary": {"elapsed_seconds": 10, "token_count": 100},
-                "activity": {"command_count": 4},
-            }
-        ],
+                {
+                    "mode": WITH_SKILLS_MODE,
+                    "label": "With skills",
+                    "summary": {
+                        "elapsed_seconds": 10,
+                        "token_count": 100,
+                        "phase_seconds": {
+                            "container_elapsed_seconds": 20,
+                            "setup_elapsed_seconds": 8,
+                            "skill_exposure_elapsed_seconds": 2,
+                            "input_copy_elapsed_seconds": 1,
+                            "prompt_prepare_elapsed_seconds": 1,
+                            "agent_elapsed_seconds": 10,
+                            "post_process_elapsed_seconds": 1,
+                            "report_elapsed_seconds": 1,
+                        },
+                    },
+                    "activity": {"command_count": 4},
+                }
+            ],
         "comparison": {},
     }
 
@@ -7108,6 +7121,8 @@ def test_metrics_report_surfaces_recovered_issues_for_passed_run(tmp_path):
     assert "| With skills | codex | default |" in markdown
     assert "passed with recovered issues" in insights_status
     assert "| With skills | passed with recovered issues | completed | pass |" in executive_summary
+    assert "## Phase Timing" in markdown
+    assert "| With skills | 20 | 8 | 2 | 1 | 1 | 10 | 1 | 1 |" in markdown
     assert "## Recovered Issues" in markdown
     assert "validation/parity_check.py" in markdown
     assert "TypeError: list indices must be integers or slices, not str" in markdown
@@ -8255,6 +8270,16 @@ def test_scenario_report_escapes_markdown_table_pipes(tmp_path):
                     "agent_model": "default|model",
                     "model_source": "adapter_default",
                     "mode": "with_skills",
+                    "phase_seconds": {
+                        "container_elapsed_seconds": 20,
+                        "setup_elapsed_seconds": 8,
+                        "skill_exposure_elapsed_seconds": 2,
+                        "input_copy_elapsed_seconds": 1,
+                        "prompt_prepare_elapsed_seconds": 1,
+                        "agent_elapsed_seconds": 10,
+                        "post_process_elapsed_seconds": 1,
+                        "report_elapsed_seconds": 1,
+                    },
                 }
             ],
             "aggregate_results": {
@@ -8275,6 +8300,8 @@ def test_scenario_report_escapes_markdown_table_pipes(tmp_path):
     assert "with\\|skills" in report
     assert "## Run Identity" in report
     assert "default\\|model" in report
+    assert "## Run Phase Timing" in report
+    assert "| run_pipe | with\\|skills | 20 | 8 | 2 | 1 | 1 | 10 | 1 | 1 |" in report
 
 
 def test_report_generators_write_two_mode_outputs(tmp_path, monkeypatch):

@@ -59,6 +59,7 @@ __all__ = [
     "emit",
     "env_bool",
     "expand_home_path",
+    "host_idle_sleep_prevention_command",
     "optional_int_env",
     "parse_host_cli_options",
     "prepare_result_mount",
@@ -375,6 +376,17 @@ def stream_command(
     for error in reader_errors:
         emit(f"Output reader error: {type(error).__name__}: {error}", logs=logs, prefix=prefix, stderr=True)
     return 124 if timed_out else status
+
+
+def host_idle_sleep_prevention_command(command: list[str]) -> list[str]:
+    """Wrap long host-side commands to prevent macOS idle sleep during benchmarks."""
+
+    rendered = list(command)
+    if sys.platform != "darwin":
+        return rendered
+    if shutil.which("caffeinate") is None:
+        return rendered
+    return ["caffeinate", "-i", *rendered]
 
 
 def command_stdout_to_file(

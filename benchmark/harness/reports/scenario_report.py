@@ -113,6 +113,49 @@ def run_identity_lines(result_root: Path, runs: Any) -> list[str]:
     return lines
 
 
+PHASE_TIMING_COLUMNS = (
+    ("container_elapsed_seconds", "Container"),
+    ("setup_elapsed_seconds", "Pre-agent"),
+    ("skill_exposure_elapsed_seconds", "Skill exposure"),
+    ("input_copy_elapsed_seconds", "Input copy"),
+    ("prompt_prepare_elapsed_seconds", "Prompt prep"),
+    ("agent_elapsed_seconds", "Agent"),
+    ("post_process_elapsed_seconds", "Post-process"),
+    ("report_elapsed_seconds", "Report"),
+)
+
+
+def run_phase_timing_lines(runs: Any) -> list[str]:
+    if not isinstance(runs, list):
+        return []
+    timing_rows = [
+        run
+        for run in runs
+        if isinstance(run, Mapping) and isinstance(run.get("phase_seconds"), Mapping)
+    ]
+    if not timing_rows:
+        return []
+    header = "| Run ID | Label | " + " | ".join(label for _key, label in PHASE_TIMING_COLUMNS) + " |"
+    divider = "|---|---|" + "|".join("---:" for _key, _label in PHASE_TIMING_COLUMNS) + "|"
+    lines = [
+        "",
+        "## Run Phase Timing",
+        "",
+        "Pre-agent is the total host/container setup time before the measured agent process starts; the setup subcolumns show captured pieces of that total.",
+        "",
+        header,
+        divider,
+    ]
+    for run in timing_rows:
+        phase_seconds = run.get("phase_seconds")
+        cells = [markdown_cell(phase_seconds.get(key)) for key, _label in PHASE_TIMING_COLUMNS]
+        label = run.get("label") or run.get("mode") or run.get("run_id")
+        lines.append(
+            f"| {markdown_cell(run.get('run_id'))} | {markdown_cell(label)} | " + " | ".join(cells) + " |"
+        )
+    return lines
+
+
 def write_scenario_report(result_root: Path, summary: Mapping[str, Any]) -> None:
     reports_dir = result_root / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -137,6 +180,7 @@ def write_scenario_report(result_root: Path, summary: Mapping[str, Any]) -> None
             ]
         )
     lines.extend(run_identity_lines(result_root, summary.get("runs")))
+    lines.extend(run_phase_timing_lines(summary.get("runs")))
     lines.extend(
         [
             "",

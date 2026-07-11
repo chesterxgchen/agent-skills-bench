@@ -421,6 +421,68 @@ def comparison_label(key: str) -> str:
     return key
 
 
+PHASE_TIMING_COLUMNS = (
+    ("container_elapsed_seconds", "Container"),
+    ("setup_elapsed_seconds", "Pre-agent"),
+    ("skill_exposure_elapsed_seconds", "Skill exposure"),
+    ("input_copy_elapsed_seconds", "Input copy"),
+    ("prompt_prepare_elapsed_seconds", "Prompt prep"),
+    ("agent_elapsed_seconds", "Agent"),
+    ("post_process_elapsed_seconds", "Post-process"),
+    ("report_elapsed_seconds", "Report"),
+)
+
+
+def _phase_seconds_for_row(row: dict[str, Any]) -> dict[str, Any]:
+    run_summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+    phase_seconds = run_summary.get("phase_seconds")
+    return dict(phase_seconds) if isinstance(phase_seconds, dict) else {}
+
+
+def _phase_timing_rows(summary: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    rows = []
+    for row in summary["runs"]:
+        phase_seconds = _phase_seconds_for_row(row)
+        if phase_seconds:
+            rows.append((str(row.get("label") or row.get("mode") or "run"), phase_seconds))
+    return rows
+
+
+def _phase_timing_section(summary: dict[str, Any]) -> str:
+    rows = _phase_timing_rows(summary)
+    if not rows:
+        return ""
+    lines = [
+        "## Phase Timing",
+        "",
+        "Pre-agent is the total host/container setup time before the measured agent process starts; the setup subcolumns show captured pieces of that total.",
+        "",
+        "| Run | " + " | ".join(label for _key, label in PHASE_TIMING_COLUMNS) + " |",
+        "|---|" + "|".join("---:" for _key, _label in PHASE_TIMING_COLUMNS) + "|",
+    ]
+    for label, phase_seconds in rows:
+        cells = [fmt(phase_seconds.get(key)) for key, _label in PHASE_TIMING_COLUMNS]
+        lines.append(f"| {markdown_cell(label)} | " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def _phase_timing_html(summary: dict[str, Any]) -> str:
+    rows = _phase_timing_rows(summary)
+    if not rows:
+        return ""
+    headers = "".join(f"<th>{html.escape(label)}</th>" for _key, label in PHASE_TIMING_COLUMNS)
+    body_rows = []
+    for label, phase_seconds in rows:
+        cells = "".join(f"<td>{html.escape(fmt(phase_seconds.get(key)))}</td>" for key, _label in PHASE_TIMING_COLUMNS)
+        body_rows.append(f"<tr><td>{html.escape(label)}</td>{cells}</tr>")
+    return (
+        "<h2>Phase Timing</h2>"
+        "<p>Pre-agent is the total host/container setup time before the measured agent process starts; "
+        "the setup subcolumns show captured pieces of that total.</p>"
+        f"<table><thead><tr><th>Run</th>{headers}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
+    )
+
+
 def _recovered_issue_note(run: RunEvidence, mode: str, ctx: ReportContext, ev: Any = None) -> str:
     job_exec = ctx.job_execution(mode)
     if job_exec.recovered_summary:
@@ -523,6 +585,9 @@ def markdown_report(
             f"{fmt(run_summary.get('token_count'))} | {fmt(activity.get('command_count'))} | "
             f"{markdown_cell(root_cause)} |"
         )
+    phase_timing = _phase_timing_section(summary)
+    if phase_timing:
+        lines.extend(["", phase_timing])
     recovered_issues = _recovered_issues_section(summary, insight_runs, ctx)
     if recovered_issues:
         lines.extend(["", recovered_issues])
@@ -580,6 +645,7 @@ def html_report(
             "</tr>"
         )
     chart = embedded_bar_chart(insight_runs, ctx)
+    phase_timing_html = _phase_timing_html(summary)
     recovered_issues = _recovered_issues_section(summary, insight_runs, ctx, include_heading=False)
     recovered_html = (
         f"<h2>Recovered Issues</h2><pre>{html.escape(recovered_issues)}</pre>" if recovered_issues else ""
@@ -607,6 +673,7 @@ def html_report(
     <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Host OS</th><th>Status</th><th>Skills available</th><th>Skills inspected</th><th>Skills applied/used</th><th>Shared refs read</th><th>Elapsed seconds</th><th>Tokens</th><th>Root cause</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
+  {phase_timing_html}
   {recovered_html}
   {chart}
 </body>
