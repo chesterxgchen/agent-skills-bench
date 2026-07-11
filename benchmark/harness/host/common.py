@@ -360,14 +360,12 @@ def stream_command(
             prefix=prefix,
             stderr=True,
         )
-        terminate_process_group(process, signal.SIGTERM)
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            emit("Process group did not terminate; killing process group.", logs=logs, prefix=prefix, stderr=True)
-            terminate_process_group(process, signal.SIGKILL)
-            process.wait()
+        terminate_process_group_with_fallback(process, logs=logs, prefix=prefix)
         status = 124
+    except BaseException:
+        emit("Command interrupted; terminating process group.", logs=logs, prefix=prefix, stderr=True)
+        terminate_process_group_with_fallback(process, logs=logs, prefix=prefix)
+        raise
     finally:
         if process.stdout is not None:
             with suppress(OSError, ValueError):
@@ -380,8 +378,23 @@ def stream_command(
     return 124 if timed_out else status
 
 
+def terminate_process_group_with_fallback(
+    process: subprocess.Popen[str],
+    *,
+    logs: Iterable[Path] = (),
+    prefix: str | None = None,
+) -> None:
+    terminate_process_group(process, signal.SIGTERM)
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        emit("Process group did not terminate; killing process group.", logs=logs, prefix=prefix, stderr=True)
+        terminate_process_group(process, signal.SIGKILL)
+        process.wait()
+
+
 def terminate_process_group(process: subprocess.Popen[str], sig: int) -> None:
-    """Signal a process and its children when stream_command times out."""
+    """Signal a process and its children when stream_command must stop it."""
 
     if hasattr(os, "killpg"):
         try:
