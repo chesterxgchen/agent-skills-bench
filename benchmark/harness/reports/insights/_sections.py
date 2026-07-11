@@ -414,9 +414,10 @@ def status_table(runs: dict[str, RunEvidence], modes: list[str], ctx: ReportCont
         status = human_readable_status(run, ev)
         analysis = run_analysis(run, ev)
         job_exec = ctx.job_execution(mode)
-        if status == "passed" and job_exec.recovered_summary:
+        recovered_commands = command_failure_diagnostics_table(run, recovered_only=True, ev=ev)
+        if status == "passed" and (job_exec.recovered_summary or recovered_commands):
             status = "passed with recovered issues"
-            analysis = job_exec.recovered_summary
+            analysis = job_exec.recovered_summary or "recovered command failures were captured"
         lines.append(
             f"| {markdown_cell(run.label)} | {markdown_cell(status)} | "
             f"{markdown_cell(analysis)} |"
