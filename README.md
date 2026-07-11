@@ -223,6 +223,10 @@ found. Pass `--rebuild` to force a fresh wheel build:
 ./bin/build.sh --rebuild --sdk-repo /path/to/sdk-checkout
 ```
 
+When a profile has no build-time variant toggle and both variants use the same
+wheel selectors, the harness builds or reuses one repo wheel and stages those
+exact bytes into both image variants.
+
 For wheel-provided SDK images, set `source.type: wheels` and
 `build.type: provided_wheels`. In this mode `build.sh` stages the listed wheels
 and does not need the SDK repo or `uv`:
@@ -291,8 +295,9 @@ Useful build flags:
 For `build.type: uv_wheel` (repo source), the build reuses the most recently
 built wheel in the SDK repo's `dist/` by default and only runs `uv build` when
 none is found. Pass `--rebuild` to force a fresh build — e.g. after the SDK
-source has changed. (`build.type: provided_wheels` profiles always stage the
-wheels listed in the profile and ignore `--rebuild`.)
+source has changed. Profiles without a build-time variant toggle stage the same
+repo wheel bytes into both image variants. (`build.type: provided_wheels`
+profiles always stage the wheels listed in the profile and ignore `--rebuild`.)
 
 Verify the images exist:
 

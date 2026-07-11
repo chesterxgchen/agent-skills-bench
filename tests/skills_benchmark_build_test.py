@@ -304,7 +304,14 @@ def test_build_main_routes_prepared_evaluation_to_both_image_metadata(tmp_path, 
         package_name="example",
         build_env_name="",
         wheel_build=lambda: SimpleNamespace(build_type="uv_wheel"),
-        wheel_variant=lambda name: SimpleNamespace(name=name, label=name, build_env_value=""),
+        wheel_variant=lambda name: SimpleNamespace(
+            name=name,
+            label=name,
+            build_env_value="",
+            wheel_globs=("example*.whl",),
+            wheel_exclude_globs=(),
+            reuse_existing=True,
+        ),
         docker_build_args=lambda: {},
     )
     adapter = SimpleNamespace(
@@ -333,6 +340,71 @@ def test_build_main_routes_prepared_evaluation_to_both_image_metadata(tmp_path, 
     assert len(metadata_calls) == 2
     assert {call["variant"].name for call in metadata_calls} == {"skills", "baseline"}
     assert all(call["evaluation"].source_path == rules for call in metadata_calls)
+
+
+def test_build_main_shares_no_toggle_repo_wheel_between_variants(tmp_path, monkeypatch):
+    from benchmark.harness.host import build
+    from benchmark.harness.sdks.base import SdkSkillsSetup, SdkSource
+
+    rules = tmp_path / "rules.yaml"
+    rules.write_text("schema_version: 1\nsdk: example\nsignals: {}\n", encoding="utf-8")
+
+    def wheel_variant(name):
+        return SimpleNamespace(
+            name=name,
+            label=name,
+            build_env_value="",
+            wheel_globs=("example-*.whl",),
+            wheel_exclude_globs=(),
+            reuse_existing=True,
+        )
+
+    sdk = SimpleNamespace(
+        name="example",
+        display_name="Example SDK",
+        package_name="example",
+        build_env_name="",
+        wheel_build=lambda: SimpleNamespace(build_type="uv_wheel"),
+        wheel_variant=wheel_variant,
+        docker_build_args=lambda: {},
+    )
+    adapter = SimpleNamespace(
+        name="agent",
+        display_name="Agent",
+        availability_probe=[],
+        image_targets=lambda: SimpleNamespace(skills="skills", baseline="baseline", report="report"),
+        build_args=lambda *, cli_version="": {},
+    )
+    prepare_calls = []
+    metadata_calls = []
+
+    def fake_prepare_sdk_wheel(*, source, wheel_build, sdk, variant, out_dir, rebuild=False):
+        prepare_calls.append(variant.name)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        wheel = out_dir / "example-1.0.0-py3-none-any.whl"
+        wheel.write_bytes(f"fresh build {len(prepare_calls)}".encode("utf-8"))
+        return build.PreparedSdkWheel(wheel=wheel, source_type=source.source_type, source_path=source.repo_path)
+
+    monkeypatch.setattr(build, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(build, "load_sdk_profile", lambda _profile: sdk)
+    monkeypatch.setattr(build, "load_agent_profile", lambda _profile: adapter)
+    monkeypatch.setattr(build, "resolve_sdk_source", lambda _sdk: SdkSource(source_type="repo", repo_path=tmp_path))
+    monkeypatch.setattr(build, "resolve_sdk_skills_setup", lambda _sdk: SdkSkillsSetup(setup_type="none"))
+    monkeypatch.setattr(build, "stage_sdk_skills_setup", lambda *_args: None)
+    monkeypatch.setattr(build, "docker_build", lambda **_kwargs: None)
+    monkeypatch.setattr(build, "prepare_sdk_wheel", fake_prepare_sdk_wheel)
+
+    def capture_wheel_metadata(**kwargs):
+        metadata_calls.append({**kwargs, "wheel_bytes": kwargs["prepared"].wheel.read_bytes()})
+
+    monkeypatch.setattr(build, "write_wheel_metadata", capture_wheel_metadata)
+
+    assert build.main(["--evaluation-criteria", str(rules), "--rebuild"]) == 0
+    assert prepare_calls == ["skills"]
+    wheel_bytes_by_variant = {call["variant"].name: call["wheel_bytes"] for call in metadata_calls}
+    wheel_paths_by_variant = {call["variant"].name: call["prepared"].wheel for call in metadata_calls}
+    assert wheel_bytes_by_variant == {"skills": b"fresh build 1", "baseline": b"fresh build 1"}
+    assert wheel_paths_by_variant["skills"] != wheel_paths_by_variant["baseline"]
 
 
 def test_latest_sdk_wheel_skips_stat_failures(tmp_path, monkeypatch):

@@ -563,21 +563,31 @@ def stage_configured_wheel(
     variant: SdkWheelVariant,
     out_dir: Path,
 ) -> PreparedSdkWheel:
-    if not any(fnmatch.fnmatch(wheel.name, pattern) for pattern in variant.wheel_globs):
-        raise SystemExit(
-            f"Configured {sdk.package_name} {variant.label} wheel {wheel.name!r} does not match "
-            f"expected pattern(s): {variant.wheel_globs}."
-        )
-    if any(fnmatch.fnmatch(wheel.name, pattern) for pattern in variant.wheel_exclude_globs):
-        raise SystemExit(
-            f"Configured {sdk.package_name} {variant.label} wheel {wheel.name!r} matches excluded "
-            f"pattern(s): {variant.wheel_exclude_globs}."
-        )
+    validate_sdk_wheel_name(wheel=wheel, sdk=sdk, variant=variant, source_label="Configured")
     clean_wheels(out_dir)
     target = out_dir / wheel.name
     shutil.copy2(wheel, target)
     emit(f"Using configured {variant.label} wheel: {wheel}")
     return PreparedSdkWheel(wheel=target, source_type="wheels", source_path=wheel)
+
+
+def validate_sdk_wheel_name(
+    *,
+    wheel: Path,
+    sdk: SdkAdapter,
+    variant: SdkWheelVariant,
+    source_label: str,
+) -> None:
+    if not any(fnmatch.fnmatch(wheel.name, pattern) for pattern in variant.wheel_globs):
+        raise SystemExit(
+            f"{source_label} {sdk.package_name} {variant.label} wheel {wheel.name!r} does not match "
+            f"expected pattern(s): {variant.wheel_globs}."
+        )
+    if any(fnmatch.fnmatch(wheel.name, pattern) for pattern in variant.wheel_exclude_globs):
+        raise SystemExit(
+            f"{source_label} {sdk.package_name} {variant.label} wheel {wheel.name!r} matches excluded "
+            f"pattern(s): {variant.wheel_exclude_globs}."
+        )
 
 
 def _stage_repo_wheel(wheel: Path, out_dir: Path, repo: Path) -> PreparedSdkWheel:
@@ -587,6 +597,42 @@ def _stage_repo_wheel(wheel: Path, out_dir: Path, repo: Path) -> PreparedSdkWhee
     staged = out_dir / wheel.name
     shutil.copy2(wheel, staged)
     return PreparedSdkWheel(wheel=staged, source_type="repo", source_path=repo)
+
+
+def stage_prepared_wheel_for_variant(
+    prepared: PreparedSdkWheel,
+    *,
+    sdk: SdkAdapter,
+    variant: SdkWheelVariant,
+    out_dir: Path,
+) -> PreparedSdkWheel:
+    """Stage an already prepared wheel for another image variant."""
+
+    validate_sdk_wheel_name(wheel=prepared.wheel, sdk=sdk, variant=variant, source_label="Shared")
+    target = out_dir / prepared.wheel.name
+    if target.resolve() == prepared.wheel.resolve():
+        return prepared
+    clean_wheels(out_dir)
+    shutil.copy2(prepared.wheel, target)
+    return PreparedSdkWheel(wheel=target, source_type=prepared.source_type, source_path=prepared.source_path)
+
+
+def can_share_repo_wheel_between_variants(
+    *,
+    source: SdkSource,
+    wheel_build: SdkWheelBuild,
+    sdk: SdkAdapter,
+    skills_variant: SdkWheelVariant,
+    baseline_variant: SdkWheelVariant,
+) -> bool:
+    return (
+        source.source_type == "repo"
+        and wheel_build.build_type == "uv_wheel"
+        and not sdk.build_env_name
+        and skills_variant.wheel_globs == baseline_variant.wheel_globs
+        and skills_variant.wheel_exclude_globs == baseline_variant.wheel_exclude_globs
+        and skills_variant.reuse_existing == baseline_variant.reuse_existing
+    )
 
 
 def build_sdk_wheel_from_repo(
@@ -656,9 +702,9 @@ def verify_identical_variant_wheels(
 
     NVFLARE dropped its wheel-bundling hook (PR #4837): the SDK wheel is
     identical in both images and the A/B distinction is purely the skills
-    setup. If the two variants stage different bytes anyway — a stale wheel
-    lingering in the SDK repo's dist/ is the classic cause — the comparison
-    would silently pit an old SDK against a new one. Fail loudly instead.
+    setup. If the two variants stage different bytes anyway, the comparison
+    would silently pit different SDK artifacts against each other. Fail loudly
+    instead.
     """
 
     skills_sha = file_sha256(skills_prepared.wheel)
@@ -667,8 +713,9 @@ def verify_identical_variant_wheels(
         raise SystemExit(
             f"SDK wheel mismatch between image variants: skills staged {skills_prepared.wheel.name} "
             f"({skills_sha[:12]}) but baseline staged {baseline_prepared.wheel.name} ({baseline_sha[:12]}). "
-            "The profile defines no build-time variant toggle, so both must be the same wheel — a stale "
-            "wheel in the SDK repo's dist/ is the usual cause. Re-run with --rebuild or clean dist/."
+            "The profile defines no build-time variant toggle, so both must be the same wheel. This usually "
+            "means the profile staged two different configured wheels, reused a stale dist/ wheel, or ran two "
+            "non-reproducible wheel builds. Re-run with --rebuild or clean dist/."
         )
     emit(f"Variant wheel check: skills and baseline stage identical bytes (sha256 {skills_sha[:12]})")
 
@@ -900,6 +947,18 @@ def main(argv: list[str] | None = None) -> int:
                 context=context,
             )
 
+            share_repo_wheel = (
+                build_skills_image
+                and build_baseline_image
+                and can_share_repo_wheel_between_variants(
+                    source=source,
+                    wheel_build=wheel_build,
+                    sdk=sdk,
+                    skills_variant=skills_variant,
+                    baseline_variant=baseline_variant,
+                )
+            )
+
             if build_skills_image:
                 skills_prepared = prepare_sdk_wheel(
                     source=source,
@@ -919,7 +978,23 @@ def main(argv: list[str] | None = None) -> int:
                     evaluation=evaluation,
                 )
 
-            if build_baseline_image:
+            if build_baseline_image and share_repo_wheel:
+                baseline_prepared = stage_prepared_wheel_for_variant(
+                    skills_prepared,
+                    sdk=sdk,
+                    variant=baseline_variant,
+                    out_dir=context / "dist" / "baseline",
+                )
+                emit(f"Using baseline wheel: {baseline_prepared.wheel.name}")
+                write_wheel_metadata(
+                    sdk=sdk,
+                    variant=baseline_variant,
+                    wheel_build=wheel_build,
+                    prepared=baseline_prepared,
+                    out_dir=context / "dist" / "baseline",
+                    evaluation=evaluation,
+                )
+            elif build_baseline_image:
                 baseline_prepared = prepare_sdk_wheel(
                     source=source,
                     wheel_build=wheel_build,
