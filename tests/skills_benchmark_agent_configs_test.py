@@ -199,6 +199,8 @@ def test_runtime_env_declares_unattended_sandbox_contract(agent):
 
     assert env["AGENT_HARNESS_UNATTENDED"] == "1"
     assert env["AGENT_HARNESS_SANDBOX"] == "disposable-container"
+    if agent == "claude":
+        assert env["IS_SANDBOX"] == "1"
 
 
 @pytest.mark.parametrize("agent", ["codex", "claude"])
@@ -215,6 +217,7 @@ def test_runtime_env_omits_unattended_contract_for_interactive_shell(agent):
 
     assert "AGENT_HARNESS_UNATTENDED" not in env
     assert "AGENT_HARNESS_SANDBOX" not in env
+    assert "IS_SANDBOX" not in env
     # The ordinary runtime_env (agent home) still applies to the interactive shell.
     assert env  # non-empty: home var present
 

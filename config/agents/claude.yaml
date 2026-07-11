@@ -67,6 +67,10 @@ runtime_env:
 unattended_env:
   AGENT_HARNESS_UNATTENDED: "1"
   AGENT_HARNESS_SANDBOX: "disposable-container"
+  # Claude Code treats this as an already-sandboxed/devcontainer-style
+  # environment, avoiding a nested bubblewrap userns probe that Docker commonly
+  # blocks before falling back to unsandboxed Bash.
+  IS_SANDBOX: "1"
 
 passthrough_env:
   - ANTHROPIC_API_KEY
