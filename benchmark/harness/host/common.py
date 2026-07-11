@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -326,6 +327,7 @@ def stream_command(
             encoding="utf-8",
             errors="replace",
             env=env,
+            start_new_session=True,
         )
     except OSError as exc:
         program = command[0] if command else "<empty command>"
@@ -353,17 +355,17 @@ def stream_command(
     except subprocess.TimeoutExpired:
         timed_out = True
         emit(
-            f"Command timed out after {timeout_seconds} seconds; terminating process.",
+            f"Command timed out after {timeout_seconds} seconds; terminating process group.",
             logs=logs,
             prefix=prefix,
             stderr=True,
         )
-        process.terminate()
+        terminate_process_group(process, signal.SIGTERM)
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            emit("Process did not terminate; killing process.", logs=logs, prefix=prefix, stderr=True)
-            process.kill()
+            emit("Process group did not terminate; killing process group.", logs=logs, prefix=prefix, stderr=True)
+            terminate_process_group(process, signal.SIGKILL)
             process.wait()
         status = 124
     finally:
@@ -376,6 +378,23 @@ def stream_command(
     for error in reader_errors:
         emit(f"Output reader error: {type(error).__name__}: {error}", logs=logs, prefix=prefix, stderr=True)
     return 124 if timed_out else status
+
+
+def terminate_process_group(process: subprocess.Popen[str], sig: int) -> None:
+    """Signal a process and its children when stream_command times out."""
+
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(process.pid, sig)
+            return
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+    if sig == signal.SIGTERM:
+        process.terminate()
+    else:
+        process.kill()
 
 
 def host_idle_sleep_prevention_command(command: list[str]) -> list[str]:

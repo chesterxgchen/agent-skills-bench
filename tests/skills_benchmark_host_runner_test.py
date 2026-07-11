@@ -548,6 +548,64 @@ def test_stream_command_warns_when_reader_thread_stays_alive(tmp_path, monkeypat
     assert "[run_00001] Output reader thread did not stop within 2 seconds." in log.read_text(encoding="utf-8")
 
 
+def test_stream_command_timeout_terminates_process_group(tmp_path, monkeypatch):
+    from benchmark.harness.host import common
+
+    events = []
+
+    class FakeStdout:
+        def __iter__(self):
+            return iter(())
+
+        def close(self):
+            events.append(("close",))
+
+    class FakeProcess:
+        pid = 4321
+        stdout = FakeStdout()
+
+        def __init__(self):
+            self.wait_calls = 0
+
+        def wait(self, timeout=None):
+            events.append(("wait", timeout))
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise subprocess.TimeoutExpired(cmd=["caffeinate"], timeout=timeout)
+            return -15
+
+        def terminate(self):
+            events.append(("terminate",))
+
+        def kill(self):
+            events.append(("kill",))
+
+    def fake_popen(args, **kwargs):
+        events.append(("popen", args, kwargs.get("start_new_session")))
+        return FakeProcess()
+
+    def fake_killpg(pid, sig):
+        events.append(("killpg", pid, sig))
+
+    monkeypatch.setattr(common.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(common.os, "killpg", fake_killpg, raising=False)
+    log = tmp_path / "console.log"
+
+    status = common.stream_command(
+        ["caffeinate", "-i", "docker", "run", "image"],
+        logs=(log,),
+        prefix="run_00001",
+        timeout_seconds=1,
+    )
+
+    assert status == 124
+    assert ("popen", ["caffeinate", "-i", "docker", "run", "image"], True) in events
+    assert ("killpg", 4321, common.signal.SIGTERM) in events
+    assert ("terminate",) not in events
+    assert ("kill",) not in events
+    assert "terminating process group" in log.read_text(encoding="utf-8")
+
+
 def test_host_cli_accepts_results_root(tmp_path):
     from benchmark.harness.host.common import parse_host_cli_options
 
