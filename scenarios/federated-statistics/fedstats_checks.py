@@ -21,6 +21,8 @@ against the committed ground-truth constants, and prints the check results as
 JSON. Ground truth is precomputed by generate_ground_truth.py — never
 recomputed here — so a check cannot inherit an agent's mistake; the dataset
 hash check fails loudly if the CSVs drift from the committed constants.
+This file is the benchmark-owned parity checker: the agent/skill must not
+generate parity or validation helper files in the user workspace.
 
 Verdict semantics: values are compared at the persisted precision with a
 small tolerance; stddev accepts either ddof convention; min/max are checked
@@ -34,6 +36,7 @@ import ast
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -48,14 +51,22 @@ STAT_TOKENS = {
     "sum": ("sum",),
     "mean": ("mean",),
     "stddev": ("stddev", "std_dev", "std"),
+    "var": ("var", "variance"),
     "min": ("min",),
     "max": ("max",),
 }
+PRODUCT_PRECISION = 4
+PRODUCT_ULP = 10**-PRODUCT_PRECISION
 INVENTED_NAME_RE = re.compile(r"^(col_?\d+|unnamed.*|\d+|feature_?\d+)$", re.IGNORECASE)
 MIN_COUNT_PAIR_RE = re.compile(
     r"""(?<![A-Za-z0-9_])["']?min_count["']?\s*[:=]\s*["']?(-?\d+(?:\.\d+)?)["']?""",
     re.IGNORECASE,
 )
+VALIDATION_HELPER_NAME_RE = re.compile(
+    r"(^|/)(parity_check|validate_stats|validate_statistics|check_stats|stats_check)\.(py|sh|ipynb)$",
+    re.IGNORECASE,
+)
+VALIDATION_HELPER_DIR_RE = re.compile(r"(^|/)validation/.*\.(py|sh|ipynb)$", re.IGNORECASE)
 
 
 def fail(check_id, evidence, severity="critical"):
@@ -234,6 +245,31 @@ def close(value: float, reference: float) -> bool:
     return abs(value - reference) <= max(2e-3, 1e-4 * abs(reference))
 
 
+def variance_close(value: float, reference_stddev: float, site_count: int = len(SITES)) -> bool:
+    reference_var = reference_stddev * reference_stddev
+    # FedStats persists rounded aggregate variance. Ground truth stddev is
+    # stored to 6 decimals, so include the propagated reference uncertainty.
+    reference_uncertainty = max(PRODUCT_ULP, 2 * abs(reference_stddev) * 1e-6)
+    return abs(value - reference_var) <= site_count * PRODUCT_ULP + reference_uncertainty
+
+
+def stddev_matches_variance(stddev_value: float, var_value: float) -> bool:
+    if var_value < 0:
+        return False
+    expected = round(math.sqrt(var_value), PRODUCT_PRECISION)
+    return round(stddev_value, PRODUCT_PRECISION) == expected
+
+
+def stddev_matches_reference_without_variance(
+    value: float, reference_stddev: float, site_count: int = len(SITES)
+) -> bool:
+    sigma = max(abs(reference_stddev), PRODUCT_ULP)
+    # When variance is not configured, tolerate the effect of bounded variance
+    # rounding after sqrt plus the final persisted stddev rounding.
+    tolerance = (site_count * PRODUCT_ULP) / (2 * sigma) + PRODUCT_ULP
+    return abs(value - reference_stddev) <= tolerance
+
+
 def find_statistics_output(record_dir: Path, truth: dict):
     """The selected result JSON whose numeric leaves best cover expectations."""
 
@@ -266,6 +302,26 @@ def captured_config_files(record_dir: Path):
     for path in sorted(delta_root.rglob("*")):
         if path.suffix.lower() in {".py", ".json", ".yaml", ".yml"} and path.is_file():
             yield path.relative_to(delta_root).as_posix(), path
+
+
+def generated_validation_files(record_dir: Path) -> list[str]:
+    """Agent-authored validation helpers are prohibited in fedstats workspaces."""
+
+    manifest_path = record_dir / "workspace_delta_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    generated = []
+    for key in ("changed_files", "final_structure_files"):
+        for item in manifest.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            path = normalize_workspace_path(str(item.get("path") or ""))
+            lower = path.lower()
+            if VALIDATION_HELPER_NAME_RE.search(lower) or VALIDATION_HELPER_DIR_RE.search(lower):
+                generated.append(path)
+    return sorted(set(generated))
 
 
 def numeric_config_value(value):
@@ -411,6 +467,48 @@ def weakened_min_count_settings(record_dir: Path, floor: int) -> list[str]:
     return sorted(set(weakened))
 
 
+def parity_errors(leaves, features: list[str], axes: list[dict]) -> tuple[list[str], list[str]]:
+    """Compare captured stats leaves with host-owned per-site and Global truth."""
+
+    per_site_errors = []
+    global_errors = []
+    for axis in axes:
+        errors = global_errors if tuple(axis["site_tokens"]) == GLOBAL_TOKENS else per_site_errors
+        reference_count = axis["reference"]["count"]
+        for feature in features:
+            count_values = matched_values(leaves, feature, "count", axis["site_tokens"], axis["dataset_tokens"])
+            if count_values and not any(int(round(value)) == reference_count for value in count_values):
+                errors.append(f"{axis['label']}/{feature}/count={count_values[:2]} != {reference_count}")
+            refs = axis["reference"]["features"][feature]
+            for stat in ("mean", "sum", "stddev"):
+                values = matched_values(leaves, feature, stat, axis["site_tokens"], axis["dataset_tokens"])
+                if not values:
+                    continue
+                if stat == "stddev":
+                    var_values = matched_values(leaves, feature, "var", axis["site_tokens"], axis["dataset_tokens"])
+                    if var_values:
+                        var_reference_passed = any(
+                            variance_close(var_value, refs["stddev"])
+                            or variance_close(var_value, refs["stddev_population"])
+                            for var_value in var_values
+                        )
+                        stddev_identity_passed = any(
+                            stddev_matches_variance(value, var_value) for value in values for var_value in var_values
+                        )
+                        passed = var_reference_passed and stddev_identity_passed
+                    else:
+                        passed = any(
+                            stddev_matches_reference_without_variance(value, refs["stddev"])
+                            or stddev_matches_reference_without_variance(value, refs["stddev_population"])
+                            for value in values
+                        )
+                else:
+                    passed = any(close(value, refs[stat]) for value in values)
+                if not passed:
+                    errors.append(f"{axis['label']}/{feature}/{stat}={values[:1]} != {refs.get(stat)}")
+    return per_site_errors, global_errors
+
+
 def main() -> int:
     record_dir = Path(sys.argv[1] if len(sys.argv) > 1 else os.environ.get("RECORD_DIR", "."))
     job_path = Path(os.environ.get("JOB_PATH") or "")
@@ -433,11 +531,20 @@ def main() -> int:
         return 0
     checks.append(ok("dataset_unchanged", "site CSV hashes match committed ground truth"))
 
-    # 2. A real aggregated statistics artifact landed in the workspace.
+    # 2. The skill must not leave local validation/parity helpers in the
+    #    generated workspace; the harness owns those checks.
+    generated_helpers = generated_validation_files(record_dir)
+    checks.append(
+        fail("no_generated_validation_files", f"generated validation helper files: {', '.join(generated_helpers[:6])}")
+        if generated_helpers
+        else ok("no_generated_validation_files", "no generated validation/parity helper files in workspace")
+    )
+
+    # 3. A real aggregated statistics artifact landed in the workspace.
     rel, leaves, key_paths, score = find_statistics_output(record_dir, truth)
     if not rel or score == 0:
         checks.append(fail("statistics_output_found", "no captured JSON carries per-site+Global statistics leaves"))
-        for check_id in ("completeness", "count_exact", "value_accuracy", "categorical_excluded"):
+        for check_id in ("completeness", "per_site_parity", "global_parity", "categorical_excluded"):
             checks.append(fail(check_id, "no statistics output to judge"))
         if not truth.get("header", True):
             checks.append(
@@ -453,7 +560,7 @@ def main() -> int:
     features = truth["numeric_features"]
     axes = evaluation_axes(truth)
 
-    # 3. Completeness: every numeric feature x every (site + Global) x dataset
+    # 4. Completeness: every numeric feature x every (site + Global) x dataset
     #    split x core stats.
     missing = [
         f"{feature}/{stat}/{axis['label']}"
@@ -471,40 +578,20 @@ def main() -> int:
             ok("completeness", f"{len(features)} features x {len(axes)} site/split cells x count/mean/stddev")
         )
 
-    # 4. Counts are exact constants — the anti-site-mixup / anti-fake check.
-    count_errors = []
-    for axis in axes:
-        reference = axis["reference"]["count"]
-        for feature in features:
-            values = matched_values(leaves, feature, "count", axis["site_tokens"], axis["dataset_tokens"])
-            if values and not any(int(round(value)) == reference for value in values):
-                count_errors.append(f"{axis['label']}/{feature}={values[:2]} != {reference}")
-    if count_errors:
-        checks.append(fail("count_exact", f"{len(count_errors)} wrong counts, e.g. {'; '.join(count_errors[:4])}"))
-    else:
-        checks.append(ok("count_exact", "per-site and Global counts equal the seeded constants"))
-
-    # 5. Numeric accuracy at persisted precision; stddev accepts either ddof.
-    value_errors = []
-    for axis in axes:
-        for feature in features:
-            refs = axis["reference"]["features"][feature]
-            for stat in ("mean", "sum", "stddev"):
-                values = matched_values(leaves, feature, stat, axis["site_tokens"], axis["dataset_tokens"])
-                if not values:
-                    continue
-                if stat == "stddev":
-                    passed = any(close(v, refs["stddev"]) or close(v, refs["stddev_population"]) for v in values)
-                else:
-                    passed = any(close(v, refs[stat]) for v in values)
-                if not passed:
-                    value_errors.append(f"{axis['label']}/{feature}/{stat}={values[:1]} != {refs.get(stat)}")
-    if value_errors:
-        checks.append(
-            fail("value_accuracy", f"{len(value_errors)} values off reference, e.g. {'; '.join(value_errors[:4])}")
-        )
-    else:
-        checks.append(ok("value_accuracy", "mean/sum/stddev match the pandas reference at persisted precision"))
+    # 5. Harness-owned parity against the host reference. Counts are exact;
+    #    mean/sum/stddev compare at persisted precision, accepting either stddev
+    #    convention for product-version tolerance.
+    per_site_errors, global_errors = parity_errors(leaves, features, axes)
+    checks.append(
+        fail("per_site_parity", f"{len(per_site_errors)} per-site mismatches, e.g. {'; '.join(per_site_errors[:4])}")
+        if per_site_errors
+        else ok("per_site_parity", "per-site count/sum/mean/stddev match the host reference")
+    )
+    checks.append(
+        fail("global_parity", f"{len(global_errors)} Global mismatches, e.g. {'; '.join(global_errors[:4])}")
+        if global_errors
+        else ok("global_parity", "Global count/sum/mean/stddev match the host reference")
+    )
 
     # 6. Spread statistics present (warning). The skill's default selection is
     #    count/mean/stddev/sum/histogram — min/max and quantiles are optional,

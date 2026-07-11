@@ -649,6 +649,21 @@ def test_claude_exit_classifier_detects_auth_and_model_failures(tmp_path):
         encoding="utf-8",
     )
     sandbox_dependency_summary = adapter.exit_summary(1, stderr)
+    stderr.write_text("", encoding="utf-8")
+    benign_permission_metadata = tmp_path / "permission_metadata.jsonl"
+    benign_permission_metadata.write_text(
+        '{"permissionMode":"bypassPermissions","permission_denials":[]}\n',
+        encoding="utf-8",
+    )
+    benign_metadata_summary = adapter.exit_summary(1, stderr, evidence_paths=(benign_permission_metadata,))
+    api_socket_error = tmp_path / "agent_last_message.txt"
+    api_socket_error.write_text(
+        "API Error: The socket connection was closed unexpectedly. "
+        "For more information, pass `verbose: true` in the second argument to fetch()\n"
+        '{"permissionMode":"bypassPermissions","permission_denials":[]}\n',
+        encoding="utf-8",
+    )
+    api_transport_summary = adapter.exit_summary(1, stderr, evidence_paths=(api_socket_error,))
 
     assert auth_summary["classifier"] == "stderr_patterns"
     assert auth_summary["failure_category"] == "agent_auth_failure"
@@ -657,6 +672,8 @@ def test_claude_exit_classifier_detects_auth_and_model_failures(tmp_path):
     assert model_summary["failure_category"] == "agent_model_unsupported"
     assert permission_summary["failure_category"] == "agent_sandbox_or_approval_failure"
     assert sandbox_dependency_summary["failure_category"] == "agent_sandbox_or_approval_failure"
+    assert benign_metadata_summary["failure_category"] == "agent_unknown_failure"
+    assert api_transport_summary["failure_category"] == "agent_api_transport_failure"
 
 
 def test_codex_exit_classifier_prioritizes_missing_cli_over_stderr_text(tmp_path):

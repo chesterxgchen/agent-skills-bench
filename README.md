@@ -363,6 +363,39 @@ The build validates and hashes the resolved criteria, bakes them into both
 runtime images, and each run captures the bundle under `evaluation_rules/`.
 Report replay uses that captured copy rather than rereading the live SDK repo.
 
+Host-side pass/fail checks are a separate scenario contract, not an SDK-repo
+contract. Use `result_artifact` to declare the runtime output that proves the
+task produced a real result, and `acceptance_checks` to run trusted host code
+against the captured record:
+
+```yaml
+result_artifact:
+  glob: "**/simulate_job/*stat*.json"
+  format: json
+acceptance_checks:
+  script: checks.py
+  timeout_seconds: 300
+```
+
+The script path is resolved inside the scenario directory and is invoked as:
+
+```bash
+python checks.py <record_dir>
+```
+
+It receives `RECORD_DIR`, `JOB_PATH`, `BENCHMARK_MODE`,
+`ACCEPTANCE_RESULT_ARTIFACT_MATCH`, and `ACCEPTANCE_RESULT_ARTIFACT_MATCHES` in
+the environment, and prints:
+
+```json
+{"checks": [{"id": "parity", "passed": true, "severity": "critical", "evidence": "matched"}]}
+```
+
+Critical failed checks feed the generic quality gate. This interface is SDK
+neutral: an SDK repo may provide skills or evaluation criteria through its
+profile, but executable host-side validation should be added as scenario data
+unless a future profile field explicitly defines a portable checker source.
+
 Run the benchmark tests after adding the plugin:
 
 ```bash

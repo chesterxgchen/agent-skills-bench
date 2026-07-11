@@ -44,6 +44,7 @@ PROVIDER_ERROR_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\bpeer closed connection without sending tls close_notify\b", "TLS connection drop"),
     (r"\bfailed to refresh available models\b", "model-manager failure"),
     (r"\boverloaded_error\b", "provider overloaded"),
+    (r"\bapi error: the socket connection was closed unexpectedly\b", "provider socket disconnect"),
 )
 
 _EVIDENCE_FILES = ("agent_events.jsonl", "agent_stderr.txt")

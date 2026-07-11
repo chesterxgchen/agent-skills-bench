@@ -10,9 +10,11 @@ datasets, with the canonical fed-stats prompt:
 
 **Local dataset dependency (intentional):** the job paths point at
 `~/projects/flare_test/...` on the operator's machine — these scenarios are a
-local benchmark fixture, not portable definitions. The committed ground truth
-records each site CSV's sha256; `fedstats_checks.py` fails the
-`dataset_unchanged` gate loudly if the dataset drifts from the constants.
+local benchmark fixture, not portable definitions. The host-side checker is
+scenario data using the generic `acceptance_checks` interface; it is not loaded
+from the NVFLARE SDK repo. The committed ground truth records each site CSV's
+sha256; `fedstats_checks.py` fails the `dataset_unchanged` gate loudly if the
+dataset drifts from the constants.
 
 ## Files
 
@@ -26,13 +28,14 @@ records each site CSV's sha256; `fedstats_checks.py` fails the
   sentinels, CSV hashes). Regenerate only when the dataset intentionally
   changes: `python generate_ground_truth.py <dataset_dir> <out.json>
   [--no-header]`.
-- `fedstats_checks.py` — deterministic hard gates run host-side by the
-  harness's `acceptance_checks` hook: real aggregated statistics artifact,
-  completeness (features x sites x stats), exact counts, value accuracy at
-  persisted precision, categorical exclusion, privacy defaults not weakened,
-  no raw-row leakage in the final report, README names honored (noheader).
-  spread statistics (histogram or min/max) are presence-only;
-  quantiles/histograms are not judged numerically.
+- `fedstats_checks.py` — benchmark-owned hard gates run host-side by the
+  harness's `acceptance_checks` hook. The agent/skill must not generate
+  validation or parity helper files in the workspace. This checker validates
+  the real aggregated statistics artifact, completeness (features x sites x
+  stats), per-site parity, Global parity, categorical exclusion, privacy
+  defaults not weakened, no raw-row leakage in the final report, and README
+  names honored (noheader). Spread statistics (histogram or min/max) are
+  presence-only; quantiles/histograms are not judged numerically.
 
 Acceptance scripts are trusted host code (same trust as the scenario file);
 the compiler requires them to live inside this directory.

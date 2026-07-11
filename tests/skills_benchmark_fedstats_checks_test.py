@@ -175,6 +175,223 @@ def test_find_statistics_output_scores_best_declared_result_artifact_match(tmp_p
     assert score == 2
 
 
+def test_generated_validation_files_detects_agent_authored_checkers(tmp_path):
+    record_dir = tmp_path / "record"
+    record_dir.mkdir()
+    write_workspace_delta(
+        record_dir,
+        {
+            "changed_files": [
+                ("validation/parity_check.py", "changed_files/validation/parity_check.py", "print('check')\n"),
+                ("job.py", "changed_files/job.py", "print('job')\n"),
+                ("tools/split_data.py", "changed_files/tools/split_data.py", "print('prep')\n"),
+            ],
+            "final_structure_files": [
+                ("tools/validate_stats.py", "final_structure_files/tools/validate_stats.py", "print('check')\n"),
+            ],
+            "runtime_artifacts": [
+                (
+                    "workspace/server/simulate_job/statistics/image_statistics.json",
+                    "runtime_artifacts/image_statistics.json",
+                    '{"valid": true}',
+                )
+            ],
+        },
+    )
+
+    generated = fedstats_checks.generated_validation_files(record_dir)
+
+    assert generated == ["tools/validate_stats.py", "validation/parity_check.py"]
+
+
+def test_parity_errors_split_per_site_and_global_mismatches():
+    features = ["age"]
+    axes = [
+        {
+            "label": "site-1",
+            "site_tokens": ("site-1",),
+            "dataset_tokens": (),
+            "reference": {
+                "count": 2,
+                "features": {
+                    "age": {
+                        "count": 2,
+                        "mean": 3.0,
+                        "sum": 6.0,
+                        "stddev": 1.414214,
+                        "stddev_population": 1.0,
+                    }
+                },
+            },
+        },
+        {
+            "label": "Global",
+            "site_tokens": ("global",),
+            "dataset_tokens": (),
+            "reference": {
+                "count": 4,
+                "features": {
+                    "age": {
+                        "count": 4,
+                        "mean": 4.0,
+                        "sum": 16.0,
+                        "stddev": 2.581989,
+                        "stddev_population": 2.236068,
+                    }
+                },
+            },
+        },
+    ]
+    leaves = [
+        (("site-1", "age", "count"), 3.0),
+        (("site-1", "age", "mean"), 3.0),
+        (("site-1", "age", "sum"), 6.0),
+        (("site-1", "age", "stddev"), 1.414214),
+        (("global", "age", "count"), 4.0),
+        (("global", "age", "mean"), 9.0),
+        (("global", "age", "sum"), 16.0),
+        (("global", "age", "stddev"), 2.581989),
+    ]
+
+    per_site_errors, global_errors = fedstats_checks.parity_errors(leaves, features, axes)
+
+    assert len(per_site_errors) == 1
+    assert "site-1/age/count" in per_site_errors[0]
+    assert len(global_errors) == 1
+    assert "Global/age/mean" in global_errors[0]
+
+
+def test_parity_errors_accepts_stddev_from_matching_variance_for_small_sigma():
+    features = ["tiny"]
+    axes = [
+        {
+            "label": "Global",
+            "site_tokens": ("global",),
+            "dataset_tokens": (),
+            "reference": {
+                "count": 30,
+                "features": {
+                    "tiny": {
+                        "count": 30,
+                        "mean": 1.0,
+                        "sum": 30.0,
+                        "stddev": 0.05,
+                        "stddev_population": 0.049,
+                    }
+                },
+            },
+        }
+    ]
+    var_value = 0.0028
+    leaves = [
+        (("global", "tiny", "count"), 30.0),
+        (("global", "tiny", "mean"), 1.0),
+        (("global", "tiny", "sum"), 30.0),
+        (("global", "tiny", "var"), var_value),
+        (("global", "tiny", "stddev"), round(var_value**0.5, 4)),
+    ]
+
+    per_site_errors, global_errors = fedstats_checks.parity_errors(leaves, features, axes)
+
+    assert per_site_errors == []
+    assert global_errors == []
+
+
+def test_parity_errors_rejects_stddev_inconsistent_with_variance():
+    features = ["tiny"]
+    axes = [
+        {
+            "label": "Global",
+            "site_tokens": ("global",),
+            "dataset_tokens": (),
+            "reference": {
+                "count": 30,
+                "features": {
+                    "tiny": {
+                        "count": 30,
+                        "mean": 1.0,
+                        "sum": 30.0,
+                        "stddev": 0.05,
+                        "stddev_population": 0.049,
+                    }
+                },
+            },
+        }
+    ]
+    leaves = [
+        (("global", "tiny", "count"), 30.0),
+        (("global", "tiny", "mean"), 1.0),
+        (("global", "tiny", "sum"), 30.0),
+        (("global", "tiny", "var"), 0.0028),
+        (("global", "tiny", "stddev"), 0.05),
+    ]
+
+    per_site_errors, global_errors = fedstats_checks.parity_errors(leaves, features, axes)
+
+    assert per_site_errors == []
+    assert len(global_errors) == 1
+    assert "Global/tiny/stddev" in global_errors[0]
+
+
+def test_parity_errors_accepts_var_configured_per_site_and_global_pair():
+    features = ["tiny"]
+    axes = [
+        {
+            "label": "site-1",
+            "site_tokens": ("site-1",),
+            "dataset_tokens": (),
+            "reference": {
+                "count": 12,
+                "features": {
+                    "tiny": {
+                        "count": 12,
+                        "mean": 1.0,
+                        "sum": 12.0,
+                        "stddev": 0.05,
+                        "stddev_population": 0.047871,
+                    }
+                },
+            },
+        },
+        {
+            "label": "Global",
+            "site_tokens": ("global",),
+            "dataset_tokens": (),
+            "reference": {
+                "count": 36,
+                "features": {
+                    "tiny": {
+                        "count": 36,
+                        "mean": 1.0,
+                        "sum": 36.0,
+                        "stddev": 0.05,
+                        "stddev_population": 0.049301,
+                    }
+                },
+            },
+        },
+    ]
+    site_var = 0.0028
+    global_var = 0.0027
+    leaves = [
+        (("site-1", "tiny", "count"), 12.0),
+        (("site-1", "tiny", "mean"), 1.0),
+        (("site-1", "tiny", "sum"), 12.0),
+        (("site-1", "tiny", "var"), site_var),
+        (("site-1", "tiny", "stddev"), round(site_var**0.5, 4)),
+        (("global", "tiny", "count"), 36.0),
+        (("global", "tiny", "mean"), 1.0),
+        (("global", "tiny", "sum"), 36.0),
+        (("global", "tiny", "var"), global_var),
+        (("global", "tiny", "stddev"), round(global_var**0.5, 4)),
+    ]
+
+    per_site_errors, global_errors = fedstats_checks.parity_errors(leaves, features, axes)
+
+    assert per_site_errors == []
+    assert global_errors == []
+
+
 def test_min_count_weakening_detects_python_json_and_yaml_configs(tmp_path):
     record_dir = tmp_path / "record"
     record_dir.mkdir()

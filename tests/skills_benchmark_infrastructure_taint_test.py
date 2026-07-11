@@ -31,6 +31,10 @@ _MODEL_MANAGER_LINE = (
     "2026-07-05T05:01:32Z ERROR codex_models_manager::manager: "
     "failed to refresh available models: timeout waiting for child process to exit\n"
 )
+_CLAUDE_SOCKET_LINE = (
+    "API Error: The socket connection was closed unexpectedly. "
+    "For more information, pass `verbose: true` in the second argument to fetch()\n"
+)
 
 
 def test_idle_gap_above_threshold_taints():
@@ -44,15 +48,17 @@ def test_idle_gap_at_or_below_threshold_is_clean():
 
 
 def test_provider_error_lines_taint(tmp_path):
-    (tmp_path / "agent_events.jsonl").write_text(_RECONNECT_LINE, encoding="utf-8")
+    (tmp_path / "agent_events.jsonl").write_text(_RECONNECT_LINE + _CLAUDE_SOCKET_LINE, encoding="utf-8")
     (tmp_path / "agent_stderr.txt").write_text(_MODEL_MANAGER_LINE, encoding="utf-8")
     taint = assess_infrastructure_taint(tmp_path, {"max_inter_event_gap_seconds": 12.0})
     assert taint["tainted"]
     text = " | ".join(taint["reasons"])
     assert "provider stream reconnect" in text
+    assert "provider socket disconnect" in text
     assert "model-manager failure" in text
-    # The reconnect/disconnect/TLS patterns all fire on the SAME line — one reason, not three.
-    assert sum("agent_events.jsonl" in reason for reason in taint["reasons"]) == 1
+    # The reconnect/disconnect/TLS patterns all fire on the SAME line — one reason,
+    # plus one independent socket-disconnect reason from the next line.
+    assert sum("agent_events.jsonl" in reason for reason in taint["reasons"]) == 2
 
 
 def test_agent_prose_about_timeouts_does_not_taint(tmp_path):

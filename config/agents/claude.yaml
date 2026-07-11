@@ -154,11 +154,14 @@ exit:
         - auth
         - api key
         - login
+    - category: agent_api_transport_failure
+      any:
+        - "api error: the socket connection was closed unexpectedly"
+        - socket connection was closed unexpectedly
     - category: agent_sandbox_or_approval_failure
       any:
         - bubblewrap
         - bwrap
-        - permission
         - approval
         - sandbox
         - socat
