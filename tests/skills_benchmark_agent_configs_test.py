@@ -249,6 +249,14 @@ def test_claude_launch_spec_omits_model_flag_when_not_explicit(tmp_path):
     assert spec.argv[-1] == "--print"
 
 
+def test_claude_image_settings_disable_nested_tool_sandbox():
+    settings_path = BENCHMARK_ROOT / "config" / "agents" / "claude-settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+
+    assert settings["sandbox"]["enabled"] is False
+    assert settings["sandbox"]["autoAllowBashIfSandboxed"] is True
+
+
 def test_claude_stream_parser_normalizes_event_usage_and_activity(tmp_path):
     from benchmark.harness.agents.registry import load_agent_adapter
 

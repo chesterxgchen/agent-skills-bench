@@ -7359,6 +7359,36 @@ def test_command_failure_rows_surface_plain_import_error_detail():
     assert rows[0]["root_cause"] != "Error: Exit code 1"
 
 
+def test_command_failure_rows_surface_bwrap_sandbox_failure_detail():
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows
+
+    failed_command = {
+        "item": {
+            "aggregated_output": (
+                "Exit code 1\n"
+                "bwrap: No permissions to create new namespace, likely because the kernel "
+                "does not allow non-privileged user namespaces. See <https://deb.li/bubblewrap> "
+                "or <file:///usr/share/doc/bubblewrap/README.Debian.gz>."
+            ),
+            "command": "ls -la && find . -maxdepth 3 -type f",
+            "exit_code": 1,
+            "id": "bwrap_failure",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    run = {
+        "available": True,
+        "agent_events_text": json.dumps(failed_command),
+    }
+
+    rows = command_failure_rows(run)
+
+    assert rows
+    assert rows[0]["root_cause"].startswith("bwrap: No permissions to create new namespace")
+    assert rows[0]["root_cause"] != "Error: Exit code 1"
+
+
 def test_nvflare_runtime_identity_probe_variants_mark_later_submodule_failure_as_bad_import_path():
     from benchmark.harness.sdks.nvflare._logic import command_failure_rows
 
