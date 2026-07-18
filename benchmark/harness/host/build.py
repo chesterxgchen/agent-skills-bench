@@ -339,6 +339,70 @@ def _load_nvflare_skill_eval_documents(path: Path) -> list[dict[str, Any]]:
     return documents
 
 
+def _fixture_paths_for_nvflare_skill_eval_document(document: dict[str, Any]) -> list[Path]:
+    fixtures: list[Path] = []
+    for eval_case in document.get("evals") or []:
+        if not isinstance(eval_case, dict):
+            continue
+        files = eval_case.get("files", [])
+        if files is None:
+            files = []
+        if not isinstance(files, list):
+            raise ValueError(f"{document['path']}: eval {eval_case.get('id')!r} files must be a list")
+        for value in files:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{document['path']}: eval {eval_case.get('id')!r} files entries must be strings")
+            fixture = Path(value.strip())
+            if fixture.is_absolute() or fixture == Path(".") or ".." in fixture.parts:
+                raise ValueError(f"{document['path']}: eval fixture path escapes eval suite directory: {value}")
+            fixtures.append(fixture)
+    return sorted(set(fixtures), key=lambda path: path.as_posix())
+
+
+def _path_contains_symlink(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    if not path.is_dir():
+        return False
+    return any(child.is_symlink() for child in path.rglob("*"))
+
+
+def _path_has_symlink_component(root: Path, path: Path) -> bool:
+    current = root
+    if current.is_symlink():
+        return True
+    for part in path.relative_to(root).parts:
+        current /= part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def _stage_nvflare_skill_eval_fixtures(document: dict[str, Any], source: Path, native_target: Path) -> None:
+    evals_path = Path(document["path"])
+    evals_dir = evals_path.parent
+    resolved_evals_dir = evals_dir.resolve()
+    for fixture_rel in _fixture_paths_for_nvflare_skill_eval_document(document):
+        fixture = evals_dir / fixture_rel
+        resolved_fixture = fixture.resolve(strict=False)
+        if not resolved_fixture.is_relative_to(resolved_evals_dir):
+            raise ValueError(f"{evals_path}: eval fixture path escapes eval suite directory: {fixture_rel}")
+        if _path_has_symlink_component(evals_dir, fixture):
+            raise ValueError(f"{evals_path}: eval fixture must not contain symbolic links: {fixture_rel}")
+        if not fixture.exists():
+            raise ValueError(f"{evals_path}: eval fixture does not exist: {fixture_rel}")
+        if _path_contains_symlink(fixture):
+            raise ValueError(f"{evals_path}: eval fixture must not contain symbolic links: {fixture_rel}")
+        destination = native_target / evals_dir.relative_to(source) / fixture_rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if fixture.is_dir():
+            if destination.exists():
+                shutil.rmtree(destination)
+            shutil.copytree(fixture, destination, symlinks=False)
+        else:
+            shutil.copy2(fixture, destination)
+
+
 def _native_nvflare_behavior_signals(
     documents: list[dict[str, Any]], task: str, patterns_by_task: dict[str, list[str]] | None = None
 ) -> dict[str, Any]:
@@ -406,6 +470,7 @@ def stage_nvflare_skill_evals_as_evaluation_rules(source: Path, target: Path) ->
         destination = native_target / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(evals_path, destination)
+        _stage_nvflare_skill_eval_fixtures(document, source, native_target)
 
     index_path = target / "nvflare" / "index.yaml"
     index = yaml.safe_load(index_path.read_text(encoding="utf-8")) or {}

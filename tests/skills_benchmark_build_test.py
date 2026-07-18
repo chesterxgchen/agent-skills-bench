@@ -273,6 +273,172 @@ def test_nvflare_sdk_native_skill_evals_are_converted_to_rules(tmp_path):
     assert (staged / "native" / "nvflare_skill_evals" / "nvflare-convert-pytorch" / "evals.json").is_file()
 
 
+def test_nvflare_sdk_native_skill_eval_fixture_generators_are_staged(tmp_path):
+    from benchmark.harness.host import build
+    from benchmark.harness.sdks.base import SdkSource
+
+    repo = tmp_path / "NVFlare"
+    evals_dir = repo / "dev_tools" / "agent" / "skill_evals" / "nvflare-fed-stats"
+    evals_dir.mkdir(parents=True)
+    evals_dir.joinpath("files").mkdir()
+    evals_dir.joinpath("files", "generate_csv.py").write_text(
+        "from pathlib import Path\nPath(__file__).with_name('generator-ran').write_text('bad')\n",
+        encoding="utf-8",
+    )
+    evals_dir.joinpath("files", "images-intensity").mkdir()
+    evals_dir.joinpath("files", "images-intensity", "generate_images.py").write_text(
+        "print('images')\n",
+        encoding="utf-8",
+    )
+    evals_dir.joinpath("files", "images-intensity", "README.md").write_text("synthetic images\n", encoding="utf-8")
+    evals_dir.joinpath("evals.json").write_text(
+        json.dumps(
+            {
+                "skill_name": "nvflare-fed-stats",
+                "evals": [
+                    {
+                        "id": "fedstats-csv",
+                        "files": ["files/generate_csv.py"],
+                        "nvflare": {"mandatory_behavior": [{"id": "csv-fixture", "description": "csv"}]},
+                    },
+                    {
+                        "id": "fedstats-image",
+                        "files": ["files/images-intensity/generate_images.py"],
+                        "nvflare": {"mandatory_behavior": [{"id": "image-fixture", "description": "image"}]},
+                    },
+                    {
+                        "id": "fedstats-image-directory",
+                        "files": ["files/images-intensity"],
+                        "nvflare": {"mandatory_behavior": [{"id": "image-directory", "description": "dir"}]},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = tmp_path / "context"
+    context.mkdir()
+    sdk = SimpleNamespace(
+        name="nvflare",
+        evaluation_criteria=lambda: SimpleNamespace(repo_relative_path=Path("dev_tools/agent/skill_evals")),
+    )
+
+    build.resolve_and_stage_evaluation_criteria(
+        sdk=sdk,
+        source=SdkSource(source_type="repo", repo_path=repo),
+        explicit_path=None,
+        context=context,
+    )
+
+    staged = context / "evaluation_rules" / "native" / "nvflare_skill_evals" / "nvflare-fed-stats"
+    assert staged.joinpath("files", "generate_csv.py").read_text(encoding="utf-8").startswith("from pathlib import")
+    assert (
+        staged.joinpath("files", "images-intensity", "generate_images.py").read_text(encoding="utf-8")
+        == "print('images')\n"
+    )
+    assert staged.joinpath("files", "images-intensity", "README.md").read_text(encoding="utf-8") == "synthetic images\n"
+    assert not evals_dir.joinpath("files", "generator-ran").exists()
+    assert not staged.joinpath("files", "generator-ran").exists()
+
+
+def test_nvflare_sdk_native_skill_eval_fixture_path_escape_is_rejected(tmp_path):
+    import pytest
+
+    from benchmark.harness.host import build
+
+    source = tmp_path / "skill_evals"
+    evals_dir = source / "nvflare-fed-stats"
+    evals_dir.mkdir(parents=True)
+    source.joinpath("outside.py").write_text("print('outside')\n", encoding="utf-8")
+    evals_dir.joinpath("evals.json").write_text(
+        json.dumps({"skill_name": "nvflare-fed-stats", "evals": [{"id": "bad", "files": ["../outside.py"]}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="escapes eval suite directory"):
+        build.stage_nvflare_skill_evals_as_evaluation_rules(source, tmp_path / "target")
+
+
+def test_nvflare_sdk_native_skill_eval_fixture_absolute_path_is_rejected(tmp_path):
+    import pytest
+
+    from benchmark.harness.host import build
+
+    source = tmp_path / "skill_evals"
+    evals_dir = source / "nvflare-fed-stats"
+    files_dir = evals_dir / "files"
+    files_dir.mkdir(parents=True)
+    fixture = files_dir / "generate_csv.py"
+    fixture.write_text("print('csv')\n", encoding="utf-8")
+    evals_dir.joinpath("evals.json").write_text(
+        json.dumps(
+            {
+                "skill_name": "nvflare-fed-stats",
+                "evals": [{"id": "bad", "files": [str(fixture.resolve())]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="escapes eval suite directory"):
+        build.stage_nvflare_skill_evals_as_evaluation_rules(source, tmp_path / "target")
+
+
+def test_nvflare_sdk_native_skill_eval_fixture_symlink_is_rejected(tmp_path):
+    import pytest
+
+    from benchmark.harness.host import build
+
+    source = tmp_path / "skill_evals"
+    evals_dir = source / "nvflare-fed-stats"
+    files_dir = evals_dir / "files"
+    files_dir.mkdir(parents=True)
+    target = files_dir / "target.py"
+    link = files_dir / "generate_csv.py"
+    target.write_text("print('target')\n", encoding="utf-8")
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is not supported on this platform")
+    evals_dir.joinpath("evals.json").write_text(
+        json.dumps({"skill_name": "nvflare-fed-stats", "evals": [{"id": "bad", "files": ["files/generate_csv.py"]}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="symbolic links"):
+        build.stage_nvflare_skill_evals_as_evaluation_rules(source, tmp_path / "target")
+
+
+def test_nvflare_sdk_native_skill_eval_fixture_directory_symlink_is_rejected(tmp_path):
+    import pytest
+
+    from benchmark.harness.host import build
+
+    source = tmp_path / "skill_evals"
+    evals_dir = source / "nvflare-fed-stats"
+    images_dir = evals_dir / "files" / "images-intensity"
+    images_dir.mkdir(parents=True)
+    target = images_dir / "target.py"
+    link = images_dir / "linked.py"
+    target.write_text("print('target')\n", encoding="utf-8")
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is not supported on this platform")
+    evals_dir.joinpath("evals.json").write_text(
+        json.dumps(
+            {
+                "skill_name": "nvflare-fed-stats",
+                "evals": [{"id": "bad", "files": ["files/images-intensity"]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="symbolic links"):
+        build.stage_nvflare_skill_evals_as_evaluation_rules(source, tmp_path / "target")
+
+
 def test_sdk_profile_rejects_evaluation_path_escape(tmp_path):
     from benchmark.harness.sdks.config import ConfigurableSdkAdapter
 
