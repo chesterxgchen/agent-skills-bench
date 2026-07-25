@@ -69,6 +69,7 @@ from ._events import (  # noqa: F401
     truncate,
     unsupported_model_message,
 )
+from ._lifecycle import markdown_report_state_note
 from ._loader import sanitized_validation_metric  # noqa: F401
 from ._loader import collect_benchmark_runs
 from ._runs import combined_text, manifest_paths, run_record, run_workspace_delta, unique_paths  # noqa: F401
@@ -692,6 +693,7 @@ def benchmark_report(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) 
     ctx = _report_context(runs, modes, plugin)
     missing_metrics = missing_result_metrics_section(runs, modes, ctx)
     cost_comparison = cost_comparison_section(runs, modes)
+    report_state_note = markdown_report_state_note(root)
     # Named generic section blocks (E1b §6). Each block owns its exact slice INCLUDING its
     # trailing "" so the composer is pure concatenation (byte-identical). The one resolved
     # ``ctx`` is threaded into every builder here -- no builder re-resolves a context.
@@ -703,6 +705,7 @@ def benchmark_report(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) 
                 "",
                 f"Result root: `{root}`",
                 "",
+                *([report_state_note, ""] if report_state_note else []),
                 _executive_summary_section(runs, modes, ctx),
                 "",
             ],

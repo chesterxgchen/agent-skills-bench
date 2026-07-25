@@ -4783,6 +4783,232 @@ def test_later_successful_runtime_attempt_wins_over_stale_failed_attempt(tmp_pat
     )
 
 
+def test_completed_attempt_missing_metrics_is_reported_as_semantic_recovery(tmp_path):
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.evidence import SCHEMA_VERSION, ComparisonEvidence
+    from benchmark.harness.sdks.nvflare import _logic
+    from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
+
+    mode_dir = tmp_path / "with_skills"
+    artifact_root = mode_dir / "workspace_delta" / "runtime_artifacts"
+
+    def runtime_artifact(rel_path: str, text: str, mtime_ns: int) -> dict:
+        path = artifact_root / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+        return {
+            "artifact_path": f"runtime_artifacts/{rel_path}",
+            "path": rel_path,
+            "size_bytes": len(text.encode("utf-8")),
+        }
+
+    first_root = "tmp/nvflare-ames-fedavg/simulation/ames-fedavg"
+    fixed_root = "tmp/nvflare-ames-fedavg-verified/simulation/ames-fedavg"
+    first_mtime = 1_780_000_000_000_000_000
+    fixed_mtime = first_mtime + 120_000_000_000
+    finished_log = "\n".join(
+        [
+            "FedAvg - INFO - Round 0 started.",
+            "FedAvg - INFO - Round 1 started.",
+            "FedAvg - INFO - Round 2 started.",
+            "FedAvg - INFO - Finished FedAvg.",
+        ]
+    )
+    missing_metrics_log = "\n".join(
+        [
+            "FedAvg - INFO - Round 0 started.",
+            *[f"IntimeModelSelector - WARNING - validation metric not existing in site-{site}" for site in (1, 2, 3)],
+            "FedAvg - INFO - Finished FedAvg.",
+        ]
+    )
+    server_config = json.dumps(
+        {
+            "components": [
+                {
+                    "id": "metrics_artifact_writer",
+                    "path": "nvflare.app_common.widgets.metrics_artifact_writer.MetricsArtifactWriter",
+                    "args": {},
+                }
+            ]
+        }
+    )
+    client_config = json.dumps(
+        {
+            "executors": [
+                {
+                    "executor": {
+                        "path": "nvflare.app_common.executors.client_api_executor.ClientAPIExecutor",
+                        "args": {
+                            "execution_mode": "in_process",
+                            "params_exchange_format": "pytorch",
+                        },
+                    }
+                }
+            ]
+        }
+    )
+    runtime_artifacts = [
+        runtime_artifact(f"{first_root}/server/log_fl.txt", missing_metrics_log, first_mtime),
+        runtime_artifact(
+            f"{first_root}/server/simulate_job/app_server/config/config_fed_server.json",
+            server_config,
+            first_mtime,
+        ),
+        runtime_artifact(
+            f"{first_root}/site-1/simulate_job/app_site-1/config/config_fed_client.json",
+            client_config,
+            first_mtime,
+        ),
+        runtime_artifact(
+            f"{first_root}/server/simulate_job/app_server/custom/client.py",
+            "trainer.validate(model, datamodule=data)\ntrainer.fit(model, datamodule=data)\n",
+            first_mtime,
+        ),
+        runtime_artifact(
+            f"{first_root}/server/simulate_job/app_server/custom/aggregators.py",
+            "result = FLModel(params=averaged, params_type=self._params_type)\n",
+            first_mtime,
+        ),
+        runtime_artifact(f"{fixed_root}/server/log_fl.txt", finished_log, fixed_mtime),
+        runtime_artifact(
+            f"{fixed_root}/server/simulate_job/app_server/custom/client.py",
+            "validation_metrics = trainer.validate(model)[0]\n"
+            "model.__fl_meta__ = {MetaKey.INITIAL_METRICS: validation_metrics}\n",
+            fixed_mtime,
+        ),
+        runtime_artifact(
+            f"{fixed_root}/server/simulate_job/app_server/custom/aggregators.py",
+            "result = FLModel(\n    params=averaged,\n    metrics=averaged_metrics,\n)\n",
+            fixed_mtime,
+        ),
+        runtime_artifact(
+            f"{fixed_root}/server/simulate_job/metrics/metrics_summary.json",
+            '{"status": "metrics_reported", "final_round": 2}',
+            fixed_mtime,
+        ),
+    ]
+    run = {
+        "available": True,
+        "mode": WITH_SKILLS_MODE,
+        "label": "With skills",
+        "mode_dir": mode_dir,
+        "activity": {
+            "commands": ["python job.py", "python job.py"],
+            "hint_counts": {"simulation": 2, "python_job_py": 2},
+        },
+        "agent_events_text": "\n".join(
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": command_id,
+                        "type": "command_execution",
+                        "command": "python job.py",
+                        "aggregated_output": "Finished FedAvg.",
+                        "exit_code": 0,
+                        "status": "completed",
+                    },
+                }
+            )
+            for command_id in ("first_job", "fixed_job")
+        ),
+        "workspace_delta": {"runtime_artifacts": runtime_artifacts},
+    }
+
+    details = _logic._recovered_semantic_attempt_details(run)
+
+    assert details["earlier_root"] == first_root
+    assert details["latest_root"] == fixed_root
+    assert details["warning_sites"] == ["site-1", "site-2", "site-3"]
+    assert details["executor"]["train_with_evaluation"] == "false"
+    summary = _logic.completed_job_recovered_issue_summary(run)
+    assert "earlier completed NVFLARE attempt omitted the expected metrics artifact" in summary
+    assert "did not preserve its result in `__fl_meta__`" in summary
+    assert "produced `metrics_summary.json`" in summary
+    block = _logic._recovered_semantic_attempt_root_cause_block(run)
+    assert "**Recovered completed-attempt metrics root cause**" in block
+    assert "reached `Finished`, but it was semantically incomplete" in block
+    assert "validation metric not existing" in block
+    assert "train_with_evaluation=false" in block
+    assert "returned aggregated `FLModel.metrics`" in block
+    comparison = ComparisonEvidence(
+        schema_version=SCHEMA_VERSION,
+        runs={
+            NO_SKILLS_MODE: _ev({"mode": NO_SKILLS_MODE, "label": "No skills baseline"}),
+            WITH_SKILLS_MODE: _ev(run),
+        },
+        modes=[NO_SKILLS_MODE, WITH_SKILLS_MODE],
+        sdk_metadata={},
+    )
+    fragments = NvflareReportPlugin().explain(comparison, {})
+    assert any(
+        fragment.anchor == "why_slowdown" and "**Recovered completed-attempt metrics root cause**" in fragment.text
+        for fragment in fragments
+    )
+
+
+def test_completed_attempt_without_metric_warning_is_not_inferred_as_semantic_recovery(tmp_path):
+    from benchmark.harness.sdks.nvflare import _logic
+
+    mode_dir = tmp_path / "with_skills"
+    artifact_root = mode_dir / "workspace_delta" / "runtime_artifacts"
+
+    def runtime_artifact(rel_path: str, text: str, mtime_ns: int) -> dict:
+        path = artifact_root / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+        return {"path": rel_path, "size_bytes": len(text.encode("utf-8"))}
+
+    first_root = "tmp/first/simulation/job"
+    latest_root = "tmp/latest/simulation/job"
+    server_config = json.dumps(
+        {
+            "components": [
+                {
+                    "id": "metrics_artifact_writer",
+                    "path": "nvflare.app_common.widgets.metrics_artifact_writer.MetricsArtifactWriter",
+                }
+            ]
+        }
+    )
+    artifacts = [
+        runtime_artifact(f"{first_root}/server/log_fl.txt", "Finished FedAvg.", 100),
+        runtime_artifact(
+            f"{first_root}/server/simulate_job/app_server/config/config_fed_server.json",
+            server_config,
+            100,
+        ),
+        runtime_artifact(f"{latest_root}/server/log_fl.txt", "Finished FedAvg.", 200),
+        runtime_artifact(
+            f"{latest_root}/server/simulate_job/metrics/metrics_summary.json",
+            '{"status": "metrics_reported"}',
+            200,
+        ),
+    ]
+    run = {
+        "available": True,
+        "mode_dir": mode_dir,
+        "workspace_delta": {"runtime_artifacts": artifacts},
+    }
+
+    assert _logic._recovered_semantic_attempt_details(run) == {}
+
+
+def test_report_lifecycle_note_distinguishes_preliminary_and_final(tmp_path):
+    from benchmark.harness.reports._lifecycle import markdown_report_state_note
+
+    status_path = tmp_path / "diagnostics_status.json"
+    status_path.write_text('{"status": "running"}', encoding="utf-8")
+    preliminary = markdown_report_state_note(tmp_path)
+    assert "Report state: PRELIMINARY" in preliminary
+    assert "diagnostics_status.json" in preliminary
+
+    status_path.write_text('{"status": "finalizing"}', encoding="utf-8")
+    assert markdown_report_state_note(tmp_path) == ("**Report state: FINAL.** Automatic diagnostics have been applied.")
+
+
 def test_background_interruption_cause_ignores_non_simulation_background_tasks():
     from benchmark.harness.sdks.nvflare._logic import _background_task_interruption_cause
 

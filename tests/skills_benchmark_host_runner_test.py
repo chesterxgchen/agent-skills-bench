@@ -1374,6 +1374,19 @@ def test_launch_diagnostics_detaches_and_records_running_status(tmp_path, monkey
     assert status["status"] == "running" and status["pid"] == 4242
 
 
+def test_prepare_diagnostics_marks_initial_background_report_preliminary(tmp_path, monkeypatch):
+    import json
+
+    from benchmark.harness.host import runner
+
+    monkeypatch.delenv("BENCHMARK_DIAGNOSTICS_BACKGROUND", raising=False)
+
+    runner.prepare_diagnostics_report_state(tmp_path)
+
+    status = json.loads((tmp_path / runner.DIAGNOSTICS_STATUS_FILENAME).read_text(encoding="utf-8"))
+    assert status == {"status": "pending"}
+
+
 def test_launch_diagnostics_env_zero_runs_inline(tmp_path, monkeypatch):
     from benchmark.harness.host import runner
 
@@ -1405,12 +1418,17 @@ def test_diagnostics_worker_flips_status_done_after_reports(tmp_path, monkeypatc
         "autorun_code_quality_evaluations",
         lambda root, logs=(), only_missing=False: order.append("eval"),
     )
+    monkeypatch.setattr(
+        runner,
+        "write_benchmark_reports",
+        lambda root, logs=(): order.append("final_reports") or {"metrics_report": 0, "benchmark_insights": 0},
+    )
     monkeypatch.setattr(runner, "emit_benchmark_report_paths", lambda root, logs=(): order.append("reports"))
 
     assert runner.run_diagnostics_worker([str(tmp_path)]) == 0
     status = json.loads((tmp_path / runner.DIAGNOSTICS_STATUS_FILENAME).read_text(encoding="utf-8"))
     # Reports regenerate BEFORE status flips: status=done guarantees final reports.
-    assert order == ["rca", "eval", "reports"]
+    assert order == ["rca", "eval", "final_reports", "reports"]
     assert status == {"status": "done"}
 
 

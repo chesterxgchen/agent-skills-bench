@@ -28,6 +28,7 @@ from ..metric_artifacts import validation_metric_from_workspace_delta_manifest
 from ..modes import BENCHMARK_RUNS, NO_SKILLS_MODE, WITH_SKILLS_MODE
 from ..quality_signals import canonical_metric_name, is_plausible_metric_value
 from ._context import ReportContext
+from ._lifecycle import diagnostics_report_state, markdown_report_state_note
 from ._loader import (
     _combined_rca_reports,
     expected_validation_metric_name,
@@ -560,13 +561,20 @@ def markdown_report(
         "",
         f"Result root: `{summary['result_root']}`",
         "",
-        f"Status: {_display_status_summary(insight_runs, modes, ctx)}",
-        "",
-        "## Runs",
-        "",
-        "| Run | Agent | Model | Host OS | Status | Skills available | Skills inspected | Skills applied/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |",
-        "|---|---|---|---|---|---|---|---|---|---:|---:|---:|---|",
     ]
+    report_state_note = markdown_report_state_note(root)
+    if report_state_note:
+        lines.extend([report_state_note, ""])
+    lines.extend(
+        [
+            f"Status: {_display_status_summary(insight_runs, modes, ctx)}",
+            "",
+            "## Runs",
+            "",
+            "| Run | Agent | Model | Host OS | Status | Skills available | Skills inspected | Skills applied/used | Shared refs read | Elapsed seconds | Tokens | Commands | Root cause |",
+            "|---|---|---|---|---|---|---|---|---|---:|---:|---:|---|",
+        ]
+    )
     for row in summary["runs"]:
         run = insight_runs[row["mode"]]
         run_summary = row["summary"]
@@ -647,9 +655,19 @@ def html_report(
     chart = embedded_bar_chart(insight_runs, ctx)
     phase_timing_html = _phase_timing_html(summary)
     recovered_issues = _recovered_issues_section(summary, insight_runs, ctx, include_heading=False)
-    recovered_html = (
-        f"<h2>Recovered Issues</h2><pre>{html.escape(recovered_issues)}</pre>" if recovered_issues else ""
-    )
+    recovered_html = f"<h2>Recovered Issues</h2><pre>{html.escape(recovered_issues)}</pre>" if recovered_issues else ""
+    report_state = diagnostics_report_state(root)
+    report_state_html = ""
+    if report_state:
+        report_state_label = {
+            "preliminary": (
+                "PRELIMINARY — automatic diagnostics are still running; "
+                "wait for diagnostics_status.json to report done."
+            ),
+            "final": "FINAL — automatic diagnostics have been applied.",
+            "diagnostics_failed": "DIAGNOSTICS FAILED — inspect diagnostics_status.json.",
+        }[report_state]
+        report_state_html = f"<p><strong>Report state: {html.escape(report_state_label)}</strong></p>"
     return f"""<!doctype html>
 <html>
 <head>
@@ -668,6 +686,7 @@ def html_report(
 <body>
   <h1>{html.escape(summary['title'])}</h1>
   <p>Result root: <code>{html.escape(summary['result_root'])}</code></p>
+  {report_state_html}
   <p>Status: {html.escape(_display_status_summary(insight_runs, modes, ctx))}</p>
   <table>
     <thead><tr><th>Run</th><th>Agent</th><th>Model</th><th>Host OS</th><th>Status</th><th>Skills available</th><th>Skills inspected</th><th>Skills applied/used</th><th>Shared refs read</th><th>Elapsed seconds</th><th>Tokens</th><th>Root cause</th></tr></thead>

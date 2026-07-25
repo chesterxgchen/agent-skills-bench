@@ -1875,8 +1875,214 @@ def _attempt_client_executor_evidence(run: dict[str, Any], attempt_root: str) ->
                     "path": executor_path,
                     "execution_mode": execution_mode,
                     "params_format": params_format,
+                    "train_with_evaluation": str(bool(args.get("train_with_evaluation", False))).lower(),
                 }
     return {}
+
+
+def _attempt_has_metrics_artifact_writer(run: dict[str, Any], attempt_root: str) -> bool:
+    configs = _attempt_artifact_texts(
+        run,
+        attempt_root,
+        r"(^|/)server/simulate_job/app_server/config/config_fed_server\.json$",
+        max_bytes=64_000,
+    )
+    for _label, text in configs:
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError):
+            continue
+        components = payload.get("components") if isinstance(payload, dict) else None
+        for component in components if isinstance(components, list) else []:
+            if not isinstance(component, dict):
+                continue
+            component_path = str(component.get("path") or "")
+            component_id = str(component.get("id") or "")
+            if component_path.endswith(".MetricsArtifactWriter") or component_id == "metrics_artifact_writer":
+                return True
+    return False
+
+
+def _attempt_source_contains(
+    run: dict[str, Any],
+    attempt_root: str,
+    source_pattern: str,
+    content_pattern: str,
+) -> bool:
+    return any(
+        re.search(content_pattern, text, flags=re.MULTILINE)
+        for _label, text in _attempt_artifact_texts(run, attempt_root, source_pattern, max_bytes=128_000)
+    )
+
+
+def _attempt_validation_metric_warning_sites(log_text: str) -> list[str]:
+    return sorted(
+        {
+            match.group(1)
+            for match in re.finditer(
+                r"validation metric not existing in\s+([A-Za-z0-9_.-]+)",
+                strip_ansi(log_text),
+                flags=re.IGNORECASE,
+            )
+        }
+    )
+
+
+def _recovered_semantic_attempt_details(run: dict[str, Any]) -> dict[str, Any]:
+    """Describe a completed attempt whose expected metric artifact appeared only after a fix.
+
+    Exit code 0 and ``Finished`` prove that orchestration completed; they do not
+    prove that the job satisfied its metric-artifact contract.  Require an
+    explicitly configured MetricsArtifactWriter, direct server warnings, and a
+    later completed attempt with ``metrics_summary.json`` before calling this a
+    recovered semantic gap.
+    """
+
+    attempts = _runtime_attempt_server_logs(run)
+    if len(attempts) < 2:
+        return {}
+    latest = attempts[0]
+    latest_root = str(latest["root"])
+    metrics_pattern = r"(^|/)server/simulate_job/metrics/metrics_summary\.json$"
+    if not _runtime_log_finished(str(latest["text"])) or not _attempt_artifact_present(
+        run, latest_root, metrics_pattern
+    ):
+        return {}
+
+    for earlier in attempts[1:]:
+        earlier_root = str(earlier["root"])
+        earlier_text = str(earlier["text"])
+        if not _runtime_log_finished(earlier_text):
+            continue
+        if _attempt_artifact_present(run, earlier_root, metrics_pattern):
+            continue
+        if not _attempt_has_metrics_artifact_writer(run, earlier_root):
+            continue
+        warning_sites = _attempt_validation_metric_warning_sites(earlier_text)
+        if not warning_sites:
+            continue
+
+        executor = _attempt_client_executor_evidence(run, earlier_root)
+        earlier_validated = _attempt_source_contains(
+            run,
+            earlier_root,
+            r"(^|/)custom/client\.py$",
+            r"\btrainer\.validate\s*\(",
+        )
+        earlier_meta_bridge = _attempt_source_contains(
+            run,
+            earlier_root,
+            r"(^|/)custom/client\.py$",
+            r"\b__fl_meta__\b|MetaKey\.INITIAL_METRICS",
+        )
+        earlier_aggregated_metrics = _attempt_source_contains(
+            run,
+            earlier_root,
+            r"(^|/)custom/aggregators?\.py$",
+            r"\bFLModel\s*\([^)]*\bmetrics\s*=",
+        )
+        later_meta_bridge = _attempt_source_contains(
+            run,
+            latest_root,
+            r"(^|/)custom/client\.py$",
+            r"\b__fl_meta__\b|MetaKey\.INITIAL_METRICS",
+        )
+        later_aggregated_metrics = _attempt_source_contains(
+            run,
+            latest_root,
+            r"(^|/)custom/aggregators?\.py$",
+            r"\bFLModel\s*\([^)]*\bmetrics\s*=",
+        )
+
+        site_phrase = f"all {len(warning_sites)} client sites" if len(warning_sites) > 1 else warning_sites[0]
+        cause_parts = [
+            "client validation metrics were absent from the returned and aggregated `FLModel`",
+            f"the server model selector reported `validation metric not existing` for {site_phrase}",
+        ]
+        if executor.get("train_with_evaluation") == "false":
+            cause_parts.append("the generic `ClientAPIExecutor` used `train_with_evaluation=false`")
+        if earlier_validated and not earlier_meta_bridge:
+            cause_parts.append(
+                "the client called `trainer.validate()` but did not preserve its result in `__fl_meta__`"
+            )
+        if not earlier_aggregated_metrics:
+            cause_parts.append("the custom aggregator returned parameters without `FLModel.metrics`")
+        return {
+            "cause": "; ".join(cause_parts),
+            "earlier_root": earlier_root,
+            "latest_root": latest_root,
+            "warning_sites": warning_sites,
+            "warning_source": str(earlier.get("label") or ""),
+            "executor": executor,
+            "later_meta_bridge": later_meta_bridge,
+            "later_aggregated_metrics": later_aggregated_metrics,
+            "metrics_summary_captured": True,
+        }
+    return {}
+
+
+def _recovered_semantic_attempt_summary(run: dict[str, Any]) -> str:
+    details = _recovered_semantic_attempt_details(run)
+    if not details:
+        return ""
+    correction = []
+    if details["later_meta_bridge"]:
+        correction.append("preserved validation metrics through `__fl_meta__`")
+    if details["later_aggregated_metrics"]:
+        correction.append("returned aggregated `FLModel.metrics`")
+    correction_phrase = " and ".join(correction) or "restored metric propagation"
+    return (
+        "an earlier completed NVFLARE attempt omitted the expected metrics artifact because "
+        f"{details['cause']}; the later attempt {correction_phrase}; it then produced `metrics_summary.json`"
+    )
+
+
+def _recovered_semantic_attempt_root_cause_block(run: dict[str, Any]) -> str:
+    details = _recovered_semantic_attempt_details(run)
+    if not details:
+        return ""
+    executor = details.get("executor") if isinstance(details.get("executor"), dict) else {}
+    executor_finding = ""
+    if executor:
+        executor_finding = (
+            f"`{executor.get('path')}` with `execution_mode={executor.get('execution_mode')}` and "
+            f"`train_with_evaluation={executor.get('train_with_evaluation')}`"
+        )
+    correction = []
+    if details["later_meta_bridge"]:
+        correction.append("preserved validation results through `__fl_meta__`")
+    if details["later_aggregated_metrics"]:
+        correction.append("returned aggregated `FLModel.metrics`")
+    correction_phrase = " and ".join(correction) or "restored metric propagation"
+    lines = [
+        "**Recovered completed-attempt metrics root cause**",
+        "",
+        "The first simulation reached `Finished`, but it was semantically incomplete: "
+        "`MetricsArtifactWriter` was configured and no `metrics_summary.json` was produced. "
+        f"The root cause was that {details['cause']}. "
+        f"The later attempt {correction_phrase}, after which `metrics_summary.json` appeared.",
+        "",
+        "| Attempt evidence | Finding |",
+        "|---|---|",
+        (
+            f"| Earlier completed attempt `{markdown_cell(details['earlier_root'])}` | "
+            "`Finished` with configured `MetricsArtifactWriter`, but no `metrics_summary.json` |"
+        ),
+        (
+            f"| Server warning `{markdown_cell(details['warning_source'])}` | "
+            f"`validation metric not existing` for {markdown_cell(', '.join(details['warning_sites']))} |"
+        ),
+    ]
+    if executor_finding:
+        lines.append(
+            f"| Client executor `{markdown_cell(executor.get('source') or '')}` | "
+            f"{markdown_cell(executor_finding)} |"
+        )
+    lines.append(
+        f"| Corrected attempt `{markdown_cell(details['latest_root'])}` | "
+        f"{markdown_cell(correction_phrase)}; produced `metrics_summary.json` |"
+    )
+    return "\n".join(lines) + "\n"
 
 
 def _runtime_attempt_failure_details(run: dict[str, Any], attempt_root: str) -> dict[str, Any]:
@@ -3101,6 +3307,9 @@ def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
     blocked_count = bash_permission_denial_count(run)
     if blocked_count:
         parts.append(f"Bash/tool permission was blocked {blocked_count} time(s) before a later job command completed")
+    semantic_recovery = _recovered_semantic_attempt_summary(run)
+    if semantic_recovery:
+        parts.append(semantic_recovery)
     runtime_recovery = _recovered_runtime_attempt_failure(run)
     if runtime_recovery:
         parts.append(runtime_recovery)

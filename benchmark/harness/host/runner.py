@@ -1243,6 +1243,24 @@ DIAGNOSTICS_STATUS_FILENAME = "diagnostics_status.json"
 DIAGNOSTICS_CONSOLE_FILENAME = "diagnostics_console.log"
 
 
+def prepare_diagnostics_report_state(result_root: Path) -> None:
+    """Mark the first detached-diagnostics report as preliminary before rendering it."""
+
+    if os.environ.get("BENCHMARK_DIAGNOSTICS_BACKGROUND", "1") != "0":
+        write_json(result_root / DIAGNOSTICS_STATUS_FILENAME, {"status": "pending"})
+
+
+def _finalize_diagnostics_reports(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
+    """Render one report with all diagnostics applied, then publish the done signal."""
+
+    status_path = result_root / DIAGNOSTICS_STATUS_FILENAME
+    write_json(status_path, {"status": "finalizing"})
+    statuses = write_benchmark_reports(result_root, logs=logs)
+    if any(status != 0 for status in statuses.values()):
+        raise RuntimeError(f"final report generation failed: {statuses}")
+    write_json(status_path, {"status": "done"})
+
+
 def launch_diagnostics(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
     """Run the agentic diagnostics WITHOUT blocking scenario completion.
 
@@ -1278,6 +1296,7 @@ def launch_diagnostics(result_root: Path, *, logs: Iterable[Path] = ()) -> None:
         emit(f"Diagnostics worker failed to launch ({exc}); running inline instead.", logs=logs, stderr=True)
         autorun_rca_investigations(result_root, logs=logs)
         autorun_code_quality_evaluations(result_root, logs=logs)
+        _finalize_diagnostics_reports(result_root, logs=logs)
         return
     write_json(
         status_path,
@@ -1307,12 +1326,12 @@ def run_diagnostics_worker(argv: list[str]) -> int:
     try:
         autorun_rca_investigations(result_root, logs=logs, only_missing=True)
         autorun_code_quality_evaluations(result_root, logs=logs, only_missing=True)
+        _finalize_diagnostics_reports(result_root, logs=logs)
     except Exception as exc:
         write_json(status_path, {"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
         emit(f"Diagnostics worker failed: {type(exc).__name__}: {exc}", logs=logs, stderr=True)
         return 1
     emit_benchmark_report_paths(result_root, logs=logs)
-    write_json(status_path, {"status": "done"})
     emit("Automatic diagnostics finished; reports are final.", logs=logs)
     return 0
 
@@ -1396,6 +1415,7 @@ def run_pair(argv: list[str]) -> int:
 
     emit(f"Scenario summary: {result_root / 'scenario_summary.json'}", logs=logs)
     emit(f"Scenario report: {result_root / 'reports' / 'scenario_report.md'}", logs=logs)
+    prepare_diagnostics_report_state(result_root)
     report_statuses = write_benchmark_reports(result_root, logs=logs)
     # RCA first: it is the priority diagnostic and must not be gated on a slow
     # code-evaluation pass (each is best-effort and independently regenerates
