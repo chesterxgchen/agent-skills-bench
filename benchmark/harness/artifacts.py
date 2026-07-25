@@ -268,10 +268,15 @@ def capture_workspace_delta(
                 dst = runtime_root / label / rel_path
                 copied_size = copy_limited(path, dst, copied_state, skipped_files)
                 if copied_size is not None:
+                    try:
+                        source_mtime_ns = dst.stat().st_mtime_ns
+                    except OSError:
+                        source_mtime_ns = None
                     runtime_artifacts.append(
                         {
                             "path": f"{label}/{rel}",
                             "source_path": str(path),
+                            "source_mtime_ns": source_mtime_ns,
                             "size_bytes": copied_size,
                             "artifact_path": dst.relative_to(delta_root).as_posix(),
                         }

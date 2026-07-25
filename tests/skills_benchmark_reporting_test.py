@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import os
 import stat
 import sys
 
@@ -4626,6 +4627,160 @@ def test_round_metrics_artifact_does_not_infer_completed_job(tmp_path):
     assert "simulation started but did not complete" in reason
     assert "`metrics_summary.json` was not captured" in reason
     assert _nv_ev(run).metric.value is None
+
+
+def test_later_successful_runtime_attempt_wins_over_stale_failed_attempt(tmp_path):
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.evidence import SCHEMA_VERSION, ComparisonEvidence
+    from benchmark.harness.sdks.nvflare import _logic
+    from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
+
+    mode_dir = tmp_path / "with_skills"
+    artifact_root = mode_dir / "workspace_delta" / "runtime_artifacts"
+
+    def runtime_artifact(rel_path: str, text: str, mtime_ns: int) -> dict:
+        path = artifact_root / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+        return {
+            "artifact_path": f"runtime_artifacts/{rel_path}",
+            "path": rel_path,
+            "size_bytes": len(text.encode("utf-8")),
+        }
+
+    failed_root = "tmp/nvflare/ames-fedavg-sim/ames-smiles-fedavg"
+    rerun_root = "tmp/nvflare/ames-fedavg-sim-rerun/ames-smiles-fedavg"
+    failed_mtime = 1_780_000_000_000_000_000
+    rerun_mtime = failed_mtime + 120_000_000_000
+    dot_error = (
+        "2026-07-25 03:53:56,263 - Cell - ERROR - " "RuntimeError: cannot find handler for Datum Object Type 6\n"
+    )
+    runtime_artifacts = [
+        # Manifest order is deliberately stale-first, matching the captured
+        # 522545 run. Legacy manifests have no source_mtime_ns field, so the
+        # copied file mtime must resolve execution order.
+        runtime_artifact(
+            f"{failed_root}/server/log_fl.txt",
+            "2026-07-25 03:53:52,000 - FedAvg - INFO - Round 0 started.\n",
+            failed_mtime,
+        ),
+        runtime_artifact(
+            f"{failed_root}/site-1/simulate_job/app_site-1/custom/client.py",
+            "import nvflare.client as flare\nflare.init()\n",
+            failed_mtime,
+        ),
+        runtime_artifact(
+            f"{failed_root}/site-1/simulate_job/app_site-1/config/config_fed_client.json",
+            json.dumps(
+                {
+                    "executors": [
+                        {
+                            "executor": {
+                                "path": "nvflare.app_common.executors.client_api_executor.ClientAPIExecutor",
+                                "args": {
+                                    "execution_mode": "in_process",
+                                    "params_exchange_format": "pytorch",
+                                    "server_expected_format": "pytorch",
+                                },
+                            }
+                        }
+                    ]
+                }
+            ),
+            failed_mtime,
+        ),
+        *[
+            runtime_artifact(f"{failed_root}/{site}/error_log.txt", dot_error, failed_mtime)
+            for site in ("site-1", "site-2", "site-3")
+        ],
+        runtime_artifact(
+            f"{rerun_root}/server/log_fl.txt",
+            "\n".join(
+                [
+                    "2026-07-25 03:56:34,000 - FedAvg - INFO - Round 0 started.",
+                    "2026-07-25 03:56:57,000 - FedAvg - INFO - Round 1 started.",
+                    "2026-07-25 03:57:15,000 - FedAvg - INFO - Round 2 started.",
+                    "2026-07-25 03:57:34,000 - FedAvg - INFO - Finished FedAvg.",
+                ]
+            ),
+            rerun_mtime,
+        ),
+        runtime_artifact(
+            f"{rerun_root}/site-1/simulate_job/app_site-1/custom/client.py",
+            "\n".join(
+                [
+                    "from nvflare.app_opt.pt.decomposers import TensorDecomposer",
+                    "from nvflare.fuel.utils import fobs",
+                    "fobs.register(TensorDecomposer)",
+                ]
+            ),
+            rerun_mtime,
+        ),
+    ]
+    run = {
+        "available": True,
+        "mode": WITH_SKILLS_MODE,
+        "label": "With skills",
+        "mode_dir": mode_dir,
+        "activity": {
+            "commands": ["python job.py", "python job.py"],
+            "hint_counts": {"simulation": 2, "python_job_py": 2},
+        },
+        "agent_events_text": "\n".join(
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": command_id,
+                        "type": "command_execution",
+                        "command": "python job.py",
+                        "aggregated_output": "",
+                        "exit_code": exit_code,
+                        "status": "completed" if exit_code == 0 else "failed",
+                    },
+                }
+            )
+            for command_id, exit_code in (("failed_job", 1), ("successful_rerun", 0))
+        ),
+        "workspace_delta": {"runtime_artifacts": runtime_artifacts},
+    }
+
+    assert _logic.job_run_status(run) == "completed"
+    reason = _logic.job_run_status_reason(run)
+    assert "earlier NVFLARE attempt failed" in reason
+    assert "3 client site(s)" in reason
+    assert "Datum Object Type 6" in reason
+    assert "generic in-process `ClientAPIExecutor` did not register" in reason
+    assert "DOT 6 is TENSOR_DOWNLOAD" in reason
+    assert "explicitly registered `TensorDecomposer`" in reason
+    assert "`metrics_summary.json` was not captured from the successful attempt" in reason
+    assert "Round 2 started" in _logic._server_progress_summary(run)
+    assert "no terminal `Finished` marker" not in _logic._server_progress_summary(run)
+    assert _logic.result_failure_root_cause_block(run) == ""
+    failed_job_row = next(row for row in _logic.command_failure_rows(run) if "job.py" in row["command"])
+    assert "Datum Object Type 6" in failed_job_row["root_cause"]
+    assert "later attempt" not in failed_job_row["root_cause"]
+    root_cause_block = _logic._recovered_runtime_attempt_root_cause_block(run)
+    assert "**Recovered NVFLARE attempt root cause**" in root_cause_block
+    assert "result-artifact gap, not an execution failure" in root_cause_block
+    assert f"{failed_root}/site-1/error_log.txt:1" in root_cause_block
+    assert "execution_mode=in_process" in root_cause_block
+    assert "params_exchange_format=pytorch" in root_cause_block
+    comparison = ComparisonEvidence(
+        schema_version=SCHEMA_VERSION,
+        runs={
+            NO_SKILLS_MODE: _ev({"mode": NO_SKILLS_MODE, "label": "No skills baseline"}),
+            WITH_SKILLS_MODE: _ev(run),
+        },
+        modes=[NO_SKILLS_MODE, WITH_SKILLS_MODE],
+        sdk_metadata={},
+    )
+    fragments = NvflareReportPlugin().explain(comparison, {})
+    assert any(
+        fragment.anchor == "why_slowdown" and "**Recovered NVFLARE attempt root cause**" in fragment.text
+        for fragment in fragments
+    )
 
 
 def test_background_interruption_cause_ignores_non_simulation_background_tasks():

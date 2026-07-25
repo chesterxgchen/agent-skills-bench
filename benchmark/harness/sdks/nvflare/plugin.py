@@ -299,6 +299,9 @@ class NvflareReportPlugin(ReportPlugin):
         result_failure_block = _logic.result_failure_root_cause_block(cmp.runs[WITH_SKILLS_MODE].raw)
         if result_failure_block:
             fragments.append(NarrativeFragment(text=result_failure_block, anchor="why_result_failure"))
+        recovered_attempt_block = _logic._recovered_runtime_attempt_root_cause_block(cmp.runs[WITH_SKILLS_MODE].raw)
+        if recovered_attempt_block:
+            fragments.append(NarrativeFragment(text=recovered_attempt_block, anchor="why_slowdown"))
         blocks = self._runtime_path_slowdown_blocks(
             with_je=(plugin.get(WITH_SKILLS_MODE) or PluginEvidence()).job_execution or JobExecutionSignal(),
             base_je=(plugin.get(base_mode) or PluginEvidence()).job_execution or JobExecutionSignal(),

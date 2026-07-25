@@ -789,6 +789,13 @@ def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
         dependency_evidence = ""
         missing_module = missing_python_module_name(output)
         root_cause = command_error_summary(output)
+        if (
+            root_cause == "no command output captured"
+            and is_simulation_or_job_command(command)
+            and "--export" not in command
+            and (runtime_details := _recovered_runtime_attempt_details(run))
+        ):
+            root_cause = str(runtime_details["cause"])
         if missing_module:
             dependency_evidence = _missing_module_dependency_evidence(run, event, missing_module)
             timing_reason = _missing_module_timing_reason(run, event, missing_module)
@@ -1587,14 +1594,329 @@ def _artifact_label(item: dict[str, Any]) -> str:
 
 
 def _read_runtime_artifact(run: dict[str, Any], pattern: str, *, max_bytes: int = 128_000) -> tuple[str, str]:
-    for item in _runtime_artifacts(run):
+    candidates: list[tuple[int, int, str, Path]] = []
+    for item_index, item in enumerate(_runtime_artifacts(run)):
         label = _artifact_label(item).replace("\\", "/")
         if not re.search(pattern, label):
             continue
         path = _workspace_artifact_path(run, item)
         if path and path.exists():
-            return label, read_text(path, max_bytes=max_bytes)
+            try:
+                source_mtime_ns = int(item.get("source_mtime_ns") or path.stat().st_mtime_ns)
+            except (OSError, TypeError, ValueError):
+                source_mtime_ns = 0
+            candidates.append((source_mtime_ns, item_index, label, path))
+    if candidates:
+        # Runtime artifacts are stored in deterministic path order, not execution
+        # order.  A retry therefore commonly follows its failed predecessor in
+        # time while both logs coexist in the manifest.  copy2 preserves source
+        # mtimes for legacy records; new manifests also persist source_mtime_ns.
+        # Select the latest attempt instead of the first lexicographic match.
+        _mtime_ns, _item_index, label, path = max(candidates)
+        return label, read_text(path, max_bytes=max_bytes)
     return "", ""
+
+
+def _runtime_attempt_root(label: str) -> str:
+    normalized = str(label or "").replace("\\", "/")
+    match = re.match(r"^(.+)/(?:server|site-[^/]+)(?:/|$)", normalized, flags=re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _runtime_log_finished(text: str) -> bool:
+    return bool(re.search(r"\bFinished\b|\bEnd\s+Scaffold\b|\bEND_RUN fired\b", text, re.IGNORECASE))
+
+
+def _runtime_attempt_server_logs(run: dict[str, Any]) -> list[dict[str, Any]]:
+    attempts: dict[str, dict[str, Any]] = {}
+    for item_index, item in enumerate(_runtime_artifacts(run)):
+        label = _artifact_label(item).replace("\\", "/")
+        if not re.search(r"(^|/)server/log(?:_fl)?\.txt$", label):
+            continue
+        path = _workspace_artifact_path(run, item)
+        if not path or not path.exists():
+            continue
+        root = _runtime_attempt_root(label)
+        if not root:
+            continue
+        try:
+            mtime_ns = int(item.get("source_mtime_ns") or path.stat().st_mtime_ns)
+        except (OSError, TypeError, ValueError):
+            mtime_ns = 0
+        text = read_text(path, max_bytes=128_000)
+        log_priority = 1 if label.endswith("/log_fl.txt") else 0
+        candidate = {
+            "root": root,
+            "label": label,
+            "text": text,
+            "mtime_ns": mtime_ns,
+            "item_index": item_index,
+            "log_priority": log_priority,
+        }
+        current = attempts.get(root)
+        if current is None or (log_priority, mtime_ns, item_index) > (
+            current["log_priority"],
+            current["mtime_ns"],
+            current["item_index"],
+        ):
+            attempts[root] = candidate
+    return sorted(
+        attempts.values(),
+        key=lambda attempt: (attempt["mtime_ns"], attempt["item_index"], attempt["root"]),
+        reverse=True,
+    )
+
+
+def _attempt_artifact_texts(
+    run: dict[str, Any],
+    attempt_root: str,
+    pattern: str,
+    *,
+    max_bytes: int = 128_000,
+) -> list[tuple[str, str]]:
+    texts = []
+    prefix = attempt_root.rstrip("/") + "/"
+    for item in _runtime_artifacts(run):
+        label = _artifact_label(item).replace("\\", "/")
+        if not label.startswith(prefix) or not re.search(pattern, label):
+            continue
+        path = _workspace_artifact_path(run, item)
+        if path and path.exists():
+            texts.append((label, read_text(path, max_bytes=max_bytes)))
+    return texts
+
+
+def _attempt_artifact_present(run: dict[str, Any], attempt_root: str, pattern: str) -> bool:
+    prefix = attempt_root.rstrip("/") + "/"
+    return any(
+        (label := _artifact_label(item).replace("\\", "/")).startswith(prefix) and re.search(pattern, label)
+        for item in _runtime_artifacts(run)
+    )
+
+
+def _attempt_has_tensor_decomposer_registration(run: dict[str, Any], attempt_root: str) -> bool:
+    for _label, text in _attempt_artifact_texts(
+        run,
+        attempt_root,
+        r"(^|/)custom/client\.py$",
+        max_bytes=128_000,
+    ):
+        if re.search(r"\bfobs\.register\s*\(\s*TensorDecomposer\s*\)", text):
+            return True
+    return False
+
+
+def _attempt_client_executor_evidence(run: dict[str, Any], attempt_root: str) -> dict[str, str]:
+    configs = sorted(
+        _attempt_artifact_texts(
+            run,
+            attempt_root,
+            r"(^|/)site-[^/]+/simulate_job/app_site-[^/]+/config/config_fed_client\.json$",
+            max_bytes=64_000,
+        )
+    )
+    for label, text in configs:
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError):
+            continue
+        executors = payload.get("executors") if isinstance(payload, dict) else None
+        for entry in executors if isinstance(executors, list) else []:
+            executor = entry.get("executor") if isinstance(entry, dict) else None
+            if not isinstance(executor, dict):
+                continue
+            args = executor.get("args") if isinstance(executor.get("args"), dict) else {}
+            executor_path = str(executor.get("path") or "")
+            execution_mode = str(args.get("execution_mode") or "")
+            params_format = str(args.get("params_exchange_format") or args.get("server_expected_format") or "")
+            if executor_path:
+                return {
+                    "source": label,
+                    "path": executor_path,
+                    "execution_mode": execution_mode,
+                    "params_format": params_format,
+                }
+    return {}
+
+
+def _runtime_attempt_failure_details(run: dict[str, Any], attempt_root: str) -> dict[str, Any]:
+    error_logs = _attempt_artifact_texts(
+        run,
+        attempt_root,
+        r"(^|/)(?:server|site-[^/]+)/error_log\.txt$",
+        max_bytes=64_000,
+    )
+    nonempty = sorted((label, text) for label, text in error_logs if text.strip())
+    if not nonempty:
+        return {}
+    combined = "\n".join(text for _label, text in nonempty)
+    dot_handler = re.search(
+        r"cannot find handler for Datum Object Type\s+6",
+        combined,
+        flags=re.IGNORECASE,
+    )
+    sites = sorted(
+        {
+            match.group(2)
+            for label, _text in nonempty
+            if (match := re.search(r"(^|/)(site-[^/]+)/error_log\.txt$", label, re.IGNORECASE))
+        }
+    )
+    site_phrase = f" on {len(sites)} client site(s)" if sites else ""
+    if dot_handler:
+        source_label = ""
+        source_line = 0
+        source_quote = ""
+        for label, text in nonempty:
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if re.search(r"cannot find handler for Datum Object Type\s+6", line, re.IGNORECASE):
+                    source_label = label
+                    source_line = line_number
+                    source_quote = "cannot find handler for Datum Object Type 6"
+                    break
+            if source_label:
+                break
+        executor = _attempt_client_executor_evidence(run, attempt_root)
+        generic_in_process = (
+            str(executor.get("path") or "").endswith(".ClientAPIExecutor")
+            and executor.get("execution_mode") == "in_process"
+        )
+        pytorch_exchange = str(executor.get("params_format") or "").lower() == "pytorch"
+        client_registered = _attempt_has_tensor_decomposer_registration(run, attempt_root)
+        if generic_in_process and pytorch_exchange and not client_registered:
+            cause = (
+                "NVFLARE's generic in-process `ClientAPIExecutor` did not register the PyTorch "
+                f"`TensorDecomposer`, so tensor download deserialization failed{site_phrase}: "
+                "`cannot find handler for Datum Object Type 6` (DOT 6 is TENSOR_DOWNLOAD)"
+            )
+        else:
+            cause = (
+                f"PyTorch tensor download deserialization failed{site_phrase}: "
+                "`cannot find handler for Datum Object Type 6` "
+                "(the DOT 6/TENSOR_DOWNLOAD TensorDecomposer handler was not registered)"
+            )
+        return {
+            "cause": cause,
+            "error_source": source_label,
+            "error_line": source_line,
+            "error_quote": source_quote,
+            "executor": executor,
+            "affected_sites": sites,
+        }
+    first_line = next(
+        (line.strip() for _label, text in nonempty for line in text.splitlines() if line.strip()),
+        "",
+    )
+    return {
+        "cause": f"runtime error{site_phrase}: {truncate(first_line, 180)}" if first_line else "",
+        "error_source": nonempty[0][0],
+        "error_line": 1,
+        "error_quote": first_line,
+        "executor": _attempt_client_executor_evidence(run, attempt_root),
+        "affected_sites": sites,
+    }
+
+
+def _runtime_attempt_failure_cause(run: dict[str, Any], attempt_root: str) -> str:
+    return str(_runtime_attempt_failure_details(run, attempt_root).get("cause") or "")
+
+
+def _recovered_runtime_attempt_details(run: dict[str, Any]) -> dict[str, Any]:
+    attempts = _runtime_attempt_server_logs(run)
+    if len(attempts) < 2 or not _runtime_log_finished(str(attempts[0]["text"])):
+        return {}
+    latest = attempts[0]
+    for earlier in attempts[1:]:
+        if _runtime_log_finished(str(earlier["text"])):
+            continue
+        failure = _runtime_attempt_failure_details(run, str(earlier["root"]))
+        cause = str(failure.get("cause") or "")
+        if not cause:
+            continue
+        return {
+            "cause": cause,
+            "error_source": str(failure.get("error_source") or ""),
+            "error_line": int(failure.get("error_line") or 0),
+            "error_quote": str(failure.get("error_quote") or ""),
+            "executor": failure.get("executor") if isinstance(failure.get("executor"), dict) else {},
+            "earlier_root": str(earlier["root"]),
+            "latest_root": str(latest["root"]),
+            "later_registered_tensor_decomposer": _attempt_has_tensor_decomposer_registration(run, str(latest["root"])),
+            "metrics_summary_captured": _attempt_artifact_present(
+                run,
+                str(latest["root"]),
+                r"(^|/)server/simulate_job/metrics/metrics_summary\.json$",
+            ),
+        }
+    return {}
+
+
+def _recovered_runtime_attempt_failure(run: dict[str, Any]) -> str:
+    details = _recovered_runtime_attempt_details(run)
+    if not details:
+        return ""
+    summary = f"earlier NVFLARE attempt failed because {details['cause']}; the successful later attempt "
+    if details["later_registered_tensor_decomposer"]:
+        summary += "explicitly registered `TensorDecomposer` and "
+    summary += "reached `Finished`"
+    if not details["metrics_summary_captured"]:
+        summary += "; `metrics_summary.json` was not captured from the successful attempt"
+    return summary
+
+
+def _recovered_runtime_attempt_root_cause_block(run: dict[str, Any]) -> str:
+    details = _recovered_runtime_attempt_details(run)
+    if not details:
+        return ""
+    successful_evidence = "reached `Finished`"
+    if details["later_registered_tensor_decomposer"]:
+        successful_evidence = "registered `TensorDecomposer` before `flare.init()` and reached `Finished`"
+    metrics_evidence = (
+        "`metrics_summary.json` was captured"
+        if details["metrics_summary_captured"]
+        else "`metrics_summary.json` was not captured; this is a result-artifact gap, not an execution failure"
+    )
+    error_source = str(details.get("error_source") or "")
+    error_line = int(details.get("error_line") or 0)
+    error_reference = f"{error_source}:{error_line}" if error_source and error_line else error_source
+    executor = details.get("executor") if isinstance(details.get("executor"), dict) else {}
+    executor_finding = ""
+    if executor:
+        executor_finding = (
+            f"`{executor.get('path')}` with `execution_mode={executor.get('execution_mode')}` "
+            f"and `params_exchange_format={executor.get('params_format')}`"
+        )
+    lines = [
+        "**Recovered NVFLARE attempt root cause**",
+        "",
+        f"The first simulation attempt failed because {details['cause']}. "
+        "A later attempt corrected the tensor handler registration and completed, so the recovered failure "
+        "must not determine the final job status.",
+        "",
+        "| Attempt evidence | Finding |",
+        "|---|---|",
+        (f"| Earlier attempt `{markdown_cell(details['earlier_root'])}` | " f"{markdown_cell(details['cause'])} |"),
+    ]
+    if error_reference:
+        lines.append(
+            f"| Client error `{markdown_cell(error_reference)}` | "
+            f"`{markdown_cell(details.get('error_quote') or '')}` |"
+        )
+    if executor_finding:
+        lines.append(
+            f"| Executor config `{markdown_cell(executor.get('source') or '')}` | "
+            f"{markdown_cell(executor_finding)} |"
+        )
+    lines.extend(
+        [
+            (
+                f"| Successful attempt `{markdown_cell(details['latest_root'])}` | "
+                f"{markdown_cell(successful_evidence)} |"
+            ),
+            f"| Result artifact | {markdown_cell(metrics_evidence)} |",
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
 def _runtime_artifact_present(run: dict[str, Any], pattern: str) -> bool:
@@ -2567,6 +2889,12 @@ def _metrics_artifact_summary(run: dict[str, Any]) -> str:
 
 
 def _error_log_summary(run: dict[str, Any]) -> str:
+    attempts = _runtime_attempt_server_logs(run)
+    if attempts:
+        attempt = attempts[0]
+        attempt_cause = _runtime_attempt_failure_cause(run, str(attempt["root"]))
+        if attempt_cause:
+            return attempt_cause
     _label, text = _read_runtime_artifact(run, r"(^|/)server/error_log\.txt$", max_bytes=32_000)
     if text == "":
         if _runtime_artifact_present(run, r"(^|/)server/error_log\.txt$"):
@@ -2633,6 +2961,9 @@ def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
     blocked_count = bash_permission_denial_count(run)
     if blocked_count:
         parts.append(f"Bash/tool permission was blocked {blocked_count} time(s) before a later job command completed")
+    runtime_recovery = _recovered_runtime_attempt_failure(run)
+    if runtime_recovery:
+        parts.append(runtime_recovery)
     for event in agent_command_events(run):
         if not command_failed(event) or not is_material_failed_command(event):
             continue
@@ -2643,7 +2974,7 @@ def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
         missing_module = missing_python_module_name(output)
         if missing_module:
             parts.append(_missing_module_recovery_summary(run, event, missing_module))
-        else:
+        elif not runtime_recovery or command_error_summary(output) != "no command output captured":
             parts.append(f"earlier command failure was recovered ({truncate(command_error_summary(output), 160)})")
         break
     return "; ".join(parts)

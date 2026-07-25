@@ -186,6 +186,7 @@ def test_runtime_artifact_capture_preserves_generic_workspace_json(tmp_path):
     assert [item["path"] for item in manifest["runtime_artifacts"]] == [
         "runtime_workspaces/job_a/server/simulate_job/metrics/custom_results.json"
     ]
+    assert manifest["runtime_artifacts"][0]["source_mtime_ns"] == runtime_metric.stat().st_mtime_ns
 
 
 def test_metric_artifact_parser_reads_generic_json_shape(tmp_path):
