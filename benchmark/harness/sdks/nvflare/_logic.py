@@ -713,6 +713,17 @@ def _output_mentions_nvflare_package_path(output: str) -> bool:
     )
 
 
+def _output_contains_successful_nvflare_import_probe(output: str) -> bool:
+    """Return whether a diagnostic explicitly reports an NVFLARE import as OK."""
+
+    return bool(
+        re.search(
+            r"(?m)^\s*nvflare(?:\.[A-Za-z_][A-Za-z0-9_]*)+\s+" r"[A-Za-z_][A-Za-z0-9_]*\s+OK\b",
+            strip_ansi(output),
+        )
+    )
+
+
 def _output_mentions_version(value: str) -> bool:
     return bool(re.search(r"\b(?:\d+!)?\d+(?:\.\d+)+(?:[A-Za-z0-9_.!+-]*)?\b", str(value or "")))
 
@@ -740,6 +751,8 @@ def _nvflare_package_available_for_missing_submodule(run: dict[str, Any], event:
         command = str(candidate.get("command") or "")
         output = str(candidate.get("output") or "")
         if command_succeeded(candidate) and _command_output_proves_nvflare_import(command, output):
+            return True
+        if command_succeeded(candidate) and _output_contains_successful_nvflare_import_probe(output):
             return True
         if _output_mentions_nvflare_package_path(output):
             return True
@@ -792,6 +805,97 @@ def _nvflare_runtime_command_error_summary(output: str) -> str:
     return ""
 
 
+def _python_from_imports(command: str) -> list[tuple[str, str]]:
+    """Return ``(module, name)`` bindings from inline Python in a command."""
+
+    imports: list[tuple[str, str]] = []
+    for segment in _shell_command_segments(command):
+        for source in _python_inline_sources_from_segment(segment):
+            try:
+                tree = ast.parse(source)
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ImportFrom) or not node.module:
+                    continue
+                imports.extend((node.module, alias.name) for alias in node.names if alias.name != "*")
+    return imports
+
+
+def _later_import_failure_evidence(event: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, str]:
+    """Recover a blank import failure from a bounded later diagnostic probe.
+
+    Some Codex command events contain ``exit_code=1`` but an empty
+    ``aggregated_output``.  A later diagnostic command can still preserve the
+    exact missing module and the corrected import path.  Only explicit probe
+    output is accepted; a merely changed source file is not enough evidence.
+    """
+
+    imports = _python_from_imports(str(event.get("command") or ""))
+    if not imports:
+        return {}
+    failed_index = int(event.get("index") or 0)
+    successful_candidates = 0
+    for candidate in events:
+        if int(candidate.get("index") or 0) <= failed_index or not command_succeeded(candidate):
+            continue
+        successful_candidates += 1
+        output = strip_ansi(str(candidate.get("output") or ""))
+        missing_module = missing_python_module_name(output)
+        for module_name, imported_name in imports:
+            if missing_module != module_name:
+                continue
+            replacement = ""
+            replacement_match = re.search(
+                rf"(?m)^\s*(?P<module>[A-Za-z_][A-Za-z0-9_.]*)\s+" rf"{re.escape(imported_name)}\s+OK\b",
+                output,
+            )
+            if replacement_match and replacement_match.group("module") != module_name:
+                replacement = replacement_match.group("module")
+            root_cause = f"ModuleNotFoundError: No module named '{module_name}'"
+            if replacement:
+                root_cause += (
+                    f"; `{imported_name}` is available from `{replacement}` " "(captured by a later diagnostic command)"
+                )
+            else:
+                root_cause += " (captured by a later diagnostic command)"
+            return {
+                "missing_module": module_name,
+                "imported_name": imported_name,
+                "replacement_module": replacement,
+                "root_cause": root_cause,
+            }
+        if successful_candidates >= 12:
+            break
+    return {}
+
+
+def _command_failure_evidence(event: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, str]:
+    command = str(event.get("command") or "")
+    output = str(event.get("output") or "")
+    evidence = {
+        "missing_module": missing_python_module_name(output),
+        "root_cause": command_failure_root_cause(command, output),
+    }
+    if evidence["root_cause"] != "no command output captured":
+        return evidence
+    inferred = _later_import_failure_evidence(event, events)
+    return inferred or evidence
+
+
+def _selected_command_failure_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply one selection policy to both failure rows and recovered summaries."""
+
+    failed_events = [event for event in events if command_failed(event)]
+    material_events = [event for event in failed_events if is_material_failed_command(event)]
+    return material_events or [
+        event
+        for event in failed_events
+        if "git status" not in str(event.get("command") or "")
+        and "rg: command not found" not in str(event.get("output") or "")
+    ]
+
+
 def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
     """Realized command-failure diagnostic rows for a run (SDK interpretation).
 
@@ -799,14 +903,7 @@ def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
     (the renderer applies any display limit), so the derived view stays complete.
     """
     events = agent_command_events(run)
-    failed_events = [event for event in events if command_failed(event)]
-    material_events = [event for event in failed_events if is_material_failed_command(event)]
-    selected_events = material_events or [
-        event
-        for event in failed_events
-        if "git status" not in str(event.get("command") or "")
-        and "rg: command not found" not in str(event.get("output") or "")
-    ]
+    selected_events = _selected_command_failure_events(events)
     diagnostics = []
     for event in selected_events:
         command = str(event.get("command") or "")
@@ -818,8 +915,9 @@ def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
         else:
             recovery = "not recovered in this run"
         dependency_evidence = ""
-        missing_module = missing_python_module_name(output)
-        root_cause = command_failure_root_cause(command, output)
+        failure_evidence = _command_failure_evidence(event, events)
+        missing_module = failure_evidence.get("missing_module", "")
+        root_cause = failure_evidence["root_cause"]
         if is_simulation_or_job_command(command) and not _has_exact_command_flag(command, "--export"):
             runtime_details = _recovered_runtime_attempt_details(run)
             runtime_cause = (
@@ -3008,15 +3106,22 @@ def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
         parts.append(runtime_recovery)
     recovered_causes = []
     events = agent_command_events(run)
-    for event in events:
-        if not command_failed(event) or not is_material_failed_command(event):
-            continue
+    for event in _selected_command_failure_events(events):
         if not (recovered_by_later_success(event, events) or recovered_by_later_successful_job(event, events)):
             continue
         output = str(event.get("output") or "")
-        missing_module = missing_python_module_name(output)
+        failure_evidence = _command_failure_evidence(event, events)
+        missing_module = failure_evidence.get("missing_module", "")
         if missing_module:
-            recovered_causes.append(_missing_module_recovery_summary(run, event, missing_module))
+            replacement_module = failure_evidence.get("replacement_module", "")
+            imported_name = failure_evidence.get("imported_name", "")
+            if replacement_module and imported_name:
+                recovered_causes.append(
+                    f"earlier incorrect NVFLARE import path `{missing_module}` was recovered "
+                    f"(`{imported_name}` is available from `{replacement_module}`)"
+                )
+            else:
+                recovered_causes.append(_missing_module_recovery_summary(run, event, missing_module))
         elif (
             runtime_recovery
             and is_simulation_or_job_command(str(event.get("command") or ""))
@@ -3027,7 +3132,7 @@ def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
             continue
         elif not runtime_recovery or command_error_summary(output) != "no command output captured":
             command = str(event.get("command") or "")
-            root_cause = command_failure_root_cause(command, output)
+            root_cause = failure_evidence["root_cause"]
             if is_simulation_or_job_command(command) and not _has_exact_command_flag(command, "--export"):
                 runtime_details = _recovered_runtime_attempt_details(run)
                 runtime_cause = (

@@ -4062,7 +4062,7 @@ def test_reported_expected_metric_earns_partial_credit():
             metric_value_entry(0.7037, "AUROC"),
             metric_value_entry(0.6369, "accuracy"),
             metric_value_entry(0.5434, "loss"),
-        ],
+            ],
     )
     signal = {
         "status": "partial",
@@ -7278,6 +7278,92 @@ def test_recovered_python_heredocs_report_distinct_statements_and_terminal_cause
     assert "AssertionError (failed assertion:" in summary
 
 
+def test_blank_failed_import_uses_bounded_later_diagnostic_for_root_cause():
+    from benchmark.harness.sdks.nvflare._logic import (
+        command_failure_rows,
+        completed_job_recovered_issue_summary,
+    )
+
+    failed_import = {
+        "item": {
+            # Codex occasionally reports a non-zero command with no
+            # aggregated_output. This mirrors run 20260725_133017_745846.
+            "aggregated_output": "",
+            "command": (
+                "/bin/bash -lc \"python3 - <<'PY'\n"
+                "from nvflare.app_env import SimEnv\n"
+                "import inspect\n"
+                "print(inspect.signature(SimEnv))\n"
+                'PY"'
+            ),
+            "exit_code": 1,
+            "id": "item_1",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    later_diagnostic = {
+        "item": {
+            "aggregated_output": (
+                "nvflare.recipe SimEnv OK <class 'nvflare.recipe.sim_env.SimEnv'>\n"
+                "nvflare.app_env SimEnv ModuleNotFoundError No module named 'nvflare.app_env'\n"
+            ),
+            "command": (
+                "/bin/bash -lc \"python3 - <<'PY'\n"
+                "for module in ('nvflare.recipe', 'nvflare.app_env'):\n"
+                "    try:\n"
+                "        obj = getattr(__import__(module, fromlist=['SimEnv']), 'SimEnv')\n"
+                "        print(module, 'SimEnv', 'OK', obj)\n"
+                "    except Exception as e:\n"
+                "        print(module, 'SimEnv', type(e).__name__, e)\n"
+                'PY"'
+            ),
+            "exit_code": 0,
+            "id": "item_2",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    corrected_probe = {
+        "item": {
+            "aggregated_output": "SimEnv (*, num_clients: int = 0)\n",
+            "command": (
+                "/bin/bash -lc \"python3 - <<'PY'\n"
+                "from nvflare.recipe import SimEnv\n"
+                "import inspect\n"
+                "print(inspect.signature(SimEnv))\n"
+                'PY"'
+            ),
+            "exit_code": 0,
+            "id": "item_3",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join(
+            json.dumps(event) for event in (failed_import, later_diagnostic, corrected_probe)
+        ),
+    }
+
+    rows = command_failure_rows(run)
+
+    assert len(rows) == 1
+    assert rows[0]["root_cause"] == (
+        "ModuleNotFoundError: No module named 'nvflare.app_env'; "
+        "`SimEnv` is available from `nvflare.recipe` (captured by a later diagnostic command)"
+    )
+    assert rows[0]["dependency"] == (
+        "installed top-level `nvflare` package was available; failure was an incorrect import path"
+    )
+    assert "no command output captured" not in rows[0]["root_cause"]
+    assert completed_job_recovered_issue_summary(run) == (
+        "earlier incorrect NVFLARE import path `nvflare.app_env` was recovered "
+        "(`SimEnv` is available from `nvflare.recipe`)"
+    )
+
+
 def test_compound_job_failure_keeps_runtime_cause_and_final_shell_error():
     from benchmark.harness.sdks.nvflare._logic import command_failure_rows, job_run_status
 
@@ -7430,7 +7516,7 @@ def test_metrics_report_surfaces_recovered_issues_for_passed_run(tmp_path):
                     },
                     "activity": {"command_count": 4},
                 }
-            ],
+        ],
         "comparison": {},
     }
 
