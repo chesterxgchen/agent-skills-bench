@@ -55,6 +55,7 @@ from ...reports._events import (
     as_number,
     bash_permission_denial_count,
     command_error_summary,
+    command_failure_root_cause,
     command_failed,
     command_recovery_key,
     command_succeeded,
@@ -63,6 +64,7 @@ from ...reports._events import (
     dependency_install_evidence,
     dependency_install_evidence_brief,
     exit_code,
+    failed_command_inline_text,
     failure_evidence,
     fmt_seconds_with_unit,
     inline_code_text,
@@ -266,6 +268,17 @@ def structure_score(run: dict[str, Any]) -> float | None:
 
 
 # --- NVFLARE command / job / simulator classification (step 5) --------------
+
+
+def _has_exact_command_flag(command: str, flag: str) -> bool:
+    """Match a CLI flag without treating ``--export-dir`` as ``--export``."""
+
+    return bool(
+        re.search(
+            rf"(?<![A-Za-z0-9_-]){re.escape(flag)}(?![A-Za-z0-9_-])",
+            str(command or ""),
+        )
+    )
 
 
 def _python_script_name_from_segment(command: str) -> str:
@@ -761,6 +774,24 @@ def _missing_module_recovery_summary(run: dict[str, Any], event: dict[str, Any],
     )
 
 
+def _nvflare_runtime_command_error_summary(output: str) -> str:
+    """Extract the execution failure from a compound NVFLARE command's output."""
+
+    text = strip_ansi(output)
+    dot6 = re.search(r"cannot find handler for Datum Object Type\s+6", text, flags=re.IGNORECASE)
+    if dot6:
+        return "`cannot find handler for Datum Object Type 6` (DOT 6 is TENSOR_DOWNLOAD)"
+    patterns = (
+        r"ERROR - in-process trainer[^\n]+",
+        r"FATAL_SYSTEM_ERROR received:[^\n]+",
+        r"Abort signal triggered[^\n]*",
+    )
+    for pattern in patterns:
+        if match := re.search(pattern, text, flags=re.IGNORECASE):
+            return truncate(match.group(0).strip(), 320)
+    return ""
+
+
 def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
     """Realized command-failure diagnostic rows for a run (SDK interpretation).
 
@@ -788,14 +819,23 @@ def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
             recovery = "not recovered in this run"
         dependency_evidence = ""
         missing_module = missing_python_module_name(output)
-        root_cause = command_error_summary(output)
-        if (
-            root_cause == "no command output captured"
-            and is_simulation_or_job_command(command)
-            and "--export" not in command
-            and (runtime_details := _recovered_runtime_attempt_details(run))
-        ):
-            root_cause = str(runtime_details["cause"])
+        root_cause = command_failure_root_cause(command, output)
+        if is_simulation_or_job_command(command) and not _has_exact_command_flag(command, "--export"):
+            runtime_details = _recovered_runtime_attempt_details(run)
+            runtime_cause = (
+                str(runtime_details.get("cause") or "")
+                if runtime_details
+                else _nvflare_runtime_command_error_summary(output)
+            )
+            if runtime_cause:
+                terminal_error = root_cause
+                root_cause = runtime_cause
+                if (
+                    terminal_error != "no command output captured"
+                    and terminal_error not in runtime_cause
+                    and runtime_cause not in terminal_error
+                ):
+                    root_cause = f"{runtime_cause}; final shell error: {terminal_error}"
         if missing_module:
             dependency_evidence = _missing_module_dependency_evidence(run, event, missing_module)
             timing_reason = _missing_module_timing_reason(run, event, missing_module)
@@ -803,7 +843,7 @@ def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
                 root_cause = f"{root_cause}; {timing_reason}"
         diagnostics.append(
             {
-                "command": inline_code_text(command, 180),
+                "command": failed_command_inline_text(command, output, 180),
                 "exit": str(event.get("exit_code")),
                 "recovery": recovery,
                 "root_cause": root_cause,
@@ -1290,7 +1330,7 @@ def last_successful_job_event(run: dict[str, Any]) -> dict[str, Any] | None:
     for event in reversed(agent_command_events(run)):
         if job_command_succeeded(event):
             command = str(event.get("command") or "")
-            if "--help" not in command and "--export" not in command:
+            if "--help" not in command and not _has_exact_command_flag(command, "--export"):
                 return event
     return None
 
@@ -1432,7 +1472,7 @@ def job_run_status(run: dict[str, Any]) -> str:
         event
         for event in agent_command_events(run)
         if "--help" not in str(event.get("command") or "")
-        and "--export" not in str(event.get("command") or "")
+        and not _has_exact_command_flag(str(event.get("command") or ""), "--export")
         and (
             is_simulation_or_job_command(str(event.get("command") or ""))
             or invokes_nvflare_simulator(str(event.get("command") or ""), str(event.get("output") or ""))
@@ -1441,7 +1481,9 @@ def job_run_status(run: dict[str, Any]) -> str:
     attempted_commands = [
         command
         for command in commands_for_run(run)
-        if is_simulation_or_job_command(command) and "--help" not in command and "--export" not in command
+        if is_simulation_or_job_command(command)
+        and "--help" not in command
+        and not _has_exact_command_flag(command, "--export")
     ]
     attempted = bool(executed_events or attempted_commands)
     # Successful evidence (a completed job command or a runtime metric artifact) must win over
@@ -2964,19 +3006,48 @@ def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
     runtime_recovery = _recovered_runtime_attempt_failure(run)
     if runtime_recovery:
         parts.append(runtime_recovery)
-    for event in agent_command_events(run):
+    recovered_causes = []
+    events = agent_command_events(run)
+    for event in events:
         if not command_failed(event) or not is_material_failed_command(event):
             continue
-        events = agent_command_events(run)
         if not (recovered_by_later_success(event, events) or recovered_by_later_successful_job(event, events)):
             continue
         output = str(event.get("output") or "")
         missing_module = missing_python_module_name(output)
         if missing_module:
-            parts.append(_missing_module_recovery_summary(run, event, missing_module))
+            recovered_causes.append(_missing_module_recovery_summary(run, event, missing_module))
+        elif (
+            runtime_recovery
+            and is_simulation_or_job_command(str(event.get("command") or ""))
+            and not _has_exact_command_flag(str(event.get("command") or ""), "--export")
+        ):
+            # The attempt-aware summary above already describes this recovered
+            # runtime failure with its earlier/later artifact evidence.
+            continue
         elif not runtime_recovery or command_error_summary(output) != "no command output captured":
-            parts.append(f"earlier command failure was recovered ({truncate(command_error_summary(output), 160)})")
-        break
+            command = str(event.get("command") or "")
+            root_cause = command_failure_root_cause(command, output)
+            if is_simulation_or_job_command(command) and not _has_exact_command_flag(command, "--export"):
+                runtime_details = _recovered_runtime_attempt_details(run)
+                runtime_cause = (
+                    str(runtime_details.get("cause") or "")
+                    if runtime_details
+                    else _nvflare_runtime_command_error_summary(output)
+                )
+                if runtime_cause:
+                    root_cause = runtime_cause
+            recovered_causes.append(truncate(root_cause, 160))
+    if len(recovered_causes) == 1:
+        cause = recovered_causes[0]
+        if cause.startswith("earlier "):
+            parts.append(cause)
+        else:
+            parts.append(f"earlier command failure was recovered ({cause})")
+    elif recovered_causes:
+        parts.append(
+            f"{len(recovered_causes)} earlier command failures were recovered " f"({'; '.join(recovered_causes)})"
+        )
     return "; ".join(parts)
 
 
@@ -2986,7 +3057,7 @@ def _successful_job_spans(run: dict[str, Any]) -> list[dict[str, Any]]:
         for span in agent_command_spans(run)
         if job_command_succeeded(span)
         and "--help" not in str(span.get("command") or "")
-        and "--export" not in str(span.get("command") or "")
+        and not _has_exact_command_flag(str(span.get("command") or ""), "--export")
     ]
 
 

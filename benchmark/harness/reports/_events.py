@@ -95,6 +95,59 @@ def inline_code_text(value: Any, limit: int = 180) -> str:
     return truncate(text, limit)
 
 
+def _python_heredoc_bodies(command: str) -> list[list[str]]:
+    """Return shell heredoc bodies captured in a command."""
+
+    bodies = []
+    raw = str(command or "")
+    cursor = 0
+    while header := re.search(
+        r"<<\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1(?:\r?\n)",
+        raw[cursor:],
+    ):
+        marker = header.group(2)
+        body_start = cursor + header.end()
+        lines = raw[body_start:].splitlines()
+        body = []
+        consumed = 0
+        for line in lines:
+            consumed += len(line) + 1
+            # A command captured from ``bash -lc "..."`` retains the outer
+            # closing quote after the final heredoc marker.
+            if re.fullmatch(rf"{re.escape(marker)}[\"']?", line.strip()):
+                break
+            body.append(line)
+        else:
+            break
+        bodies.append(body)
+        cursor = body_start + consumed
+    return bodies
+
+
+def _python_heredoc_lines(command: str) -> list[str]:
+    """Return an unambiguous Python heredoc body."""
+
+    bodies = _python_heredoc_bodies(command)
+    return bodies[0] if len(bodies) == 1 else []
+
+
+def _stdin_traceback_line(output: str) -> int | None:
+    matches = re.findall(r'File "<stdin>", line ([0-9]+)', strip_ansi(output))
+    return int(matches[-1]) if matches else None
+
+
+def failed_command_inline_text(command: str, output: str, limit: int = 180) -> str:
+    """Summarize a failed command without making every heredoc look identical."""
+
+    line_number = _stdin_traceback_line(output)
+    heredoc_lines = _python_heredoc_lines(command)
+    if line_number is not None and 0 < line_number <= len(heredoc_lines):
+        statement = heredoc_lines[line_number - 1].strip()
+        if statement:
+            return truncate(f"python heredoc line {line_number}: {statement}", limit)
+    return inline_code_text(command, limit)
+
+
 def exit_code(run: dict[str, Any]) -> int | None:
     summary = run.get("run") if isinstance(run.get("run"), dict) else {}
     container_exit = run.get("container_exit") if isinstance(run.get("container_exit"), dict) else {}
@@ -927,8 +980,38 @@ def missing_python_module_name(output: str) -> str:
 
 def command_error_summary(output: str) -> str:
     text = strip_ansi(output)
+    # When Python emits a traceback, the last exception line is the terminal
+    # failure. Looking for the first line containing "traceback" loses the
+    # actual cause, and looking for exception types in a fixed priority order
+    # can select an earlier chained exception.
+    python_exceptions = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = re.match(
+            r"(?P<type>(?:[A-Za-z_][A-Za-z0-9_]*\.)*"
+            r"[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Interrupt))"
+            r"(?::\s*(?P<message>.*))?$",
+            stripped,
+        )
+        if match:
+            exception_type = match.group("type").rsplit(".", 1)[-1]
+            message = match.group("message")
+            python_exceptions.append(f"{exception_type}: {message}" if message else exception_type)
+    if python_exceptions:
+        selected = python_exceptions[-1]
+        # Agent helpers often catch a concrete Python error and then emit a
+        # generic runner wrapper. Preserve the actionable underlying error.
+        if len(python_exceptions) > 1 and re.match(
+            r"RuntimeError: (?:Simulator|Simulation|Job|Command|subprocess)\b.*\bfailed\b",
+            selected,
+            flags=re.IGNORECASE,
+        ):
+            selected = python_exceptions[-2]
+        return truncate(selected, 320)
     patterns = (
         r"TypeError: [^\n]+",
+        r"ValueError: [^\n]+",
+        r"AssertionError(?:: [^\n]+)?",
         r"ConfigError: [^\n]+",
         r"RuntimeError: [^\n]+",
         r"ModuleNotFoundError: [^\n]+",
@@ -951,6 +1034,45 @@ def command_error_summary(output: str) -> str:
         if any(token in lowered for token in ("error", "failed", "traceback", "missing", "not found")):
             return truncate(line, 320)
     return truncate(text, 320) if text.strip() else "no command output captured"
+
+
+def command_failure_root_cause(command: str, output: str) -> str:
+    """Return the terminal error plus the most relevant captured source frame."""
+
+    text = strip_ansi(output)
+    summary = command_error_summary(text)
+    frames = [
+        (path, int(line_number), (function or "").strip())
+        for path, line_number, function in re.findall(
+            r'^\s*File "([^"]+)", line ([0-9]+)(?:, in ([^\n]+))?',
+            text,
+            flags=re.MULTILINE,
+        )
+    ]
+    source_frames = [
+        frame
+        for frame in frames
+        if frame[0] != "<stdin>"
+        and "/site-packages/" not in frame[0]
+        and "/workspace/venv/" not in frame[0]
+        and not frame[0].startswith(("<frozen ", "/usr/", "/opt/"))
+        and Path(frame[0]).suffix not in {".pyx", ".pxd"}
+    ]
+    if source_frames:
+        path, line_number, function = source_frames[-1]
+        location = f"{Path(path).name}:{line_number}"
+        if function:
+            location += f" in {function}"
+        return truncate(f"{summary} ({location})", 420)
+
+    stdin_line = _stdin_traceback_line(text)
+    heredoc_lines = _python_heredoc_lines(command)
+    if stdin_line is not None and 0 < stdin_line <= len(heredoc_lines):
+        statement = heredoc_lines[stdin_line - 1].strip()
+        if statement:
+            label = "failed assertion" if summary == "AssertionError" else "Python statement"
+            return truncate(f"{summary} ({label}: {statement})", 420)
+    return summary
 
 
 def result_permission_denial_count(run: dict[str, Any]) -> int:

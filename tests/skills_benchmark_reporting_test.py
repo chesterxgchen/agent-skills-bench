@@ -7162,6 +7162,172 @@ def test_failure_analysis_formats_multiline_recovered_command_as_single_line():
     assert "print('check')\nEOF" not in section
 
 
+def test_recovered_python_heredocs_report_distinct_statements_and_terminal_causes():
+    from benchmark.harness.sdks.nvflare._logic import (
+        command_failure_rows,
+        completed_job_recovered_issue_summary,
+    )
+
+    def command(body: str) -> str:
+        return f"/bin/bash -lc \"python - <<'PY'\n{body}\nPY\""
+
+    recipe_command = command("from job import build_recipe\n" "args = object()\n" "recipe = build_recipe(args)")
+    partition_command = command(
+        "from client import stratified_site_partition\n"
+        "frame = object()\n"
+        "parts = [stratified_site_partition(frame, i, 3, 42) for i in range(3)]"
+    )
+    assertion_command = command(
+        "parts = [object(), object(), object()]\n"
+        "sizes = [len(part) for part in parts]\n"
+        "assert [len(part) for part in parts] == [1942, 1940, 1940]"
+    )
+    events = [
+        {
+            "item": {
+                "aggregated_output": (
+                    "Traceback (most recent call last):\n"
+                    '  File "<stdin>", line 3, in <module>\n'
+                    '  File "/workspace/run/with_skills/workspace/job.py", line 71, in build_recipe\n'
+                    "    recipe = FedAvgRecipe(\n"
+                    '  File "/workspace/venv/lib/python3.11/site-packages/nvflare/recipe/fedavg.py", '
+                    "line 417, in _resolve_model_filenames\n"
+                    '    raise ValueError("conflict")\n'
+                    "ValueError: Specify either best_model_filename or save_filename, "
+                    "not conflicting values for both.\n"
+                ),
+                "command": recipe_command,
+                "exit_code": 1,
+                "id": "item_1",
+                "status": "failed",
+                "type": "command_execution",
+            }
+        },
+        {
+            "item": {
+                "aggregated_output": (
+                    "Traceback (most recent call last):\n"
+                    '  File "<stdin>", line 3, in <module>\n'
+                    '  File "/workspace/run/with_skills/workspace/client.py", '
+                    "line 144, in stratified_site_partition\n"
+                    "    rng.shuffle(label_indices)\n"
+                    '  File "numpy/random/_generator.pyx", line 4849, '
+                    "in numpy.random._generator.Generator.shuffle\n"
+                    "ValueError: array is read-only\n"
+                ),
+                "command": partition_command,
+                "exit_code": 1,
+                "id": "item_2",
+                "status": "failed",
+                "type": "command_execution",
+            }
+        },
+        {
+            "item": {
+                "aggregated_output": (
+                    "Traceback (most recent call last):\n" '  File "<stdin>", line 3, in <module>\n' "AssertionError\n"
+                ),
+                "command": assertion_command,
+                "exit_code": 1,
+                "id": "item_3",
+                "status": "failed",
+                "type": "command_execution",
+            }
+        },
+        {
+            "item": {
+                "aggregated_output": "recipe construction and partition sanity: OK\n",
+                "command": recipe_command,
+                "exit_code": 0,
+                "id": "item_4",
+                "status": "completed",
+                "type": "command_execution",
+            }
+        },
+        {
+            "item": {
+                "aggregated_output": "partition size assertion: OK\n",
+                "command": assertion_command,
+                "exit_code": 0,
+                "id": "item_5",
+                "status": "completed",
+                "type": "command_execution",
+            }
+        },
+    ]
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join(json.dumps(event) for event in events),
+    }
+
+    rows = command_failure_rows(run)
+
+    assert [row["command"] for row in rows] == [
+        "python heredoc line 3: recipe = build_recipe(args)",
+        "python heredoc line 3: parts = [stratified_site_partition(frame, i, 3, 42) for i in range(3)]",
+        "python heredoc line 3: assert [len(part) for part in parts] == [1942, 1940, 1940]",
+    ]
+    assert rows[0]["root_cause"].endswith("(job.py:71 in build_recipe)")
+    assert rows[1]["root_cause"] == ("ValueError: array is read-only (client.py:144 in stratified_site_partition)")
+    assert rows[2]["root_cause"] == (
+        "AssertionError (failed assertion: assert [len(part) for part in parts] == [1942, 1940, 1940])"
+    )
+    summary = completed_job_recovered_issue_summary(run)
+    assert summary.startswith("3 earlier command failures were recovered")
+    assert "ValueError: array is read-only (client.py:144 in stratified_site_partition)" in summary
+    assert "AssertionError (failed assertion:" in summary
+
+
+def test_compound_job_failure_keeps_runtime_cause_and_final_shell_error():
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows, job_run_status
+
+    failed = {
+        "item": {
+            "aggregated_output": (
+                "2026-07-25 06:22:37 - ERROR - in-process trainer is no longer available "
+                "(reason: trainer thread exited without signaling ABORT); failing task 'train'\n"
+                "Traceback (most recent call last):\n"
+                '  File "<stdin>", line 2, in <module>\n'
+                "FileNotFoundError: missing exported/config_fed_server.json\n"
+            ),
+            "command": (
+                '/bin/bash -lc "python job.py --export-dir exported\n'
+                "python - <<'PY'\n"
+                "from pathlib import Path\n"
+                "Path('exported/config_fed_server.json').read_text()\n"
+                'PY"'
+            ),
+            "exit_code": 1,
+            "id": "item_1",
+            "status": "failed",
+            "type": "command_execution",
+        }
+    }
+    recovered = {
+        "item": {
+            "aggregated_output": "Finished FedAvg.\n",
+            "command": "python job.py --export-dir exported",
+            "exit_code": 0,
+            "id": "item_2",
+            "status": "completed",
+            "type": "command_execution",
+        }
+    }
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join(json.dumps(event) for event in (failed, recovered)),
+    }
+
+    rows = command_failure_rows(run)
+
+    assert len(rows) == 1
+    assert "in-process trainer is no longer available" in rows[0]["root_cause"]
+    assert "final shell error: FileNotFoundError: missing exported/config_fed_server.json" in rows[0]["root_cause"]
+    # ``--export-dir`` names an output location; it is not the export-only
+    # ``--export`` flag and must not hide a real job execution.
+    assert job_run_status(run) == "completed"
+
+
 def test_metrics_report_surfaces_recovered_issues_for_passed_run(tmp_path):
     from benchmark.harness.modes import WITH_SKILLS_MODE
     from benchmark.harness.reports import metrics_report
