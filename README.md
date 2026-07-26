@@ -124,7 +124,10 @@ Install or configure these on the host:
 
 ### Codex authentication
 
-Provide either `~/.codex/auth.json` + `~/.codex/config.toml`, or an API key:
+Provide either the files from an authenticated `~/.codex` home, or an API key.
+The harness mounts `auth.json`, `config.toml`, and, when present, the signed
+`cloud-config-bundle-cache.json` and `cloud-requirements-cache.json` files
+needed by ChatGPT workspace-managed accounts:
 
 ```bash
 export OPENAI_API_KEY=...
@@ -804,8 +807,56 @@ Codex auth not mounted
 Codex config not mounted
 ```
 
-Check `--agent-home`, `~/.codex/auth.json`, and `~/.codex/config.toml`, or set
+Check `--agent-home` and the mounted files from `~/.codex`, including the
+workspace policy cache files for workspace-managed accounts, or set
 `OPENAI_API_KEY`. Use `interactive` to inspect the container environment.
+
+Workspace-managed Codex policy failure:
+
+```text
+Error: Failed to load cloud config bundle (workspace-managed policies).
+```
+
+This happens before the first agent event when a ChatGPT workspace account is
+used without its signed policy caches. Confirm that the authenticated Codex
+home contains all four files:
+
+```bash
+ls ~/.codex/auth.json \
+   ~/.codex/config.toml \
+   ~/.codex/cloud-config-bundle-cache.json \
+   ~/.codex/cloud-requirements-cache.json
+```
+
+If the cache files are absent, start Codex on the host, authenticate to the
+intended workspace, and let its workspace configuration sync complete. Then
+rerun without `--no-agent-auth-mount`. Current harness versions mount both
+caches read-only when they exist and classify this error as
+`agent_cloud_config_failure`; older result records may show
+`agent_unknown_failure`.
+
+Codex image is older than the host CLI:
+
+```text
+The '<model>' model requires a newer version of Codex.
+```
+
+Compare the versions:
+
+```bash
+codex --version
+docker run --rm agent-skills-benchmark:codex-skills codex --version
+docker run --rm agent-skills-benchmark:codex-baseline codex --version
+```
+
+If they differ, rebuild both images so they track the host CLI:
+
+```bash
+./bin/build.sh --sdk-repo /path/to/sdk-repo --agent codex
+```
+
+The harness classifies this startup error as
+`agent_cli_version_incompatible`.
 
 Auth missing (Claude):
 

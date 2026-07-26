@@ -59,6 +59,24 @@ def test_codex_agent_config_loads_parser_and_classifier_ids():
     assert "{prompt_text}" not in json.dumps(config.raw)
 
 
+def test_codex_agent_config_mounts_workspace_policy_caches():
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    adapter = load_agent_adapter("codex")
+    mounts = adapter.auth_mounts(type("HostConfig", (), {"host_agent_home": Path("/host/.codex")})())
+    mounts_by_name = {mount.host_path.name: mount for mount in mounts}
+
+    assert set(mounts_by_name) == {
+        "auth.json",
+        "config.toml",
+        "cloud-config-bundle-cache.json",
+        "cloud-requirements-cache.json",
+    }
+    for name in ("cloud-config-bundle-cache.json", "cloud-requirements-cache.json"):
+        assert mounts_by_name[name].read_only
+        assert mounts_by_name[name].container_path == f"/workspace/.codex/{name}"
+
+
 def test_claude_agent_config_uses_config_dir_and_valid_final_message_source():
     from benchmark.harness.agents.config import AgentConfig
 
@@ -796,6 +814,32 @@ def test_codex_exit_classifier_prioritizes_missing_cli_over_stderr_text(tmp_path
     summary = adapter.exit_summary(127, stderr)
 
     assert summary["failure_category"] == "agent_cli_missing"
+
+
+@pytest.mark.parametrize(
+    ("stderr_text", "expected_category"),
+    [
+        (
+            "Error: Failed to load cloud config bundle (workspace-managed policies).\n",
+            "agent_cloud_config_failure",
+        ),
+        (
+            "The 'gpt-test' model requires a newer version of Codex. Please upgrade the CLI.\n",
+            "agent_cli_version_incompatible",
+        ),
+    ],
+)
+def test_codex_exit_classifier_detects_startup_configuration_failures(
+    tmp_path, stderr_text, expected_category
+):
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    stderr = tmp_path / "stderr.txt"
+    stderr.write_text(stderr_text, encoding="utf-8")
+
+    summary = load_agent_adapter("codex").exit_summary(1, stderr)
+
+    assert summary["failure_category"] == expected_category
 
 
 def test_agent_config_rejects_unknown_parser_id(tmp_path):

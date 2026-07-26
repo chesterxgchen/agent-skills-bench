@@ -72,6 +72,17 @@ auth:
       target: config.toml
       read_only: true
       description: Codex config
+    # ChatGPT workspace authentication can require signed, workspace-managed
+    # policy bundles before the first turn. Codex keeps the last valid bundles
+    # beside auth.json; mount them when present so isolated runs can start.
+    - source: cloud-config-bundle-cache.json
+      target: cloud-config-bundle-cache.json
+      read_only: true
+      description: Codex workspace policy cache
+    - source: cloud-requirements-cache.json
+      target: cloud-requirements-cache.json
+      read_only: true
+      description: Codex workspace requirements cache
 
 # Runtime env outputs passed to the agent process.
 runtime_env:
@@ -153,6 +164,13 @@ exit:
     - category: agent_cli_missing
       exit_codes:
         - 127
+    - category: agent_cloud_config_failure
+      all:
+        - failed to load cloud config bundle
+        - workspace-managed policies
+    - category: agent_cli_version_incompatible
+      any:
+        - requires a newer version of codex
     - category: agent_model_unsupported
       all:
         - model
