@@ -403,7 +403,7 @@ Both runs need review; neither side is a valid comparison winner until the resul
 | Cache-read tokens | NA | NA | NA | cached context re-read across turns |
 | Cache-creation tokens | NA | NA | NA | new context written into prompt cache |
 | Output tokens | 0 | 0 | 0 | model response text |
-| Assistant turns | NA | NA | NA | model round-trips |
+| Assistant events | NA | NA | NA | stream events; unique request IDs unavailable |
 | Skill calls | NA | NA | NA | skill documentation/context loading |
 
 - Detailed token subcomponents were not available or did not isolate one dominant cause; use the table above to see which captured token/work drivers changed.

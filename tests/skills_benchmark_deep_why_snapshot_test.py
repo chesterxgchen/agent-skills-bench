@@ -110,16 +110,21 @@ def test_deep_why_is_non_vacuous(tmp_path):
 
     # --- token causal branches (_why_more_tokens) ---
     assert "Prompt cache re-reads are the dominant driver" in rendered
-    assert "Skill documentation injected into context" in rendered
+    assert "Skill context was loaded, but its token share is not isolated" in rendered
+    assert "Tool-set-change cache misses are reported separately" in rendered
     assert "New context written to cache" in rendered
     assert "Effective cost" in rendered
+    assert "primarily skill documentation" not in rendered
+    assert "each Skill invocation" not in rendered
 
     # --- slowdown branches (_why_slower) ---
     # slowdown-driver table header + representative driver rows.
     assert "| Driver |" in rendered
     assert "Total elapsed" in rendered
     assert "Dependency install" in rendered
-    assert "Assistant turns" in rendered
+    assert "Unique model requests" in rendered
+    assert "Tokens per request" in rendered
+    assert "`tools_changed` cache misses" in rendered
     assert "Skill calls" in rendered
 
     # repeated successful job runs section (with-run has > 1 job span).

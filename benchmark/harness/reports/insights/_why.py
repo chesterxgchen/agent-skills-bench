@@ -621,13 +621,24 @@ def _slowdown_reason_table(
         driver_base_command_seconds,
         command_interpretation,
     )
-    _append_count_reason_row(
-        rows,
-        "Assistant turns",
-        _assistant_turns(with_run),
-        _assistant_turns(base_run),
-        "extra model round-trips",
-    )
+    with_requests = _run_usage(with_run).get("model_request_count")
+    base_requests = _run_usage(base_run).get("model_request_count")
+    if as_number(with_requests) is not None and as_number(base_requests) is not None:
+        _append_count_reason_row(
+            rows,
+            "Unique model requests",
+            with_requests,
+            base_requests,
+            "extra provider requests, deduplicated by request ID",
+        )
+    else:
+        _append_count_reason_row(
+            rows,
+            "Assistant turns",
+            _assistant_turns(with_run),
+            _assistant_turns(base_run),
+            "extra captured assistant events; request IDs unavailable",
+        )
     _append_count_reason_row(
         rows,
         "Extended-reasoning events",
@@ -735,21 +746,52 @@ def _token_usage_comparison_table(with_run: RunEvidence, base_run: RunEvidence) 
             fmt_short,
             "model response text",
         ),
-        (
-            "Assistant turns",
-            optional_count(with_run, "event_types", "assistant"),
-            optional_count(base_run, "event_types", "assistant"),
-            fmt_number,
-            "model round-trips",
-        ),
+    ]
+    if any(as_number(usage.get("model_request_count")) is not None for usage in (with_usage, base_usage)):
+        rows.extend(
+            [
+                (
+                    "Unique model requests",
+                    with_usage.get("model_request_count"),
+                    base_usage.get("model_request_count"),
+                    fmt_number,
+                    "provider requests deduplicated by request ID",
+                ),
+                (
+                    "Tokens per request",
+                    with_usage.get("tokens_per_model_request"),
+                    base_usage.get("tokens_per_model_request"),
+                    fmt_short,
+                    "total tokens divided by unique model requests",
+                ),
+                (
+                    "`tools_changed` cache misses",
+                    with_usage.get("tools_changed_cache_miss_count"),
+                    base_usage.get("tools_changed_cache_miss_count"),
+                    fmt_number,
+                    "inferred cache rebuilds immediately after ToolSearch",
+                ),
+            ]
+        )
+    else:
+        rows.append(
+            (
+                "Assistant events",
+                optional_count(with_run, "event_types", "assistant"),
+                optional_count(base_run, "event_types", "assistant"),
+                fmt_number,
+                "stream events; unique request IDs unavailable",
+            )
+        )
+    rows.append(
         (
             "Skill calls",
             optional_count(with_run, "tool_counts", "Skill"),
             optional_count(base_run, "tool_counts", "Skill"),
             fmt_number,
             "skill documentation/context loading",
-        ),
-    ]
+        )
+    )
     lines = [
         "**Token usage comparison**",
         "",
@@ -1291,8 +1333,14 @@ def _why_more_tokens(with_run: RunEvidence, base_run: RunEvidence) -> list[str]:
     base_output = as_number(base_usage.get("output_tokens")) or 0
     with_cost = as_number(with_usage.get("total_cost_usd"))
     base_cost = as_number(base_usage.get("total_cost_usd"))
-    with_turns = _assistant_turns(with_run)
-    base_turns = _assistant_turns(base_run)
+    with_requests = as_number(with_usage.get("model_request_count"))
+    base_requests = as_number(base_usage.get("model_request_count"))
+    with_assistant_events = _assistant_turns(with_run)
+    base_assistant_events = _assistant_turns(base_run)
+    with_tools_changed_misses = as_number(with_usage.get("tools_changed_cache_miss_count"))
+    base_tools_changed_misses = as_number(base_usage.get("tools_changed_cache_miss_count"))
+    with_tools_changed_cache_create = as_number(with_usage.get("tools_changed_cache_creation_input_tokens"))
+    base_tools_changed_cache_create = as_number(base_usage.get("tools_changed_cache_creation_input_tokens"))
     with_tools = count_map(with_run, "tool_counts")
     base_tools = count_map(base_run, "tool_counts")
     skill_calls = with_tools.get("Skill", 0)
@@ -1309,23 +1357,47 @@ def _why_more_tokens(with_run: RunEvidence, base_run: RunEvidence) -> list[str]:
     cache_read_delta = with_cache_read - base_cache_read
     if cache_read_delta > 0 and with_cache_read > 0 and token_delta > 0:
         cache_pct = round(cache_read_delta / token_delta * 100)
+        if with_requests is not None and base_requests is not None:
+            repetition = (
+                f"across {fmt_number(with_requests)} unique model requests "
+                f"(vs {fmt_number(base_requests)} in the {base_label} run)"
+            )
+        else:
+            repetition = (
+                f"across {with_assistant_events} captured assistant events "
+                f"(vs {base_assistant_events} in the {base_label} run; unique request IDs unavailable)"
+            )
         detailed_notes += 1
         lines.append(
             f"- **Prompt cache re-reads are the dominant driver** "
             f"({fmt_short(with_cache_read)} vs {fmt_short(base_cache_read)}, "
             f"+{fmt_short(cache_read_delta)}, {cache_pct}% of the total token delta): "
             f"cache-read tokens represent context cached from previous turns being re-read on each "
-            f"new turn. The {with_label} run accumulated a larger cached context window — primarily "
-            f"skill documentation injected via {skill_calls} Skill call(s) — and then re-read that "
-            f"context across all {with_turns} turns (vs {base_turns} turns in the {base_label} run)."
+            f"new request. The {with_label} run repeatedly re-read its accumulated context {repetition}. "
+            "Aggregate usage does not identify which context segment produced those reads."
         )
     if skill_calls > base_skill_calls:
         detailed_notes += 1
         lines.append(
-            f"- **Skill documentation injected into context** ({skill_calls} Skill call(s) vs {base_skill_calls}): "
-            f"each Skill invocation adds skill documentation to the context window. "
-            f"That content is written into the prompt cache on first use, then re-read as cached context "
-            f"on every subsequent turn — compounding the cache-read cost with each additional turn."
+            f"- **Skill context was loaded, but its token share is not isolated** "
+            f"({skill_calls} Skill call(s) vs {base_skill_calls}): Skill documentation is one source of "
+            "added context, alongside tool schemas, conversation history, tool results, and generated text. "
+            "The aggregate cache counters cannot attribute the full cache growth—or a precise fraction—to "
+            "the Skill call(s)."
+        )
+    if (with_tools_changed_misses or 0) > 0 or (base_tools_changed_misses or 0) > 0:
+        detailed_notes += 1
+        with_misses_text = fmt_number(with_tools_changed_misses) if with_tools_changed_misses is not None else "NA"
+        base_misses_text = fmt_number(base_tools_changed_misses) if base_tools_changed_misses is not None else "NA"
+        cache_create_delta = (with_tools_changed_cache_create or 0) - (base_tools_changed_cache_create or 0)
+        cache_create_phrase = (
+            f"; associated cache creation delta {fmt_short(cache_create_delta)}" if cache_create_delta > 0 else ""
+        )
+        lines.append(
+            f"- **Tool-set-change cache misses are reported separately** "
+            f"({with_misses_text} vs {base_misses_text}{cache_create_phrase}): this conservative signal "
+            "requires a non-initial request with zero cache-read and nonzero cache creation immediately "
+            "after `ToolSearch`. Its cache rebuild is attributed to changed tool schemas, not to a Skill call."
         )
     cache_create_delta = with_cache_create - base_cache_create
     if abs(cache_create_delta) > 1000:

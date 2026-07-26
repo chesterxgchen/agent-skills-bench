@@ -16,7 +16,7 @@
 | Runtime after install | 750s | 570s | +180s | agent/job runtime after dependency setup |
 | Agent/model interaction residual | 19s | 10s | +9s | time not attributed to captured dependency or non-install command spans |
 | Captured command time | 881s | 590s | +291s | captured command time contributing to wall-clock slowdown |
-| Assistant turns | 21 | 9 | +12 | extra model round-trips |
+| Unique model requests | 15 | 8 | +7 | extra provider requests, deduplicated by request ID |
 | Extended-reasoning events | 6 | 1 | +5 | extra reasoning activity |
 | Skill calls | 4 | 0 | +4 | skill loading/context overhead |
 
@@ -81,12 +81,15 @@ Baseline comparison: No skills baseline had 1 command classified successful job/
 | Cache-read tokens | 110.0k | 40.0k | +70.0k | cached context re-read across turns |
 | Cache-creation tokens | 24.0k | 12.0k | +12.0k | new context written into prompt cache |
 | Output tokens | 16.0k | 8.0k | +8.0k | model response text |
-| Assistant turns | 21 | 9 | +12 | model round-trips |
+| Unique model requests | 15 | 8 | +7 | provider requests deduplicated by request ID |
+| Tokens per request | 12.0k | 11.2k | +750 | total tokens divided by unique model requests |
+| `tools_changed` cache misses | 1 | 0 | +1 | inferred cache rebuilds immediately after ToolSearch |
 | Skill calls | 4 | 0 | +4 | skill documentation/context loading |
 | Effective cost | $0.9500 | $0.4200 | +$0.5300 | model/provider reported cost |
 
-- **Prompt cache re-reads are the dominant driver** (110.0k vs 40.0k, +70.0k, 78% of the total token delta): cache-read tokens represent context cached from previous turns being re-read on each new turn. The With skills run accumulated a larger cached context window — primarily skill documentation injected via 4 Skill call(s) — and then re-read that context across all 21 turns (vs 9 turns in the No skills baseline run).
-- **Skill documentation injected into context** (4 Skill call(s) vs 0): each Skill invocation adds skill documentation to the context window. That content is written into the prompt cache on first use, then re-read as cached context on every subsequent turn — compounding the cache-read cost with each additional turn.
+- **Prompt cache re-reads are the dominant driver** (110.0k vs 40.0k, +70.0k, 78% of the total token delta): cache-read tokens represent context cached from previous turns being re-read on each new request. The With skills run repeatedly re-read its accumulated context across 15 unique model requests (vs 8 in the No skills baseline run). Aggregate usage does not identify which context segment produced those reads.
+- **Skill context was loaded, but its token share is not isolated** (4 Skill call(s) vs 0): Skill documentation is one source of added context, alongside tool schemas, conversation history, tool results, and generated text. The aggregate cache counters cannot attribute the full cache growth—or a precise fraction—to the Skill call(s).
+- **Tool-set-change cache misses are reported separately** (1 vs 0; associated cache creation delta 8.0k): this conservative signal requires a non-initial request with zero cache-read and nonzero cache creation immediately after `ToolSearch`. Its cache rebuild is attributed to changed tool schemas, not to a Skill call.
 - **New context written to cache** (+12.0k cache-creation tokens): the With skills run wrote more new content into the prompt cache (skill docs, tool schemas, or conversation history not present in the No skills baseline run).
 - **Output tokens increased** (16.0k vs 8.0k, +8.0k): the With skills run generated more text, contributing directly to the token delta.
 - **Effective cost** ($0.9500 vs $0.4200, +$0.5300 / +126%): despite 100% more total tokens, the cost premium is much smaller because cache-read tokens are priced significantly lower than regular input tokens.

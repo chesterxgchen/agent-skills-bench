@@ -161,6 +161,61 @@ def claude_usage_objects(event: dict[str, Any]) -> list[dict[str, Any]]:
     return usage_objects
 
 
+def claude_request_accounting(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build request-level accounting from Claude's repeated stream events.
+
+    A single model response can be emitted as several ``assistant`` events
+    sharing one ``request_id``.  Count that ID once, and retain tool names from
+    every content block belonging to the request.  Claude does not currently
+    emit a cache-miss reason, so ``tools_changed`` is deliberately an inferred
+    signal: a non-initial request rebuilt cache from zero immediately after a
+    request invoked ``ToolSearch`` and changed the available tool schemas.
+    """
+
+    request_order: list[str] = []
+    request_usage: dict[str, dict[str, Any]] = {}
+    request_tools: dict[str, set[str]] = {}
+    for event in events:
+        if event.get("type") != "assistant":
+            continue
+        request_id = event.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            continue
+        if request_id not in request_tools:
+            request_order.append(request_id)
+            request_tools[request_id] = set()
+        for usage in claude_usage_objects(event):
+            request_usage[request_id] = usage
+        request_tools[request_id].update(
+            str(tool_use.get("name") or "") for tool_use in claude_tool_uses(event) if str(tool_use.get("name") or "")
+        )
+
+    tools_changed_misses = 0
+    tools_changed_cache_creation_tokens = 0.0
+    for index, request_id in enumerate(request_order[1:], start=1):
+        usage = request_usage.get(request_id)
+        if not isinstance(usage, dict):
+            continue
+        previous_tools = request_tools.get(request_order[index - 1], set())
+        cache_read = numeric_token_field(usage, "cache_read_input_tokens")
+        cache_creation = numeric_token_field(usage, "cache_creation_input_tokens")
+        if "ToolSearch" in previous_tools and cache_read == 0 and cache_creation > 0:
+            tools_changed_misses += 1
+            tools_changed_cache_creation_tokens += cache_creation
+
+    return {
+        "model_request_count": len(request_order) or None,
+        "model_request_count_source": ("unique Claude assistant request_id values" if request_order else None),
+        "tools_changed_cache_miss_count": tools_changed_misses if request_order else None,
+        "tools_changed_cache_creation_input_tokens": (tools_changed_cache_creation_tokens if request_order else None),
+        "tools_changed_cache_miss_detection": (
+            "inferred from a non-initial zero-cache-read/cache-creation request immediately after ToolSearch"
+            if request_order
+            else None
+        ),
+    }
+
+
 def iter_json_events(events_path: Path) -> tuple[list[dict[str, Any]], int]:
     events = []
     decode_errors = 0
@@ -183,6 +238,7 @@ def iter_json_events(events_path: Path) -> tuple[list[dict[str, Any]], int]:
 
 def parse_claude_stream_usage(events_path: Path) -> dict[str, Any]:
     events, decode_errors = iter_json_events(events_path)
+    request_accounting = claude_request_accounting(events)
     result_usage: dict[str, Any] | None = None
     result_usage_count = 0
     summed = {
@@ -192,6 +248,7 @@ def parse_claude_stream_usage(events_path: Path) -> dict[str, Any]:
         "cache_read_input_tokens": 0.0,
     }
     usage_objects_seen = 0
+    summed_request_ids: set[str] = set()
     total_cost_usd = None
     for event in events:
         if event.get("type") == "result" and isinstance(event.get("usage"), dict):
@@ -208,10 +265,19 @@ def parse_claude_stream_usage(events_path: Path) -> dict[str, Any]:
             continue
         if event.get("type") == "result" and isinstance(event.get("total_cost_usd"), (int, float)):
             total_cost_usd = event.get("total_cost_usd")
+        request_id = event.get("request_id")
+        deduplicate_request_usage = (
+            event.get("type") == "assistant" and isinstance(request_id, str) and bool(request_id)
+        )
+        request_usage_already_summed = deduplicate_request_usage and request_id in summed_request_ids
         for usage in claude_usage_objects(event):
             usage_objects_seen += 1
+            if request_usage_already_summed:
+                continue
             for key in summed:
                 summed[key] += numeric_token_field(usage, key)
+        if deduplicate_request_usage:
+            summed_request_ids.add(request_id)
 
     if result_usage is not None and claude_usage_has_tokens(result_usage):
         selected = result_usage
@@ -239,6 +305,12 @@ def parse_claude_stream_usage(events_path: Path) -> dict[str, Any]:
     cache_tokens = numeric_token_field(selected, "cache_creation_input_tokens") + numeric_token_field(
         selected, "cache_read_input_tokens"
     )
+    model_request_count = request_accounting.get("model_request_count")
+    tokens_per_model_request = (
+        total_tokens / model_request_count
+        if total_tokens is not None and isinstance(model_request_count, int) and model_request_count > 0
+        else None
+    )
     return {
         "total_tokens": total_tokens,
         "input_tokens": selected.get("input_tokens"),
@@ -255,6 +327,8 @@ def parse_claude_stream_usage(events_path: Path) -> dict[str, Any]:
         "usage_objects_seen": usage_objects_seen,
         "result_usage_objects_seen": result_usage_count,
         "token_parser": "Claude stream-json result usage; fallback sums message usage objects",
+        **request_accounting,
+        "tokens_per_model_request": tokens_per_model_request,
     }
 
 

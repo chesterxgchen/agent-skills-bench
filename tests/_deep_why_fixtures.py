@@ -71,6 +71,10 @@ _MODE_INPUTS = {
             "output_tokens": 8000,
             "cache_read_input_tokens": 40000,
             "cache_creation_input_tokens": 12000,
+            "model_request_count": 8,
+            "tokens_per_model_request": 11250,
+            "tools_changed_cache_miss_count": 0,
+            "tools_changed_cache_creation_input_tokens": 0,
             "total_cost_usd": 0.42,
         },
         "activity": {
@@ -111,6 +115,10 @@ _MODE_INPUTS = {
             "output_tokens": 16000,
             "cache_read_input_tokens": 110000,
             "cache_creation_input_tokens": 24000,
+            "model_request_count": 15,
+            "tokens_per_model_request": 12000,
+            "tools_changed_cache_miss_count": 1,
+            "tools_changed_cache_creation_input_tokens": 8000,
             "total_cost_usd": 0.95,
         },
         "activity": {

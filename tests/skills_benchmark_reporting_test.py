@@ -6231,7 +6231,7 @@ def test_why_section_reports_runtime_regression_when_total_time_is_not_slower():
     assert "450s vs 340s Captured command time" not in section
     assert "captured non-install command time contributing to runtime-after-install regression" in section
     assert "extra wall time came from tools" not in section
-    assert "| Assistant turns | 5 | 2 | +3 | extra model round-trips |" in section
+    assert "| Assistant turns | 5 | 2 | +3 | extra captured assistant events; request IDs unavailable |" in section
     assert "wall-clock overhead;" not in section
 
 

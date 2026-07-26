@@ -389,6 +389,116 @@ def test_claude_stream_usage_falls_back_when_result_usage_is_zero(tmp_path):
     assert "no nonzero token fields" in usage["parser_warnings"][0]
 
 
+def test_claude_stream_usage_deduplicates_requests_and_isolates_tools_changed_cache_miss(tmp_path):
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    adapter = load_agent_adapter("claude")
+    events_path = tmp_path / "agent_events.jsonl"
+
+    def assistant_event(request_id, usage, tool_name=None):
+        content = [{"type": "text", "text": "working"}]
+        if tool_name:
+            content.append({"type": "tool_use", "name": tool_name, "input": {}})
+        return {
+            "type": "assistant",
+            "request_id": request_id,
+            "message": {"content": content, "usage": usage},
+        }
+
+    initial_usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_creation_input_tokens": 100,
+        "cache_read_input_tokens": 0,
+    }
+    tool_search_usage = {
+        "input_tokens": 2,
+        "output_tokens": 3,
+        "cache_creation_input_tokens": 20,
+        "cache_read_input_tokens": 100,
+    }
+    rebuilt_usage = {
+        "input_tokens": 2,
+        "output_tokens": 4,
+        "cache_creation_input_tokens": 150,
+        "cache_read_input_tokens": 0,
+    }
+    raw_events = [
+        assistant_event("request-1", initial_usage),
+        # Multiple stream events for one response must still count once.
+        assistant_event("request-1", initial_usage, "Bash"),
+        assistant_event("request-2", tool_search_usage, "ToolSearch"),
+        assistant_event("request-3", rebuilt_usage, "Read"),
+        {
+            "type": "result",
+            "subtype": "success",
+            "usage": {
+                "input_tokens": 14,
+                "output_tokens": 12,
+                "cache_creation_input_tokens": 270,
+                "cache_read_input_tokens": 100,
+            },
+        },
+    ]
+    with events_path.open("w", encoding="utf-8") as stream:
+        for raw_event in raw_events:
+            stream.write(json.dumps(adapter.normalize_event(json.dumps(raw_event))) + "\n")
+
+    usage = adapter.parse_usage(events_path)
+
+    assert usage["model_request_count"] == 3
+    assert usage["model_request_count_source"] == "unique Claude assistant request_id values"
+    assert usage["total_tokens"] == 396
+    assert usage["tokens_per_model_request"] == 132
+    assert usage["tools_changed_cache_miss_count"] == 1
+    assert usage["tools_changed_cache_creation_input_tokens"] == 150
+    assert "immediately after ToolSearch" in usage["tools_changed_cache_miss_detection"]
+
+
+def test_claude_stream_usage_fallback_does_not_sum_duplicate_request_events(tmp_path):
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    adapter = load_agent_adapter("claude")
+    events_path = tmp_path / "agent_events.jsonl"
+    request_1 = {
+        "type": "assistant",
+        "request_id": "request-1",
+        "message": {
+            "content": [{"type": "text", "text": "working"}],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 2,
+                "cache_read_input_tokens": 3,
+            },
+        },
+    }
+    request_2 = {
+        "type": "assistant",
+        "request_id": "request-2",
+        "message": {
+            "content": [{"type": "text", "text": "done"}],
+            "usage": {
+                "input_tokens": 20,
+                "output_tokens": 4,
+                "cache_creation_input_tokens": 1,
+                "cache_read_input_tokens": 5,
+            },
+        },
+    }
+    with events_path.open("w", encoding="utf-8") as stream:
+        for raw_event in (request_1, request_1, request_2):
+            stream.write(json.dumps(adapter.normalize_event(json.dumps(raw_event))) + "\n")
+
+    usage = adapter.parse_usage(events_path)
+
+    assert usage["model_request_count"] == 2
+    assert usage["total_tokens"] == 50
+    assert usage["tokens_per_model_request"] == 25
+    assert usage["usage_objects_seen"] == 3
+    assert "No Claude result usage object" in usage["parser_warnings"][0]
+
+
 def test_claude_stream_usage_accumulates_multiple_result_events(tmp_path):
     from benchmark.harness.agents.registry import load_agent_adapter
 
