@@ -12,9 +12,63 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.util
 import json
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+
+
+def test_sdk_overlay_extracts_only_configured_import_package(tmp_path):
+    script = Path(__file__).parents[1] / "docker" / "scripts" / "install_sdk_overlay.py"
+    spec = importlib.util.spec_from_file_location("install_sdk_overlay", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    wheel = tmp_path / "example_sdk-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("example_sdk/__init__.py", 'VERSION = "protected"\n')
+        archive.writestr("example_sdk/tool/cli.py", "def main(): pass\n")
+        archive.writestr(
+            "example_sdk-1.0.dist-info/entry_points.txt",
+            "[console_scripts]\nexample-sdk = example_sdk.tool.cli:main\n",
+        )
+        archive.writestr("unrelated/__init__.py", "SHOULD_NOT_EXIST = True\n")
+    destination = tmp_path / "overlay"
+    scripts_source = tmp_path / "venv" / "bin"
+    scripts_source.mkdir(parents=True)
+    installed_script = scripts_source / "example-sdk"
+    installed_script.write_text("#!/usr/bin/python\n", encoding="utf-8")
+    installed_script.chmod(0o755)
+    scripts_destination = tmp_path / "protected-bin"
+
+    manifest = module.install_overlay(
+        wheel,
+        destination,
+        "example_sdk",
+        scripts_source,
+        scripts_destination,
+    )
+
+    assert (destination / "example_sdk" / "__init__.py").is_file()
+    assert (destination / "example_sdk" / "tool" / "cli.py").is_file()
+    assert not (destination / "unrelated").exists()
+    assert (scripts_destination / "example-sdk").read_text(encoding="utf-8") == "#!/usr/bin/python\n"
+    assert manifest["import_name"] == "example_sdk"
+    assert manifest["file_count"] == 2
+    assert manifest["console_scripts"] == ["example-sdk"]
+    assert len(manifest["wheel_sha256"]) == 64
+
+
+def test_dockerfile_protects_sdk_overlay_from_project_dependency_installs():
+    dockerfile = (Path(__file__).parents[1] / "docker" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert 'ENV PATH="/opt/benchmark-sdk-bin:' in dockerfile
+    assert "ENV PYTHONPATH=/opt/benchmark-sdk-overlay" in dockerfile
+    assert dockerfile.count("install_sdk_overlay.py") == 2
+    assert dockerfile.count('chmod -R a-w "${BENCHMARK_SDK_OVERLAY}"') == 2
+    assert dockerfile.count('chmod -R a-w "${BENCHMARK_SDK_BIN}"') == 2
 
 
 def test_docker_build_args_reject_embedded_equals():

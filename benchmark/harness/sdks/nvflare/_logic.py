@@ -1436,7 +1436,7 @@ def last_successful_job_event(run: dict[str, Any]) -> dict[str, Any] | None:
 def _runtime_started_but_incomplete(run: dict[str, Any]) -> bool:
     """Return true when captured NVFLARE artifacts show a started, unfinished run."""
 
-    if _has_task_result_artifact(run):
+    if _has_task_result_artifact(run) or _latest_completed_runtime_attempt(run):
         return False
     progress = _server_progress_summary(run)
     if not progress or "no terminal `Finished` marker was captured" not in progress:
@@ -1584,11 +1584,13 @@ def job_run_status(run: dict[str, Any]) -> str:
         and not _has_exact_command_flag(command, "--export")
     ]
     attempted = bool(executed_events or attempted_commands)
-    # Successful evidence (a completed job command or a runtime metric artifact) must win over
+    # Successful evidence (a completed job command or captured runtime completion) must win over
     # background interruption classification: a background run can finish and capture results
     # without ever emitting a terminal task-status event, which would otherwise be misread as
     # "agent_left_simulation_running".
-    has_success_evidence = last_successful_job_event(run) or _has_task_result_artifact(run)
+    has_success_evidence = (
+        last_successful_job_event(run) or _has_task_result_artifact(run) or _latest_completed_runtime_attempt(run)
+    )
     if not has_success_evidence:
         background_status = _background_simulation_interruption_status(run)
         if background_status:
@@ -1598,6 +1600,8 @@ def job_run_status(run: dict[str, Any]) -> str:
     if last_successful_job_event(run):
         return "completed"
     if _has_task_result_artifact(run):
+        return "completed"
+    if _latest_completed_runtime_attempt(run):
         return "completed"
     if not attempted:
         return "not_started"
@@ -1705,6 +1709,12 @@ def job_run_status_reason(run: dict[str, Any]) -> str:
                 f"job execution inferred from captured {artifact_kind} — "
                 f"{artifact_evidence}; command detector did not identify a direct job.py or simulator command"
             )
+        completed_attempt = _latest_completed_runtime_attempt(run)
+        if completed_attempt and not event:
+            return (
+                "simulation completed — captured "
+                f"`{completed_attempt['label']}` reached a terminal `Finished` state"
+            )
         if "Finished" in output:
             reason = "simulation completed — FL workflow reached Finished state"
             if repeated_runs:
@@ -1805,6 +1815,16 @@ def _runtime_attempt_server_logs(run: dict[str, Any]) -> list[dict[str, Any]]:
         key=lambda attempt: (attempt["mtime_ns"], attempt["item_index"], attempt["root"]),
         reverse=True,
     )
+
+
+def _latest_completed_runtime_attempt(run: dict[str, Any]) -> dict[str, Any]:
+    """Return the latest runtime attempt when its server log reached Finished."""
+
+    attempts = _runtime_attempt_server_logs(run)
+    if not attempts:
+        return {}
+    latest = attempts[0]
+    return latest if _runtime_log_finished(str(latest["text"])) else {}
 
 
 def _attempt_artifact_texts(

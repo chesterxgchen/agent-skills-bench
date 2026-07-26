@@ -77,6 +77,9 @@ ENV SKILLS_SOURCE_REF="${SKILLS_SOURCE_REF}"
 ENV JOB_INPUT_DIR=/workspace/input
 ENV TRAINING_CODE=/workspace/input
 ENV RECORDS_DIR=/tmp/agent_benchmark/records
+ENV BENCHMARK_SDK_OVERLAY=/opt/benchmark-sdk-overlay
+ENV BENCHMARK_SDK_BIN=/opt/benchmark-sdk-bin
+ENV PYTHONPATH=/opt/benchmark-sdk-overlay
 # uv hard-links files from its cache into site-packages by default (cache and
 # venv share a filesystem here). Some SDK skill installers reject hard-linked
 # source files (NVFLARE: "skill source must not be hard-linked"), so install
@@ -88,12 +91,13 @@ RUN mkdir -p "${BENCHMARK_AGENT_HOME}" /workspace/prompts && \
     uv venv --seed /workspace/venv
 
 ENV VIRTUAL_ENV=/workspace/venv
-ENV PATH="/workspace/venv/bin:/usr/local/bin:${PATH}"
+ENV PATH="/opt/benchmark-sdk-bin:/workspace/venv/bin:/usr/local/bin:${PATH}"
 
 # Agent tool commands may use `bash -lc`; Debian /etc/profile resets PATH for login shells.
 RUN printf '%s\n' \
     'export VIRTUAL_ENV=/workspace/venv' \
     'case ":$PATH:" in *:/workspace/venv/bin:*) ;; *) export PATH="/workspace/venv/bin:$PATH" ;; esac' \
+    'case ":$PATH:" in *:/opt/benchmark-sdk-bin:*) ;; *) export PATH="/opt/benchmark-sdk-bin:$PATH" ;; esac' \
     > /etc/profile.d/99-agent-benchmark-venv.sh && \
     /bin/bash -lc 'command -v python && python --version && python -m pip --version && pip --version'
 
@@ -142,10 +146,21 @@ FROM base AS skills
 COPY --chown=agent:agent dist/skills/*.whl dist/skills/sdk_wheel_metadata.json /tmp/wheels/
 RUN python /workspace/docker_scripts/select_sdk_wheel.py skills /tmp/selected_sdk_wheel && \
     wheel="$(cat /tmp/selected_sdk_wheel)" && \
-    uv pip install --python /workspace/venv/bin/python "${wheel}" && \
+    uv pip install --python /workspace/venv/bin/python "${wheel}"
+USER root
+RUN wheel="$(cat /tmp/selected_sdk_wheel)" && \
+    if [ -n "${SDK_IMPORT_NAME}" ]; then \
+        python /workspace/docker_scripts/install_sdk_overlay.py \
+            "${wheel}" "${BENCHMARK_SDK_OVERLAY}" "${SDK_IMPORT_NAME}" \
+            /workspace/venv/bin "${BENCHMARK_SDK_BIN}"; \
+    fi && \
     cp /tmp/wheels/sdk_wheel_metadata.json "${BENCHMARK_AGENT_HOME}/sdk_wheel_metadata.json" && \
+    chown agent:agent "${BENCHMARK_AGENT_HOME}/sdk_wheel_metadata.json" && \
     rm -rf /tmp/wheels /tmp/selected_sdk_wheel && \
-    if [ -n "${SDK_VERSION_COMMAND}" ]; then /bin/bash -lc "${SDK_VERSION_COMMAND}"; fi && \
+    if [ -d "${BENCHMARK_SDK_OVERLAY}" ]; then chmod -R a-w "${BENCHMARK_SDK_OVERLAY}"; fi && \
+    if [ -d "${BENCHMARK_SDK_BIN}" ]; then chmod -R a-w "${BENCHMARK_SDK_BIN}"; fi
+USER agent
+RUN if [ -n "${SDK_VERSION_COMMAND}" ]; then /bin/bash -lc "${SDK_VERSION_COMMAND}"; fi && \
     python -c "import importlib, os; name=os.environ.get('SDK_IMPORT_NAME'); importlib.import_module(name) if name else None" && \
     /bin/bash -lc 'command -v python && python -m pip --version'
 
@@ -159,10 +174,21 @@ FROM base AS baseline
 COPY --chown=agent:agent dist/baseline/*.whl dist/baseline/sdk_wheel_metadata.json /tmp/wheels/
 RUN python /workspace/docker_scripts/select_sdk_wheel.py baseline /tmp/selected_sdk_wheel && \
     wheel="$(cat /tmp/selected_sdk_wheel)" && \
-    uv pip install --python /workspace/venv/bin/python "${wheel}" && \
+    uv pip install --python /workspace/venv/bin/python "${wheel}"
+USER root
+RUN wheel="$(cat /tmp/selected_sdk_wheel)" && \
+    if [ -n "${SDK_IMPORT_NAME}" ]; then \
+        python /workspace/docker_scripts/install_sdk_overlay.py \
+            "${wheel}" "${BENCHMARK_SDK_OVERLAY}" "${SDK_IMPORT_NAME}" \
+            /workspace/venv/bin "${BENCHMARK_SDK_BIN}"; \
+    fi && \
     cp /tmp/wheels/sdk_wheel_metadata.json "${BENCHMARK_AGENT_HOME}/sdk_wheel_metadata.json" && \
+    chown agent:agent "${BENCHMARK_AGENT_HOME}/sdk_wheel_metadata.json" && \
     rm -rf /tmp/wheels /tmp/selected_sdk_wheel && \
-    if [ -n "${SDK_VERSION_COMMAND}" ]; then /bin/bash -lc "${SDK_VERSION_COMMAND}"; fi && \
+    if [ -d "${BENCHMARK_SDK_OVERLAY}" ]; then chmod -R a-w "${BENCHMARK_SDK_OVERLAY}"; fi && \
+    if [ -d "${BENCHMARK_SDK_BIN}" ]; then chmod -R a-w "${BENCHMARK_SDK_BIN}"; fi
+USER agent
+RUN if [ -n "${SDK_VERSION_COMMAND}" ]; then /bin/bash -lc "${SDK_VERSION_COMMAND}"; fi && \
     python -c "import importlib, os; name=os.environ.get('SDK_IMPORT_NAME'); importlib.import_module(name) if name else None" && \
     /bin/bash -lc 'command -v python && python -m pip --version' && \
     python /workspace/docker_scripts/write_baseline_skill_state.py

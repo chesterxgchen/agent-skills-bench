@@ -4629,6 +4629,46 @@ def test_round_metrics_artifact_does_not_infer_completed_job(tmp_path):
     assert _nv_ev(run).metric.value is None
 
 
+def test_finished_server_log_confirms_redirected_simulator_command(tmp_path):
+    from benchmark.harness.sdks.nvflare._logic import job_run_status, job_run_status_reason
+
+    mode_dir = tmp_path / "with_skills"
+    rel_path = "tmp/nvflare_run/sim_workspace/server/log.txt"
+    path = mode_dir / "workspace_delta" / "runtime_artifacts" / rel_path
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "\n".join(
+            [
+                "2026-07-26 - FedAvg - INFO - Round 2 started.",
+                "2026-07-26 - FedAvg - INFO - Finished FedAvg.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    command = "nvflare simulator exported_job -w sim_workspace > simulation.log 2>&1"
+    run = {
+        "available": True,
+        "mode_dir": mode_dir,
+        "activity": {"commands": [command]},
+        "agent_events_text": _codex_command(command, output="", exit_code=0),
+        "workspace_delta": {
+            "runtime_artifacts": [
+                {
+                    "artifact_path": f"runtime_artifacts/{rel_path}",
+                    "path": rel_path,
+                    "size_bytes": path.stat().st_size,
+                }
+            ]
+        },
+    }
+
+    assert job_run_status(run) == "completed"
+    reason = job_run_status_reason(run)
+    assert "captured" in reason
+    assert "terminal `Finished` state" in reason
+    assert rel_path in reason
+
+
 def test_later_successful_runtime_attempt_wins_over_stale_failed_attempt(tmp_path):
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
     from benchmark.harness.reports.evidence import SCHEMA_VERSION, ComparisonEvidence
