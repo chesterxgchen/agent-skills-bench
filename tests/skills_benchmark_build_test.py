@@ -19,12 +19,17 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-def test_sdk_overlay_extracts_only_configured_import_package(tmp_path):
-    script = Path(__file__).parents[1] / "docker" / "scripts" / "install_sdk_overlay.py"
-    spec = importlib.util.spec_from_file_location("install_sdk_overlay", script)
+def load_docker_script(name):
+    script = Path(__file__).parents[1] / "docker" / "scripts" / name
+    spec = importlib.util.spec_from_file_location(script.stem, script)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def test_sdk_overlay_extracts_only_configured_import_package(tmp_path):
+    module = load_docker_script("install_sdk_overlay.py")
 
     wheel = tmp_path / "example_sdk-1.0-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
@@ -33,6 +38,10 @@ def test_sdk_overlay_extracts_only_configured_import_package(tmp_path):
         archive.writestr(
             "example_sdk-1.0.dist-info/entry_points.txt",
             "[console_scripts]\nexample-sdk = example_sdk.tool.cli:main\n",
+        )
+        archive.writestr(
+            "example_sdk-1.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: example-sdk-nightly\nVersion: 1.0\n",
         )
         archive.writestr("unrelated/__init__.py", "SHOULD_NOT_EXIST = True\n")
     destination = tmp_path / "overlay"
@@ -56,6 +65,7 @@ def test_sdk_overlay_extracts_only_configured_import_package(tmp_path):
     assert not (destination / "unrelated").exists()
     assert (scripts_destination / "example-sdk").read_text(encoding="utf-8") == "#!/usr/bin/python\n"
     assert manifest["import_name"] == "example_sdk"
+    assert manifest["distribution_name"] == "example-sdk-nightly"
     assert manifest["file_count"] == 2
     assert manifest["console_scripts"] == ["example-sdk"]
     assert len(manifest["wheel_sha256"]) == 64
@@ -64,11 +74,130 @@ def test_sdk_overlay_extracts_only_configured_import_package(tmp_path):
 def test_dockerfile_protects_sdk_overlay_from_project_dependency_installs():
     dockerfile = (Path(__file__).parents[1] / "docker" / "Dockerfile").read_text(encoding="utf-8")
 
-    assert 'ENV PATH="/opt/benchmark-sdk-bin:' in dockerfile
+    assert 'ENV PATH="/opt/benchmark-sdk-guard-bin:/opt/benchmark-sdk-bin:' in dockerfile
     assert "ENV PYTHONPATH=/opt/benchmark-sdk-overlay" in dockerfile
     assert dockerfile.count("install_sdk_overlay.py") == 2
     assert dockerfile.count('chmod -R a-w "${BENCHMARK_SDK_OVERLAY}"') == 2
     assert dockerfile.count('chmod -R a-w "${BENCHMARK_SDK_BIN}"') == 2
+    assert dockerfile.count("install -m 0555 /workspace/docker_scripts/sdk_install_guard.py") == 2
+    for command in ("uv", "pip", "pip3", "python", "python3"):
+        assert dockerfile.count(f'ln -s sdk-install-guard "${{BENCHMARK_SDK_GUARD_BIN}}/{command}"') == 2
+
+
+def test_sdk_install_guard_filters_sdk_and_expands_extras_in_nested_requirements(tmp_path):
+    module = load_docker_script("sdk_install_guard.py")
+    nested = tmp_path / "requirements-nested.txt"
+    nested.write_text("torchmetrics\nnvflare[PT]>=2.9.0\n", encoding="utf-8")
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("-r requirements-nested.txt\npandas\n", encoding="utf-8")
+
+    rewritten, temporary_paths, removals = module.guard_install_arguments(
+        ["pip", "install", "--python", "/workspace/venv/bin/python", "-r", str(requirements)],
+        "nvflare",
+        prefix_length=2,
+        extra_provider=lambda extras: ["torchvision>=0.20"] if extras == {"pt"} else [],
+    )
+
+    try:
+        assert rewritten[:4] == ["pip", "install", "--python", "/workspace/venv/bin/python"]
+        filtered_root = Path(rewritten[-1])
+        assert filtered_root != requirements
+        filtered_text = "\n".join(path.read_text(encoding="utf-8") for path in temporary_paths)
+        assert "nvflare[PT]>=2.9.0" not in filtered_text
+        assert "# benchmark SDK guard: nvflare is supplied by the staged local wheel" in filtered_text
+        assert "torchvision>=0.20" in filtered_text
+        assert "torchmetrics" in filtered_text
+        assert "pandas" in filtered_text
+        assert nested.read_text(encoding="utf-8") == "torchmetrics\nnvflare[PT]>=2.9.0\n"
+        assert requirements.read_text(encoding="utf-8") == "-r requirements-nested.txt\npandas\n"
+        assert removals == [
+            {
+                "source": str(nested),
+                "line": 2,
+                "package": "nvflare",
+                "extras": ["pt"],
+                "specifier": ">=2.9.0",
+                "direct_reference": False,
+                "replacement_packages": ["torchvision"],
+            }
+        ]
+    finally:
+        for path in temporary_paths:
+            path.unlink(missing_ok=True)
+
+
+def test_sdk_install_guard_turns_direct_sdk_install_into_noop_requirements_file(tmp_path, monkeypatch):
+    module = load_docker_script("sdk_install_guard.py")
+    monkeypatch.setattr(module.tempfile, "tempdir", str(tmp_path))
+
+    rewritten, temporary_paths, removals = module.guard_install_arguments(
+        ["-m", "pip", "install", "nvflare>=2.9.0"],
+        "NVFlare",
+        prefix_length=3,
+        extra_provider=lambda _extras: [],
+    )
+
+    try:
+        assert rewritten[:3] == ["-m", "pip", "install"]
+        assert rewritten[3] == "-r"
+        assert Path(rewritten[4]).read_text(encoding="utf-8") == ""
+        assert removals[0]["package"] == "nvflare"
+        assert removals[0]["specifier"] == ">=2.9.0"
+    finally:
+        for path in temporary_paths:
+            path.unlink(missing_ok=True)
+
+
+def test_sdk_install_guard_reads_requested_extra_dependencies_from_installed_wheel(monkeypatch):
+    module = load_docker_script("sdk_install_guard.py")
+
+    class Distribution:
+        requires = [
+            "base-package>=1",
+            'torch>=2; extra == "pt"',
+            'torchvision>=0.20; extra == "pt" and python_version >= "3.10"',
+            'windows-only; extra == "pt" and sys_platform == "win32"',
+            'sklearn; extra == "sklearn"',
+        ]
+
+    monkeypatch.setattr(module.importlib.metadata, "distribution", lambda name: Distribution())
+
+    assert module.installed_extra_requirements("nvflare", {"pt"}) == ["torch>=2", "torchvision>=0.20"]
+
+
+def test_sdk_install_guard_uses_overlay_distribution_alias(tmp_path, monkeypatch):
+    module = load_docker_script("sdk_install_guard.py")
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    (overlay / "overlay_manifest.json").write_text(
+        json.dumps({"distribution_name": "nvflare-nightly"}),
+        encoding="utf-8",
+    )
+    observed = []
+
+    class Distribution:
+        requires = ['torch; extra == "pt"']
+
+    def distribution(name):
+        observed.append(name)
+        return Distribution()
+
+    monkeypatch.setenv("BENCHMARK_SDK_OVERLAY", str(overlay))
+    monkeypatch.setattr(module.importlib.metadata, "distribution", distribution)
+
+    assert module.protected_requirement("nvflare-nightly>=2.9", "nvflare").name == "nvflare-nightly"
+    assert module.installed_extra_requirements("nvflare", {"pt"}) == ["torch"]
+    assert observed == ["nvflare-nightly"]
+
+
+def test_sdk_install_guard_rewrites_guard_python_path_before_calling_uv(monkeypatch):
+    module = load_docker_script("sdk_install_guard.py")
+    monkeypatch.setenv("BENCHMARK_SDK_GUARD_BIN", "/opt/benchmark-sdk-guard-bin")
+    monkeypatch.setenv("BENCHMARK_REAL_PYTHON", "/workspace/venv/bin/python")
+
+    assert module._replace_guard_python_argument(
+        ["pip", "install", "--python", "/opt/benchmark-sdk-guard-bin/python3", "-r", "requirements.txt"]
+    ) == ["pip", "install", "--python", "/workspace/venv/bin/python", "-r", "requirements.txt"]
 
 
 def test_docker_build_args_reject_embedded_equals():

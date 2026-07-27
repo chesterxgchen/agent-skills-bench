@@ -79,6 +79,7 @@ ENV TRAINING_CODE=/workspace/input
 ENV RECORDS_DIR=/tmp/agent_benchmark/records
 ENV BENCHMARK_SDK_OVERLAY=/opt/benchmark-sdk-overlay
 ENV BENCHMARK_SDK_BIN=/opt/benchmark-sdk-bin
+ENV BENCHMARK_SDK_GUARD_BIN=/opt/benchmark-sdk-guard-bin
 ENV PYTHONPATH=/opt/benchmark-sdk-overlay
 # uv hard-links files from its cache into site-packages by default (cache and
 # venv share a filesystem here). Some SDK skill installers reject hard-linked
@@ -91,13 +92,14 @@ RUN mkdir -p "${BENCHMARK_AGENT_HOME}" /workspace/prompts && \
     uv venv --seed /workspace/venv
 
 ENV VIRTUAL_ENV=/workspace/venv
-ENV PATH="/opt/benchmark-sdk-bin:/workspace/venv/bin:/usr/local/bin:${PATH}"
+ENV PATH="/opt/benchmark-sdk-guard-bin:/opt/benchmark-sdk-bin:/workspace/venv/bin:/usr/local/bin:${PATH}"
 
 # Agent tool commands may use `bash -lc`; Debian /etc/profile resets PATH for login shells.
 RUN printf '%s\n' \
     'export VIRTUAL_ENV=/workspace/venv' \
     'case ":$PATH:" in *:/workspace/venv/bin:*) ;; *) export PATH="/workspace/venv/bin:$PATH" ;; esac' \
     'case ":$PATH:" in *:/opt/benchmark-sdk-bin:*) ;; *) export PATH="/opt/benchmark-sdk-bin:$PATH" ;; esac' \
+    'case ":$PATH:" in *:/opt/benchmark-sdk-guard-bin:*) ;; *) export PATH="/opt/benchmark-sdk-guard-bin:$PATH" ;; esac' \
     > /etc/profile.d/99-agent-benchmark-venv.sh && \
     /bin/bash -lc 'command -v python && python --version && python -m pip --version && pip --version'
 
@@ -156,6 +158,13 @@ RUN wheel="$(cat /tmp/selected_sdk_wheel)" && \
     fi && \
     cp /tmp/wheels/sdk_wheel_metadata.json "${BENCHMARK_AGENT_HOME}/sdk_wheel_metadata.json" && \
     chown agent:agent "${BENCHMARK_AGENT_HOME}/sdk_wheel_metadata.json" && \
+    install -d -m 0555 "${BENCHMARK_SDK_GUARD_BIN}" && \
+    install -m 0555 /workspace/docker_scripts/sdk_install_guard.py "${BENCHMARK_SDK_GUARD_BIN}/sdk-install-guard" && \
+    ln -s sdk-install-guard "${BENCHMARK_SDK_GUARD_BIN}/uv" && \
+    ln -s sdk-install-guard "${BENCHMARK_SDK_GUARD_BIN}/pip" && \
+    ln -s sdk-install-guard "${BENCHMARK_SDK_GUARD_BIN}/pip3" && \
+    ln -s sdk-install-guard "${BENCHMARK_SDK_GUARD_BIN}/python" && \
+    ln -s sdk-install-guard "${BENCHMARK_SDK_GUARD_BIN}/python3" && \
     rm -rf /tmp/wheels /tmp/selected_sdk_wheel && \
     if [ -d "${BENCHMARK_SDK_OVERLAY}" ]; then chmod -R a-w "${BENCHMARK_SDK_OVERLAY}"; fi && \
     if [ -d "${BENCHMARK_SDK_BIN}" ]; then chmod -R a-w "${BENCHMARK_SDK_BIN}"; fi
@@ -184,6 +193,13 @@ RUN wheel="$(cat /tmp/selected_sdk_wheel)" && \
     fi && \
     cp /tmp/wheels/sdk_wheel_metadata.json "${BENCHMARK_AGENT_HOME}/sdk_wheel_metadata.json" && \
     chown agent:agent "${BENCHMARK_AGENT_HOME}/sdk_wheel_metadata.json" && \
+    install -d -m 0555 "${BENCHMARK_SDK_GUARD_BIN}" && \
+    install -m 0555 /workspace/docker_scripts/sdk_install_guard.py "${BENCHMARK_SDK_GUARD_BIN}/sdk-install-guard" && \
+    ln -s sdk-install-guard "${BENCHMARK_SDK_GUARD_BIN}/uv" && \
+    ln -s sdk-install-guard "${BENCHMARK_SDK_GUARD_BIN}/pip" && \
+    ln -s sdk-install-guard "${BENCHMARK_SDK_GUARD_BIN}/pip3" && \
+    ln -s sdk-install-guard "${BENCHMARK_SDK_GUARD_BIN}/python" && \
+    ln -s sdk-install-guard "${BENCHMARK_SDK_GUARD_BIN}/python3" && \
     rm -rf /tmp/wheels /tmp/selected_sdk_wheel && \
     if [ -d "${BENCHMARK_SDK_OVERLAY}" ]; then chmod -R a-w "${BENCHMARK_SDK_OVERLAY}"; fi && \
     if [ -d "${BENCHMARK_SDK_BIN}" ]; then chmod -R a-w "${BENCHMARK_SDK_BIN}"; fi

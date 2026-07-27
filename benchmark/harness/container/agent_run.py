@@ -287,11 +287,15 @@ def login_shell_runtime_probe() -> dict[str, Any]:
         "VIRTUAL_ENV", DEFAULT_CONTAINER_VENV_DIR
     )
     expected_python = str(Path(expected_venv) / "bin" / "python")
-    ok = result.returncode == 0 and values.get("python") == expected_python
+    expected_python_commands = {expected_python}
+    sdk_guard_bin = os.environ.get("BENCHMARK_SDK_GUARD_BIN")
+    if sdk_guard_bin:
+        expected_python_commands.add(str(Path(sdk_guard_bin) / "python"))
+    ok = result.returncode == 0 and values.get("python") in expected_python_commands
     reason = "ok"
     if result.returncode != 0:
         reason = f"probe_exit_code_{result.returncode}"
-    elif values.get("python") != expected_python:
+    elif values.get("python") not in expected_python_commands:
         reason = f"python_resolved_to_{values.get('python') or 'missing'}"
     return {
         "command": command,
@@ -306,6 +310,7 @@ def login_shell_runtime_probe() -> dict[str, Any]:
         "sdk_version_output": sdk_version_output,
         "sdk_version_error": sdk_version_error,
         "expected_python": expected_python,
+        "expected_python_commands": sorted(expected_python_commands),
         "ok": ok,
         "reason": reason,
     }

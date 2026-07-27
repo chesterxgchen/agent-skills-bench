@@ -22,6 +22,7 @@ import shutil
 import sys
 import zipfile
 from configparser import ConfigParser
+from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 
 
@@ -50,6 +51,7 @@ def install_overlay(
     module_name = f"{import_name}.py"
     extracted: list[str] = []
     console_scripts: list[str] = []
+    distribution_name: str | None = None
     with zipfile.ZipFile(wheel) as archive:
         for info in archive.infolist():
             name = info.filename
@@ -66,15 +68,14 @@ def install_overlay(
             with archive.open(info) as source, target.open("wb") as output:
                 shutil.copyfileobj(source, output)
             extracted.append(name)
-        entry_points = [
-            info
-            for info in archive.infolist()
-            if info.filename.endswith(".dist-info/entry_points.txt")
-        ]
+        entry_points = [info for info in archive.infolist() if info.filename.endswith(".dist-info/entry_points.txt")]
         if entry_points:
             parser = ConfigParser()
             parser.read_string(archive.read(entry_points[0]).decode("utf-8"))
             console_scripts = sorted(parser["console_scripts"]) if parser.has_section("console_scripts") else []
+        metadata_files = [info for info in archive.infolist() if info.filename.endswith(".dist-info/METADATA")]
+        if len(metadata_files) == 1:
+            distribution_name = BytesParser().parsebytes(archive.read(metadata_files[0])).get("Name")
 
     if not extracted:
         raise ValueError(f"{wheel.name} does not contain import package {import_name!r}")
@@ -95,6 +96,7 @@ def install_overlay(
         "wheel": wheel.name,
         "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
         "import_name": import_name,
+        "distribution_name": distribution_name,
         "file_count": len(extracted),
         "files": sorted(extracted),
         "console_scripts": console_scripts,

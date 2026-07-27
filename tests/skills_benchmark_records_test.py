@@ -1444,6 +1444,36 @@ def test_login_shell_runtime_probe_uses_configured_venv_path(monkeypatch):
     assert probe["sdk_version_output"] == "Example SDK 9.9"
 
 
+def test_login_shell_runtime_probe_accepts_sdk_install_guard_python(monkeypatch):
+    from benchmark.harness.container import agent_run
+
+    class ProbeResult:
+        returncode = 0
+        stdout = "\n".join(
+            [
+                "PATH=/opt/benchmark-sdk-guard-bin:/custom/venv/bin:/usr/bin",
+                "python=/opt/benchmark-sdk-guard-bin/python",
+                "sdk_import_name=example_sdk",
+                "sdk_import_version=9.9",
+            ]
+        )
+
+    monkeypatch.setenv("BENCHMARK_CONTAINER_VENV_DIR", "/custom/venv")
+    monkeypatch.setenv("BENCHMARK_SDK_GUARD_BIN", "/opt/benchmark-sdk-guard-bin")
+    monkeypatch.delenv("SDK_VERSION_COMMAND", raising=False)
+    monkeypatch.setattr(agent_run.subprocess, "run", lambda *args, **kwargs: ProbeResult())
+
+    probe = agent_run.login_shell_runtime_probe()
+
+    assert probe["ok"] is True
+    assert probe["expected_python"] == "/custom/venv/bin/python"
+    assert probe["expected_python_commands"] == [
+        "/custom/venv/bin/python",
+        "/opt/benchmark-sdk-guard-bin/python",
+    ]
+    assert probe["python"] == "/opt/benchmark-sdk-guard-bin/python"
+
+
 def test_login_shell_runtime_probe_does_not_shell_interpolate_sdk_version_command(monkeypatch):
     from benchmark.harness.container import agent_run
 
