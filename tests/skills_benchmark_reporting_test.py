@@ -7955,6 +7955,208 @@ def test_recovered_python_heredocs_report_distinct_statements_and_terminal_cause
     assert "AssertionError (failed assertion:" in summary
 
 
+def test_intentional_negative_parser_preflights_are_not_recovered_failures():
+    from benchmark.harness.sdks.nvflare._logic import (
+        command_failure_rows,
+        completed_job_recovered_issue_summary,
+    )
+
+    def message(text: str) -> dict:
+        return {
+            "type": "item.completed",
+            "item": {"id": "message", "text": text, "type": "agent_message"},
+        }
+
+    def command(item_id: str, value: str, exit_code: int, output: str) -> dict:
+        return {
+            "type": "item.completed",
+            "item": {
+                "aggregated_output": output,
+                "command": value,
+                "exit_code": exit_code,
+                "id": item_id,
+                "status": "completed" if exit_code == 0 else "failed",
+                "type": "command_execution",
+            },
+        }
+
+    usage = (
+        "usage: job.py [-h] [--num-rounds NUM_ROUNDS]\n"
+        "job.py: error: unrecognized arguments: {option} 3\n"
+    )
+    failed_import = command(
+        "import_bad",
+        "python - <<'PY'\nfrom nvflare.recipe import SimEnv, JobExportEnv\nPY",
+        1,
+        "Traceback (most recent call last):\n"
+        "ImportError: cannot import name 'JobExportEnv' from 'nvflare.recipe'\n",
+    )
+    corrected_import = command(
+        "import_good",
+        "python - <<'PY'\nfrom nvflare.recipe import SimEnv\nPY",
+        0,
+        "SimEnv import OK\n",
+    )
+    parser_intent = message(
+        "The conversion files are in place. I am running compile, parser, partition, "
+        "aggregation, and packaging preflights before the simulation."
+    )
+    compile_check = command("compile", "python -m py_compile job.py", 0, "")
+    rejected_typo = command(
+        "parser_typo",
+        "python job.py --num-runds 3",
+        2,
+        usage.format(option="--num-runds"),
+    )
+    rejected_abbreviation = command(
+        "parser_abbreviation",
+        "python job.py --num-r 3",
+        2,
+        usage.format(option="--num-r"),
+    )
+    partition_failure = command(
+        "partition_bad",
+        "python - <<'PY'\nparts = partition()\nprint(parts['_indices'])\nPY",
+        1,
+        "Traceback (most recent call last):\n"
+        '  File "<stdin>", line 2, in <module>\n'
+        "ValueError: Column '_indices' doesn't exist.\n",
+    )
+    successful_job = command(
+        "job_good",
+        "python job.py --num-rounds 3",
+        0,
+        "Finished FedAvg.\n",
+    )
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join(
+            json.dumps(event)
+            for event in (
+                failed_import,
+                corrected_import,
+                parser_intent,
+                compile_check,
+                rejected_typo,
+                rejected_abbreviation,
+                partition_failure,
+                successful_job,
+            )
+        ),
+    }
+
+    rows = command_failure_rows(run)
+    summary = completed_job_recovered_issue_summary(run)
+
+    assert len(rows) == 2
+    assert "JobExportEnv" in rows[0]["root_cause"]
+    assert "Column '_indices' doesn't exist" in rows[1]["root_cause"]
+    assert "--num-runds" not in str(rows)
+    assert "--num-r 3" not in str(rows)
+    assert summary.startswith("2 earlier command failures were recovered")
+    assert "--num-runds" not in summary
+    assert "--num-r 3" not in summary
+
+
+def test_single_accidental_parser_typo_remains_a_recovered_failure():
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows
+
+    events = [
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "message",
+                "text": "I am starting the requested three-round simulation now.",
+                "type": "agent_message",
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "aggregated_output": (
+                    "usage: job.py [-h] [--num-rounds NUM_ROUNDS]\n"
+                    "job.py: error: unrecognized arguments: --num-runds 3\n"
+                ),
+                "command": "python job.py --num-runds 3",
+                "exit_code": 2,
+                "id": "typo",
+                "status": "failed",
+                "type": "command_execution",
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "aggregated_output": "Finished FedAvg.\n",
+                "command": "python job.py --num-rounds 3",
+                "exit_code": 0,
+                "id": "corrected",
+                "status": "completed",
+                "type": "command_execution",
+            },
+        },
+    ]
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join(json.dumps(event) for event in events),
+    }
+
+    rows = command_failure_rows(run)
+
+    assert len(rows) == 1
+    assert rows[0]["root_cause"] == "job.py: error: unrecognized arguments: --num-runds 3"
+
+
+def test_explicit_single_negative_parser_test_is_not_a_recovered_failure():
+    from benchmark.harness.sdks.nvflare._logic import (
+        command_failure_rows,
+        completed_job_recovered_issue_summary,
+    )
+
+    events = [
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "message",
+                "text": "I am testing that the parser rejects abbreviated arguments.",
+                "type": "agent_message",
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "aggregated_output": (
+                    "usage: job.py [-h] [--num-rounds NUM_ROUNDS]\n"
+                    "job.py: error: unrecognized arguments: --num-r 3\n"
+                ),
+                "command": "python job.py --num-r 3",
+                "exit_code": 2,
+                "id": "negative_test",
+                "status": "failed",
+                "type": "command_execution",
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "aggregated_output": "Finished FedAvg.\n",
+                "command": "python job.py --num-rounds 3",
+                "exit_code": 0,
+                "id": "job",
+                "status": "completed",
+                "type": "command_execution",
+            },
+        },
+    ]
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join(json.dumps(event) for event in events),
+    }
+
+    assert command_failure_rows(run) == []
+    assert completed_job_recovered_issue_summary(run) == ""
+
+
 def test_blank_failed_import_uses_bounded_later_diagnostic_for_root_cause():
     from benchmark.harness.sdks.nvflare._logic import (
         command_failure_rows,

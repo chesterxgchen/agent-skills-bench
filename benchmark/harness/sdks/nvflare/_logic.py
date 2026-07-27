@@ -63,6 +63,7 @@ from ...reports._events import (
     dependency_install_events,
     dependency_install_evidence,
     dependency_install_evidence_brief,
+    event_timeline_from_text,
     exit_code,
     failed_command_inline_text,
     failure_evidence,
@@ -931,10 +932,127 @@ def _command_failure_evidence(event: dict[str, Any], events: list[dict[str, Any]
     return inferred or evidence
 
 
-def _selected_command_failure_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+_EXPLICIT_NEGATIVE_PARSER_TEST_RE = re.compile(
+    r"(?:"
+    r"\b(?:parser|argument)\b[^.!?\n]{0,120}\b(?:abbreviat\w*|invalid|negative|reject\w*|typo)\b"
+    r"|"
+    r"\b(?:abbreviat\w*|invalid|negative|reject\w*|typo)\b[^.!?\n]{0,120}\b(?:parser|argument)\b"
+    r")",
+    flags=re.IGNORECASE,
+)
+_PARSER_PREFLIGHT_RE = re.compile(
+    r"(?:"
+    r"\bparser\b[^.!?\n]{0,120}\b(?:check\w*|preflight\w*|test\w*|validat\w*)\b"
+    r"|"
+    r"\b(?:check\w*|preflight\w*|test\w*|validat\w*)\b[^.!?\n]{0,120}\bparser\b"
+    r")",
+    flags=re.IGNORECASE,
+)
+_ARGPARSE_UNRECOGNIZED_RE = re.compile(
+    r"(?m)^[^\n:]*\.py:\s+error:\s+unrecognized arguments?:\s+(?P<arguments>[^\n]+)$",
+    flags=re.IGNORECASE,
+)
+
+
+def _recent_command_intent(run: dict[str, Any]) -> dict[tuple[str, str], set[str]]:
+    """Map command results to the nearest bounded preceding agent message."""
+
+    intent_by_result: dict[tuple[str, str], set[str]] = {}
+    recent_message = ""
+    commands_since_message = 4
+    for item in event_timeline_from_text(str(run.get("agent_events_text") or "")):
+        if item.get("kind") == "message":
+            recent_message = str(item.get("text") or "").strip()
+            commands_since_message = 0
+            continue
+        if item.get("kind") != "command":
+            continue
+        if recent_message and commands_since_message <= 3:
+            key = (
+                str(item.get("command") or "").strip(),
+                strip_ansi(str(item.get("output") or "")).strip(),
+            )
+            intent_by_result.setdefault(key, set()).add(recent_message)
+        commands_since_message += 1
+    return intent_by_result
+
+
+def _negative_argparse_test_candidate(
+    event: dict[str, Any],
+    intent_by_result: dict[tuple[str, str], set[str]],
+) -> tuple[str, tuple[str, ...], str] | None:
+    """Return parser-test evidence for an argparse rejection, if captured."""
+
+    if event.get("exit_code") != 2:
+        return None
+    command = str(event.get("command") or "")
+    output = strip_ansi(str(event.get("output") or ""))
+    if not is_simulation_or_job_command(command) or job_output_has_failure_marker(output):
+        return None
+    match = _ARGPARSE_UNRECOGNIZED_RE.search(output)
+    if not match:
+        return None
+    rejected_options = tuple(sorted(set(re.findall(r"--[A-Za-z0-9][A-Za-z0-9_-]*", match.group("arguments")))))
+    if not rejected_options:
+        return None
+    intents = intent_by_result.get((command.strip(), output.strip()), set())
+    # Repeated identical command/output pairs with conflicting surrounding
+    # intent are ambiguous; preserve them as reportable failures.
+    if len(intents) != 1:
+        return None
+    intent = next(iter(intents))
+    return command_recovery_key(command), rejected_options, intent
+
+
+def _expected_negative_parser_test_indexes(
+    run: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> set[int]:
+    """Identify intentional negative argparse checks without hiding real typos.
+
+    An explicit message that the parser should reject an invalid/abbreviated
+    option is sufficient. A generic "parser preflight" is weaker evidence and
+    only counts when the agent probes at least two distinct rejected spellings
+    against the same parser. This preserves ordinary one-off misspelled job
+    commands as reportable failures.
+    """
+
+    intent_by_result = _recent_command_intent(run)
+    candidates: list[tuple[dict[str, Any], str, tuple[str, ...], str]] = []
+    expected: set[int] = set()
+    for event in events:
+        if not command_failed(event):
+            continue
+        candidate = _negative_argparse_test_candidate(event, intent_by_result)
+        if candidate is None:
+            continue
+        parser_key, rejected_options, intent = candidate
+        candidates.append((event, parser_key, rejected_options, intent))
+        if _EXPLICIT_NEGATIVE_PARSER_TEST_RE.search(intent):
+            expected.add(int(event.get("index") or 0))
+
+    grouped: dict[tuple[str, str], list[tuple[dict[str, Any], tuple[str, ...]]]] = {}
+    for event, parser_key, rejected_options, intent in candidates:
+        if not _PARSER_PREFLIGHT_RE.search(intent):
+            continue
+        grouped.setdefault((parser_key, intent), []).append((event, rejected_options))
+    for group in grouped.values():
+        distinct_options = {option for _event, options in group for option in options}
+        if len(group) < 2 or len(distinct_options) < 2:
+            continue
+        expected.update(int(event.get("index") or 0) for event, _options in group)
+    return expected
+
+
+def _selected_command_failure_events(run: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply one selection policy to both failure rows and recovered summaries."""
 
-    failed_events = [event for event in events if command_failed(event)]
+    expected_negative_tests = _expected_negative_parser_test_indexes(run, events)
+    failed_events = [
+        event
+        for event in events
+        if command_failed(event) and int(event.get("index") or 0) not in expected_negative_tests
+    ]
     material_events = [event for event in failed_events if is_material_failed_command(event)]
     return material_events or [
         event
@@ -951,7 +1069,7 @@ def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
     (the renderer applies any display limit), so the derived view stays complete.
     """
     events = agent_command_events(run)
-    selected_events = _selected_command_failure_events(events)
+    selected_events = _selected_command_failure_events(run, events)
     diagnostics = []
     for event in selected_events:
         command = str(event.get("command") or "")
@@ -3698,7 +3816,7 @@ def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
         parts.append(runtime_recovery)
     recovered_causes = []
     events = agent_command_events(run)
-    for event in _selected_command_failure_events(events):
+    for event in _selected_command_failure_events(run, events):
         if not (recovered_by_later_success(event, events) or recovered_by_later_successful_job(event, events)):
             continue
         output = str(event.get("output") or "")
