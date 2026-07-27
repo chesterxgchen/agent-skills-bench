@@ -192,6 +192,107 @@ def _framework_evidence_text(value: str) -> str:
     return text
 
 
+def _canonical_inspector_framework(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+    if normalized in {"pytorchlightning", "lightning"}:
+        return "Lightning"
+    if normalized in {"huggingface", "transformers", "trl"}:
+        return "Hugging Face"
+    if normalized in {"pytorch", "torch"}:
+        return "PyTorch"
+    return ""
+
+
+def _nested_dicts(value: Any, depth: int = 12):
+    if depth < 0:
+        return
+    if isinstance(value, dict):
+        yield value
+        for nested in value.values():
+            yield from _nested_dicts(nested, depth - 1)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _nested_dicts(nested, depth - 1)
+
+
+def _detected_framework_from_payload(value: Any) -> str:
+    for mapping in _nested_dicts(value):
+        if "detected_framework" not in mapping:
+            continue
+        framework = _canonical_inspector_framework(mapping.get("detected_framework"))
+        if framework:
+            return framework
+    return ""
+
+
+def _detected_framework_from_json_text(value: str) -> str:
+    text = str(value or "")[:200_000]
+    if "detected_framework" not in text.lower():
+        return ""
+    decoder = json.JSONDecoder()
+    candidates = [0, *(match.start() for match in re.finditer(r"\{", text))]
+    seen_offsets: set[int] = set()
+    for offset in candidates:
+        if offset in seen_offsets:
+            continue
+        seen_offsets.add(offset)
+        try:
+            payload, _end = decoder.raw_decode(text, offset)
+        except (TypeError, ValueError):
+            continue
+        framework = _detected_framework_from_payload(payload)
+        if framework:
+            return framework
+    return ""
+
+
+def _event_command_texts(event: dict[str, Any]) -> list[str]:
+    commands = []
+    for mapping in _nested_dicts(event):
+        for key in ("command", "cmd", "shell_command", "command_text"):
+            value = mapping.get(key)
+            if isinstance(value, str) and value.strip():
+                commands.append(value)
+    return commands
+
+
+def _inspected_framework_from_events(events_text: str) -> str:
+    """Return framework emitted by ``nvflare agent inspect --format json``.
+
+    Command lifecycle streams can put the command and its output in separate
+    events. Keep a narrow pending window, and only parse ``detected_framework``
+    JSON while processing that inspector command/result sequence.
+    """
+
+    pending_inspector = False
+    for line in str(events_text or "").splitlines():
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        commands = _event_command_texts(event)
+        if commands:
+            is_inspector = any(
+                re.search(r"\bnvflare\s+agent\s+inspect\b", command, flags=re.IGNORECASE) for command in commands
+            )
+            pending_inspector = is_inspector
+        if not pending_inspector:
+            continue
+        framework = _detected_framework_from_payload(event)
+        if framework:
+            return framework
+        for mapping in _nested_dicts(event):
+            for value in mapping.values():
+                if not isinstance(value, str):
+                    continue
+                framework = _detected_framework_from_json_text(value)
+                if framework:
+                    return framework
+    return ""
+
+
 def _infer_framework_from_text(*values: str) -> str:
     text = " ".join(_framework_evidence_text(value) for value in values if value).lower()
     if not text:
@@ -201,6 +302,8 @@ def _infer_framework_from_text(*values: str) -> str:
         return "PyTorch"
     if "lightning" in text or "pytorch_lightning" in text:
         return "Lightning"
+    if re.search(r"hugging[\s_-]*face|huggingface|transformers|\btrl\b", text):
+        return "Hugging Face"
     if "pytorch" in text or re.search(r"(^|[^a-z])torch([^a-z]|$)", text):
         return "PyTorch"
     return ""
@@ -218,8 +321,16 @@ def _run_job_name(run: RunEvidence) -> str:
     return ""
 
 
+def _run_inspected_framework_display(run: RunEvidence) -> str:
+    framework = _inspected_framework_from_events(run.agent_events_text)
+    return f"{framework} target" if framework else ""
+
+
 def _run_framework_display(run: RunEvidence) -> str:
     raw = run.raw if isinstance(run.raw, dict) else {}
+    inspected_framework = _run_inspected_framework_display(run)
+    if inspected_framework:
+        return inspected_framework
     target_framework = _infer_framework_from_text(
         str(raw.get("framework") or ""),
         str(raw.get("job_name") or ""),
@@ -300,6 +411,10 @@ def _run_shared_skill_display(run: RunEvidence) -> str:
 
 
 def _first_run_framework(runs: dict[str, RunEvidence]) -> str:
+    for run in runs.values():
+        framework = _run_inspected_framework_display(run).removesuffix(" target")
+        if framework:
+            return framework
     for run in runs.values():
         framework = _run_declared_framework_display(run).removesuffix(" target")
         if framework:
@@ -520,7 +635,7 @@ def _executive_summary_section(
         context_lines.append(
             f"| {markdown_cell(run.label or mode)} | "
             f"{markdown_cell(_run_job_name(run) or 'NA')} | "
-            f"{markdown_cell(_run_declared_framework_display(run) or target_framework or 'NA')} | "
+            f"{markdown_cell(_run_inspected_framework_display(run) or target_framework or _run_declared_framework_display(run) or 'NA')} | "
             f"{markdown_cell(agent_model)} | "
             f"{markdown_cell(run_host_os_display(run))} | "
             f"{markdown_cell(fl_algorithm_display(run, ctx.algorithm(mode)))} | "

@@ -1018,6 +1018,100 @@ def test_benchmark_target_infers_plain_pytorch_framework_from_captured_evidence(
     assert "| With skills | not recorded | none | nvflare-convert-pytorch | none |" in report
 
 
+def test_framework_inference_recognizes_hugging_face_before_pytorch_exchange():
+    from benchmark.harness.reports.benchmark_insights import _infer_framework_from_text
+
+    assert (
+        _infer_framework_from_text(
+            "Converted the Hugging Face Trainer workflow using PyTorch exchange and eval_accuracy."
+        )
+        == "Hugging Face"
+    )
+    assert (
+        _infer_framework_from_text(
+            "Converted a PyTorch Lightning Trainer that imports transformers."
+        )
+        == "Lightning"
+    )
+
+
+def test_benchmark_target_prefers_agent_inspector_framework_over_pytorch_prose(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import benchmark_report, collect_benchmark_runs
+
+    entries = []
+    for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
+        record_dir = (
+            tmp_path
+            / "records"
+            / "agent=codex"
+            / "model=default"
+            / "job=image_conversion"
+            / f"mode={mode}"
+        )
+        record_dir.mkdir(parents=True)
+        entries.append(
+            {
+                "run_id": f"run_{index:05d}",
+                "mode": mode,
+                "agent": "codex",
+                "agent_model": "default",
+                "scenario_name": "pair codex image conversion",
+                "job_name": "image-conversion",
+                "job_slug": "image_conversion",
+                "job_path": "/tmp/jobs/image_conversion",
+                "record_dir": str(record_dir.relative_to(tmp_path)),
+            }
+        )
+        write_json(
+            record_dir / "run_summary.json",
+            {
+                "mode": mode,
+                "elapsed_seconds": 10,
+                "token_count": 100,
+                "agent_exit_code": 0,
+                "final_container_exit_code": 0,
+            },
+        )
+        write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+        write_json(record_dir / "benchmark_record.json", {"mode": mode})
+        (record_dir / "agent_last_message.txt").write_text(
+            "Created a 3-round FedAvgRecipe using PyTorch exchange and eval_accuracy.\n",
+            encoding="utf-8",
+        )
+        if mode == WITH_SKILLS_MODE:
+            inspector_output = json.dumps(
+                {
+                    "detected_framework": "huggingface",
+                    "recommended_skills": ["nvflare-convert-huggingface"],
+                }
+            )
+            (record_dir / "agent_events.jsonl").write_text(
+                _codex_command(
+                    "nvflare agent inspect . --format json",
+                    inspector_output,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+    write_json(tmp_path / "run_plan.json", {"entries": entries})
+
+    report = benchmark_report(tmp_path, collect_benchmark_runs(tmp_path))
+
+    assert (
+        "| image-conversion | Hugging Face target | pair codex image conversion | "
+        "/tmp/jobs/image_conversion |"
+    ) in report
+    assert (
+        "| No skills baseline | image-conversion | Hugging Face target | agent=codex, model=default |"
+    ) in report
+    assert (
+        "| With skills | image-conversion | Hugging Face target | agent=codex, model=default |"
+    ) in report
+    assert "PyTorch target" not in report
+
+
 def test_framework_inference_ignores_skill_usage_names(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
