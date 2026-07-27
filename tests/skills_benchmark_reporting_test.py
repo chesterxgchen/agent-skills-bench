@@ -277,6 +277,101 @@ def test_benchmark_insights_explains_docker_image_failures(tmp_path):
     assert "container exit 1" in human_readable_status(_ev(run))
 
 
+def test_empty_mode_directories_are_reported_as_incomplete_not_failed(tmp_path):
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports import metrics_report
+    from benchmark.harness.reports.benchmark_insights import collect_benchmark_runs
+
+    for mode in (NO_SKILLS_MODE, WITH_SKILLS_MODE):
+        mode_dir = tmp_path / mode
+        mode_dir.mkdir()
+        (mode_dir / "run_summary.json").write_text("", encoding="utf-8")
+        (mode_dir / "benchmark_record.json").write_text("", encoding="utf-8")
+        (mode_dir / "agent_events.jsonl").write_text("", encoding="utf-8")
+    baseline_dir = tmp_path / NO_SKILLS_MODE
+    (baseline_dir / "agent_stderr.txt").write_text(
+        "ERROR exec_command failed: rm -rf style commands are not permitted\n",
+        encoding="utf-8",
+    )
+    rca_dir = baseline_dir / "rca"
+    rca_dir.mkdir()
+    (rca_dir / "rca_report_structure.md").write_text(
+        "INVALID RCA FROM INCOMPLETE EVIDENCE\n",
+        encoding="utf-8",
+    )
+
+    runs = collect_benchmark_runs(tmp_path)
+    assert runs[NO_SKILLS_MODE]["capture_state"] == "incomplete"
+    assert runs[WITH_SKILLS_MODE]["capture_state"] == "incomplete"
+    assert runs[NO_SKILLS_MODE]["rca_report"] == ""
+
+    summary = metrics_report.write_reports(tmp_path, "Incomplete Pair")
+    assert summary["comparison"] == {}
+    report = (tmp_path / "metrics_report.md").read_text(encoding="utf-8")
+    assert "No skills baseline: incomplete (no terminal run artifacts were captured)" in report
+    assert "With skills: incomplete (no terminal run artifacts were captured)" in report
+    assert "failed (unknown exit" not in report
+    assert "No failure detected." not in report
+    assert "INVALID RCA FROM INCOMPLETE EVIDENCE" not in report
+
+
+def test_terminal_host_case_error_is_reported_as_a_harness_failure(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import (
+        collect_benchmark_runs,
+        human_readable_status,
+    )
+
+    mode_dir = tmp_path / NO_SKILLS_MODE
+    mode_dir.mkdir()
+    write_json(
+        mode_dir / "host_case_error.json",
+        {"error_type": "RuntimeError", "message": "artifact capture stopped"},
+    )
+
+    run = collect_benchmark_runs(tmp_path)[NO_SKILLS_MODE]
+    assert run["capture_state"] == "complete"
+    assert "Harness failure: artifact capture stopped" in human_readable_status(_ev(run))
+
+
+def test_auto_rca_and_quality_scoring_skip_incomplete_runs(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.rca import resolve_seed
+    from benchmark.harness.reports import benchmark_insights
+    from benchmark.harness.reports.benchmark_insights import collect_benchmark_runs
+    from benchmark.harness.sdks import report_registry
+    from benchmark.harness.sdks.report_plugin import StructureSignal
+
+    entries = []
+    for mode in (NO_SKILLS_MODE, WITH_SKILLS_MODE):
+        record_dir = f"records/mode={mode}"
+        mode_dir = tmp_path / record_dir
+        mode_dir.mkdir(parents=True)
+        (mode_dir / "run_summary.json").write_text("", encoding="utf-8")
+        (mode_dir / "benchmark_record.json").write_text("", encoding="utf-8")
+        entries.append({"mode": mode, "record_dir": record_dir})
+    write_json(tmp_path / "run_plan.json", {"entries": entries})
+    write_json(
+        tmp_path / "quality_summary.json",
+        {"structure_score": {WITH_SKILLS_MODE: 0.0, NO_SKILLS_MODE: 100.0}},
+    )
+
+    assert resolve_seed(tmp_path, WITH_SKILLS_MODE, "auto", None) is None
+
+    monkeypatch.setattr(
+        report_registry,
+        "resolve_from_result_root",
+        lambda root: SimpleNamespace(score_structure=lambda run: StructureSignal(score=0.0)),
+    )
+    scores = benchmark_insights.persist_quality_summary(tmp_path, collect_benchmark_runs(tmp_path))
+    assert scores == {}
+    assert not (tmp_path / "quality_summary.json").exists()
+
+
 def _stage_evaluation_rules(mode_dir):
     rules_dir = mode_dir / "evaluation_rules"
     rules_dir.mkdir(parents=True, exist_ok=True)
@@ -10141,6 +10236,10 @@ def test_rca_investigation_loop_follows_agent_questions(tmp_path):
         tmp_path / "run_plan.json",
         {"entries": [{"mode": "with_skills", "record_dir": str(mode_dir.relative_to(tmp_path))}]},
     )
+    write_json(
+        mode_dir / "run_summary.json",
+        {"mode": "with_skills", "final_container_exit_code": 1},
+    )
 
     seed = seed_failure_context(tmp_path, "with_skills")
     assert seed is not None
@@ -10243,7 +10342,7 @@ def _two_mode_root(tmp_path):
     for mode in ("with_skills", "without_skills"):
         d = tmp_path / "records" / f"mode={mode}"
         d.mkdir(parents=True)
-        write_json(d / "run_summary.json", {"mode": mode})
+        write_json(d / "run_summary.json", {"mode": mode, "final_container_exit_code": 0})
     write_json(
         tmp_path / "run_plan.json",
         {
@@ -10389,7 +10488,7 @@ def _multi_run_root(tmp_path):
             record_dir = f"records/{group}/mode={mode}"
             d = tmp_path / record_dir
             d.mkdir(parents=True)
-            write_json(d / "run_summary.json", {"mode": mode})
+            write_json(d / "run_summary.json", {"mode": mode, "final_container_exit_code": 0})
             entries.append(
                 {
                     "mode": mode,
@@ -10459,7 +10558,11 @@ def test_persist_quality_summary_writes_run_keyed_scores(tmp_path, monkeypatch):
         for mode in ("with_skills", "without_skills"):
             write_json(
                 tmp_path / f"records/{group}/mode={mode}" / "run_summary.json",
-                {"mode": mode, "score": by_run_scores[f"{group}-{mode}"]},
+                {
+                    "mode": mode,
+                    "score": by_run_scores[f"{group}-{mode}"],
+                    "final_container_exit_code": 0,
+                },
             )
     fake_plugin = SimpleNamespace(
         score_structure=lambda run: StructureSignal(score=(run.get("run") or {}).get("score")),

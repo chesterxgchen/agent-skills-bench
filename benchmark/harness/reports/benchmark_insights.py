@@ -70,8 +70,8 @@ from ._events import (  # noqa: F401
     unsupported_model_message,
 )
 from ._lifecycle import markdown_report_state_note
+from ._loader import CAPTURE_STATE_COMPLETE, capture_state_for_mode, collect_benchmark_runs
 from ._loader import sanitized_validation_metric  # noqa: F401
-from ._loader import collect_benchmark_runs
 from ._runs import combined_text, manifest_paths, run_record, run_workspace_delta, unique_paths  # noqa: F401
 from ._skill_usage import (
     shared_skill_usage_display,
@@ -679,14 +679,25 @@ def _plan_entry_run_bundle(root: Path, entry: dict[str, Any]) -> dict[str, Any] 
         return None
     run_dir = root / str(record_dir)
     record = load_json(run_dir / "benchmark_record.json", None)
-    if not isinstance(record, dict):
+    if not isinstance(record, dict) or not record:
         record = load_json(run_dir / "records" / f"{mode}_record.json", {}) or {}
+    summary = load_json(run_dir / "run_summary.json", {}) or {}
+    container_exit = load_json(run_dir / "container_exit_code.json", {}) or {}
+    capture_state, capture_state_reason = capture_state_for_mode(
+        run_dir,
+        summary=summary,
+        record=record,
+        container_exit=container_exit,
+    )
     return {
         "available": run_dir.exists(),
+        "capture_state": capture_state,
+        "capture_state_reason": capture_state_reason,
         "mode": mode,
         "mode_dir": run_dir,
-        "run": load_json(run_dir / "run_summary.json", {}) or {},
+        "run": summary,
         "record": record if isinstance(record, dict) else {},
+        "container_exit": container_exit,
         "workspace_delta": load_json(run_dir / "workspace_delta_manifest.json", {}) or {},
     }
 
@@ -713,6 +724,12 @@ def _run_quality_issue_texts(plugin: Any, run: RunEvidence | dict[str, Any] | No
         return []
 
 
+def _run_capture_complete(run: RunEvidence | dict[str, Any]) -> bool:
+    if isinstance(run, RunEvidence):
+        return run.capture_state == CAPTURE_STATE_COMPLETE
+    return str(run.get("capture_state") or CAPTURE_STATE_COMPLETE) == CAPTURE_STATE_COMPLETE
+
+
 def persist_quality_summary(root: Path, runs: dict[str, RunEvidence | dict[str, Any]]) -> dict[str, float]:
     """Write per-mode SDK quality scores to a host-owned root sidecar.
 
@@ -737,7 +754,7 @@ def persist_quality_summary(root: Path, runs: dict[str, RunEvidence | dict[str, 
     issues: dict[str, list[str]] = {}
     for mode in mode_names(BENCHMARK_RUNS):
         run = runs.get(mode)
-        if run is None:
+        if run is None or not _run_capture_complete(run):
             continue
         score = _structure_score_value(plugin, run)
         if score is not None:
@@ -753,7 +770,7 @@ def persist_quality_summary(root: Path, runs: dict[str, RunEvidence | dict[str, 
         if not entry.get("run_id"):
             continue
         bundle = _plan_entry_run_bundle(root, entry)
-        score = _structure_score_value(plugin, bundle) if bundle is not None else None
+        score = _structure_score_value(plugin, bundle) if bundle is not None and _run_capture_complete(bundle) else None
         if score is not None:
             scores_by_run[str(entry["run_id"])] = score
     # Quality issues come ONLY from the full report bundles (see
@@ -779,6 +796,8 @@ def persist_quality_summary(root: Path, runs: dict[str, RunEvidence | dict[str, 
         payload["quality_issues_by_run"] = issues_by_run
     if payload:
         write_json(root / "quality_summary.json", payload)
+    else:
+        (root / "quality_summary.json").unlink(missing_ok=True)
     return scores
 
 

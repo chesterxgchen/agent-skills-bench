@@ -40,6 +40,69 @@ from ._runs import read_text
 # Generic for all SDKs; capped so a pathological prompt cannot bloat the report.
 MAX_PROMPT_TEXT_BYTES = 64_000
 
+CAPTURE_STATE_COMPLETE = "complete"
+CAPTURE_STATE_INCOMPLETE = "incomplete"
+CAPTURE_STATE_MISSING = "missing"
+
+_TERMINAL_EXIT_KEYS = (
+    "exit_code",
+    "final_container_exit_code",
+    "report_inclusive_exit_code",
+    "agent_process_exit_code",
+    "agent_exit_code",
+)
+
+
+def _has_terminal_result(payload: Any) -> bool:
+    """Whether a captured JSON object records a terminal run outcome."""
+
+    if not isinstance(payload, dict) or not payload:
+        return False
+    for key in _TERMINAL_EXIT_KEYS:
+        value = payload.get(key)
+        if isinstance(value, bool) or value is None:
+            continue
+        try:
+            int(value)
+        except (TypeError, ValueError):
+            continue
+        return True
+    return isinstance(payload.get("agent_process_passed"), bool)
+
+
+def capture_state_for_mode(
+    mode_dir: Path,
+    *,
+    summary: Any = None,
+    record: Any = None,
+    container_exit: Any = None,
+) -> tuple[str, str]:
+    """Classify whether a mode has trustworthy terminal capture evidence.
+
+    A directory can be created before its run starts, so existence alone is not
+    evidence that the run completed.  Reports must not turn an empty skeleton
+    into ``failed (unknown exit)`` or feed it to comparison diagnostics.
+    """
+
+    if not mode_dir.exists():
+        return CAPTURE_STATE_MISSING, "mode directory is missing"
+    terminal_sources = (
+        ("run_summary.json", summary),
+        ("benchmark_record.json", record),
+        ("container_exit_code.json", container_exit),
+    )
+    for source, payload in terminal_sources:
+        if _has_terminal_result(payload):
+            return CAPTURE_STATE_COMPLETE, f"terminal result captured in {source}"
+    for filename in ("host_case_error.json", "early_failure.json"):
+        payload = load_json(mode_dir / filename, None)
+        if isinstance(payload, dict) and payload:
+            return CAPTURE_STATE_COMPLETE, f"terminal harness failure captured in {filename}"
+    return (
+        CAPTURE_STATE_INCOMPLETE,
+        "mode directory exists, but no terminal run summary, container exit, or benchmark record was captured",
+    )
+
 
 def first_non_empty(*values: Any) -> Any:
     for value in values:
@@ -105,7 +168,8 @@ def mode_dir_for_benchmark(root: Path, mode: str) -> Path:
 def final_record_path(root: Path, mode: str) -> Path:
     mode_dir = mode_dir_for_benchmark(root, mode)
     benchmark_record = mode_dir / "benchmark_record.json"
-    if benchmark_record.exists():
+    benchmark_payload = load_json(benchmark_record, None)
+    if isinstance(benchmark_payload, dict) and benchmark_payload:
         return benchmark_record
     return mode_dir / "records" / f"{mode}_record.json"
 
@@ -284,8 +348,20 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             expected_metric,
         )
         rules_path, rules_status = verified_evaluation_rules_path(mode_dir, trusted_criteria)
+        container_exit = load_json(mode_dir / "container_exit_code.json", {}) if mode_dir.exists() else {}
+        harness_error = load_json(mode_dir / "host_case_error.json", {}) if mode_dir.exists() else {}
+        if not harness_error and mode_dir.exists():
+            harness_error = load_json(mode_dir / "early_failure.json", {})
+        capture_state, capture_state_reason = capture_state_for_mode(
+            mode_dir,
+            summary=summary,
+            record=record,
+            container_exit=container_exit,
+        )
         runs[mode] = {
             "available": mode_dir.exists(),
+            "capture_state": capture_state,
+            "capture_state_reason": capture_state_reason,
             "mode_dir": mode_dir,
             "mode": mode,
             "label": spec.label,
@@ -306,7 +382,8 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "model_source": model_source,
             "run": summary,
             "record": record,
-            "container_exit": load_json(mode_dir / "container_exit_code.json", {}) if mode_dir.exists() else {},
+            "container_exit": container_exit,
+            "harness_error": harness_error if isinstance(harness_error, dict) else {},
             "code_quality_assessment": (
                 load_json(mode_dir / "code_quality_assessment.json", {}) if mode_dir.exists() else {}
             ),
@@ -318,7 +395,7 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
                 read_text(mode_dir / "prompt.txt", max_bytes=MAX_PROMPT_TEXT_BYTES) if mode_dir.exists() else ""
             ),
             "prompt_metadata": load_json(mode_dir / "prompt_metadata.json", {}) if mode_dir.exists() else {},
-            "rca_report": _combined_rca_reports(mode_dir),
+            "rca_report": (_combined_rca_reports(mode_dir) if capture_state == CAPTURE_STATE_COMPLETE else ""),
             "runtime_image": load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {},
             "evaluation_rules_path": rules_path,
             "evaluation_rules_status": rules_status,

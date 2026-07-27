@@ -162,6 +162,9 @@ def failure_root_cause(run: RunEvidence) -> str:
     if "pull access denied" in lowered or "unable to find image" in lowered:
         return "Docker image unavailable: build the benchmark Docker images before running."
     error = record.get("harness_error") if isinstance(record.get("harness_error"), dict) else {}
+    if not error:
+        raw_error = run.raw.get("harness_error")
+        error = raw_error if isinstance(raw_error, dict) else {}
     if error.get("message"):
         return f"Harness failure: {error['message']}"
     evidence = failure_evidence(run.raw)

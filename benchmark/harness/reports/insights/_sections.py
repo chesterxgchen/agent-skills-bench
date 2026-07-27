@@ -490,6 +490,9 @@ def failure_analysis_section(runs: dict[str, RunEvidence], modes: list[str], ctx
             evidence = failure_evidence(run.raw)
             if evidence:
                 lines.append(f"- Evidence: {evidence}")
+        elif status_kind == "incomplete":
+            reason = run.capture_state_reason or "No terminal run artifacts were captured."
+            lines.append(f"- Outcome: incomplete. {reason}")
         else:
             lines.append("- Outcome: missing. No run artifacts were found for this mode.")
         record = run.record if isinstance(run.record, dict) else {}

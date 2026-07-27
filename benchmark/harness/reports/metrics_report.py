@@ -31,6 +31,8 @@ from ._context import ReportContext
 from ._lifecycle import diagnostics_report_state, markdown_report_state_note
 from ._loader import (
     _combined_rca_reports,
+    CAPTURE_STATE_COMPLETE,
+    capture_state_for_mode,
     expected_validation_metric_name,
     filter_mode_console,
     final_record_path,
@@ -155,11 +157,20 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
             agent_events_text,
             agent_stderr_text,
         )
+        container_exit = load_json(mode_dir / "container_exit_code.json", {}) if mode_dir.exists() else {}
+        capture_state, capture_state_reason = capture_state_for_mode(
+            mode_dir,
+            summary=summary,
+            record=record,
+            container_exit=container_exit,
+        )
         runs.append(
             {
                 "mode": spec.mode,
                 "label": spec.label,
                 "available": mode_dir.exists(),
+                "capture_state": capture_state,
+                "capture_state_reason": capture_state_reason,
                 "skills_enabled": spec.skills_enabled,
                 "agent": first_non_empty(summary.get("agent"), record.get("agent"), run_plan_entry.get("agent")),
                 "agent_model": agent_model,
@@ -275,8 +286,23 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             agent_events_text,
             agent_stderr_text,
         )
+        container_exit = load_json(mode_dir / "container_exit_code.json", {}) if available else {}
+        harness_error = load_json(mode_dir / "host_case_error.json", {}) if available else {}
+        if not harness_error and available:
+            harness_error = load_json(mode_dir / "early_failure.json", {})
+        capture_state = str(row.get("capture_state") or "")
+        capture_state_reason = str(row.get("capture_state_reason") or "")
+        if not capture_state:
+            capture_state, capture_state_reason = capture_state_for_mode(
+                mode_dir,
+                summary=summary,
+                record=record,
+                container_exit=container_exit,
+            )
         runs[mode] = {
             "available": available,
+            "capture_state": capture_state,
+            "capture_state_reason": capture_state_reason,
             "mode": mode,
             "label": row.get("label") or spec.label,
             "mode_dir": mode_dir,
@@ -294,7 +320,8 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             "model_source": model_source,
             "run": summary,
             "record": record,
-            "container_exit": load_json(mode_dir / "container_exit_code.json", {}) if available else {},
+            "container_exit": container_exit,
+            "harness_error": harness_error if isinstance(harness_error, dict) else {},
             "usage": usage,
             "activity": activity,
             "workspace_delta": workspace_delta,
@@ -309,7 +336,9 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             # run.raw["rca_report"]). collect_benchmark_runs attaches it too;
             # without it here, the primary metrics report renders the RCA
             # heading/tables but silently drops the investigation itself.
-            "rca_report": _combined_rca_reports(mode_dir) if available else "",
+            "rca_report": (
+                _combined_rca_reports(mode_dir) if available and capture_state == CAPTURE_STATE_COMPLETE else ""
+            ),
             "validation_metric": validation_metric or validation_metric_from_record(record),
         }
     # Render from the typed Contract B spine (Inversion 1): the shared
@@ -348,6 +377,8 @@ def numeric_comparison(
     without = rows_by_mode.get(NO_SKILLS_MODE)
     with_skills = rows_by_mode.get(WITH_SKILLS_MODE)
     if without is None or with_skills is None:
+        return {}
+    if any(str(row.get("capture_state") or "complete") != "complete" for row in (without, with_skills)):
         return {}
     result: dict[str, Any] = {}
     for key in ("elapsed_seconds", "token_count"):

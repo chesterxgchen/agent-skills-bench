@@ -23,6 +23,7 @@ from ...modes import BENCHMARK_RUNS, mode_names
 from ...quality_signals import canonical_metric_name
 from .._context import CodeQualitySignal, ReportContext, StructureView
 from .._events import as_number, fmt_seconds, run_activity
+from .._loader import CAPTURE_STATE_COMPLETE
 from .._text import fmt_number, markdown_cell
 from ..evidence import RunEvidence
 from ._metrics import (
@@ -60,6 +61,7 @@ __all__ = [
 
 def interpretation_section(runs: dict[str, RunEvidence], modes: list[str], ctx: ReportContext | None = None) -> str:
     ctx = ctx or _report_context(runs, modes)
+    incomplete = [runs[mode].label or mode for mode in modes if runs[mode].capture_state != CAPTURE_STATE_COMPLETE]
     failed_quality = [
         runs[mode].label or mode for mode in modes if run_quality_issues(runs[mode], ctx.evidence.get(mode))
     ]
@@ -68,7 +70,14 @@ def interpretation_section(runs: dict[str, RunEvidence], modes: list[str], ctx: 
         "## Interpretation",
         "",
     ]
-    if failed_quality:
+    if incomplete:
+        lines.append(
+            "Run comparison is incomplete because terminal artifacts were not captured for: "
+            + ", ".join(incomplete)
+            + "."
+        )
+        lines.append("No runtime, token, quality, or metric winner is inferred from incomplete run evidence.")
+    elif failed_quality:
         lines.append(
             "Quality comparison is incomplete because these runs failed a benchmark quality gate: "
             + ", ".join(failed_quality)
@@ -79,7 +88,7 @@ def interpretation_section(runs: dict[str, RunEvidence], modes: list[str], ctx: 
         )
     else:
         lines.append("All available runs passed the benchmark quality gates captured by this report.")
-    if len(modes) == 2:
+    if len(modes) == 2 and not incomplete:
         left, right = modes
         left_time = as_number(run_summary(runs[left]).get("elapsed_seconds"))
         right_time = as_number(run_summary(runs[right]).get("elapsed_seconds"))
@@ -185,6 +194,11 @@ def benchmark_chart_metrics(
             "value": lambda run, ev: metric_value(run, metric_name, ev),
         },
     ]
+    for metric in metrics:
+        value = metric["value"]
+        metric["value"] = lambda run, ev, value=value: (
+            value(run, ev) if run.capture_state == CAPTURE_STATE_COMPLETE else None
+        )
     # With the container's dependency prewarm, agents no longer install
     # dependencies mid-run: install time is 0 and Runtime == Total time for
     # every run, so three time panels would say the same thing. Collapse to the

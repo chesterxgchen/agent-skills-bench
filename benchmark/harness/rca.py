@@ -79,7 +79,7 @@ from typing import Any, Callable, Iterable
 from .agent_identity import MAX_AGENT_EVENTS_TEXT_BYTES
 from .common import load_json
 from .reports._events import event_timeline_from_text, terminal_failure_anchor
-from .reports._loader import mode_dir_for_benchmark
+from .reports._loader import CAPTURE_STATE_COMPLETE, capture_state_for_mode, mode_dir_for_benchmark
 from .reports._text import sanitize_agent_markdown
 
 MAX_INVESTIGATION_STEPS = 8
@@ -952,6 +952,20 @@ def resolve_seed(
     if question:
         return seed_custom_context(result_root, mode, question, run_id)
     if topic == "auto":
+        mode_dir, _entry = _resolve_run_selection(result_root, mode, run_id)
+        summary = load_json(mode_dir / "run_summary.json", {}) or {}
+        record = load_json(mode_dir / "benchmark_record.json", None)
+        if not isinstance(record, dict) or not record:
+            record = load_json(mode_dir / "records" / f"{mode}_record.json", {}) or {}
+        container_exit = load_json(mode_dir / "container_exit_code.json", {}) or {}
+        capture_state, _reason = capture_state_for_mode(
+            mode_dir,
+            summary=summary,
+            record=record,
+            container_exit=container_exit,
+        )
+        if capture_state != CAPTURE_STATE_COMPLETE:
+            return None
         for name in _AUTO_TOPICS:
             seed = _TOPIC_SEEDERS[name](result_root, mode, run_id)
             if seed is not None:

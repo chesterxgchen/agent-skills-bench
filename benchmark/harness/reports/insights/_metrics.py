@@ -36,7 +36,7 @@ from ...quality_signals import metric_value_label as payload_metric_value_label
 from ...quality_signals import reported_metric_payload
 from .._context import AlgorithmSignal, JobExecutionSignal, ReportContext
 from .._events import exit_code
-from .._loader import sanitized_validation_metric
+from .._loader import CAPTURE_STATE_COMPLETE, CAPTURE_STATE_INCOMPLETE, sanitized_validation_metric
 from .._runs import combined_text, run_workspace_delta
 from .._text import fmt_number
 from ..evidence import RunEvidence
@@ -283,6 +283,8 @@ def final_response_metric_reporting_gap(run: RunEvidence, ev: Any = None) -> str
 
 
 def run_quality_issues(run: RunEvidence, ev: Any = None) -> list[str]:
+    if run.capture_state != CAPTURE_STATE_COMPLETE:
+        return []
     issues = []
     job_execution = getattr(ev, "job_execution", None) if ev is not None else None
     job_status = str(getattr(job_execution, "status", "") or "")
@@ -332,6 +334,8 @@ def run_quality_issues(run: RunEvidence, ev: Any = None) -> list[str]:
 def run_status_kind(run: RunEvidence, ev: Any = None) -> str:
     if not run.available:
         return "missing"
+    if run.capture_state == CAPTURE_STATE_INCOMPLETE:
+        return "incomplete"
     code = exit_code(run.raw)
     if code not in (None, 0):
         return "failed"
@@ -343,6 +347,8 @@ def run_status_kind(run: RunEvidence, ev: Any = None) -> str:
 def human_readable_status(run: RunEvidence, ev: Any = None) -> str:
     if not run.available:
         return "missing"
+    if run.capture_state == CAPTURE_STATE_INCOMPLETE:
+        return "incomplete (no terminal run artifacts were captured)"
     code = exit_code(run.raw)
     if code == 0:
         issues = run_quality_issues(run, ev)
@@ -358,6 +364,8 @@ def human_readable_status(run: RunEvidence, ev: Any = None) -> str:
 def run_analysis(run: RunEvidence, ev: Any = None) -> str:
     if not run.available:
         return "Run artifacts are missing."
+    if run.capture_state == CAPTURE_STATE_INCOMPLETE:
+        return run.capture_state_reason or "Run capture stopped before a terminal outcome was recorded."
     issues = run_quality_issues(run, ev)
     if exit_code(run.raw) == 0 and issues:
         return issues[0]
@@ -721,6 +729,10 @@ def additional_or_observed_metric_values_display(
 
 
 def run_result_metric_status(run: RunEvidence, ev: Any = None) -> str:
+    if not run.available:
+        return "missing"
+    if run.capture_state != CAPTURE_STATE_COMPLETE:
+        return "not evaluated: run capture incomplete"
     if not _scalar_metric_required(ev):
         assessment = getattr(ev, "metric", None) if ev is not None else None
         phrase = str(getattr(assessment, "gate_phrase", "") or "task result gate satisfied")
@@ -745,6 +757,8 @@ def run_result_metric_status(run: RunEvidence, ev: Any = None) -> str:
 def benchmark_outcome(run: RunEvidence, ev: Any = None) -> str:
     if not run.available:
         return "fail: run artifacts missing"
+    if run.capture_state != CAPTURE_STATE_COMPLETE:
+        return "incomplete: terminal run artifacts missing"
     code = exit_code(run.raw)
     if code not in (None, 0):
         return f"fail: container exit {code}"

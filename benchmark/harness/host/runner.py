@@ -1200,7 +1200,7 @@ def autorun_code_quality_evaluations(
     runs = collect_benchmark_runs(result_root)
     targets: list[tuple[str, list[dict[str, str]], str]] = []
     for mode, bundle in runs.items():
-        if not bundle.get("available"):
+        if not bundle.get("available") or bundle.get("capture_state") != "complete":
             continue
         if only_missing and _mode_has_code_quality_assessment(result_root, mode):
             continue

@@ -53,6 +53,8 @@ class RunEvidence:
     mode: str
     label: str
     available: bool
+    capture_state: str
+    capture_state_reason: str
     agent: str | None
     agent_model: str | None
     model_source: str | None
@@ -95,10 +97,13 @@ class ComparisonEvidence:
 
 def _run_evidence_from_bundle(bundle: Mapping[str, Any]) -> RunEvidence:
     mode_dir = bundle.get("mode_dir")
+    available = bool(bundle.get("available"))
     return RunEvidence(
         mode=str(bundle.get("mode") or ""),
         label=str(bundle.get("label") or ""),
-        available=bool(bundle.get("available")),
+        available=available,
+        capture_state=str(bundle.get("capture_state") or ("complete" if available else "missing")),
+        capture_state_reason=str(bundle.get("capture_state_reason") or ""),
         agent=bundle.get("agent"),
         agent_model=bundle.get("agent_model"),
         model_source=bundle.get("model_source"),
