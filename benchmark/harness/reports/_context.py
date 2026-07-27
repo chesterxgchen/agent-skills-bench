@@ -37,7 +37,9 @@ class JobExecutionSignal:
 
     ``status`` / ``status_reason`` mirror the strings the report has always shown;
     ``recovered_summary`` is the (possibly empty) note about command failures that
-    a later successful run recovered from. ``successful_job_spans`` /
+    a later successful run recovered from. ``rerun_reason`` is the SDK's
+    attempt-aware explanation for repeated successful executions.
+    ``successful_job_spans`` /
     ``last_successful_job_event`` are the realized job evidence the cost/why and
     metric-evidence sections read.
     """
@@ -45,6 +47,7 @@ class JobExecutionSignal:
     status: str | None = None
     status_reason: str | None = None
     recovered_summary: str | None = None
+    rerun_reason: str | None = None
     successful_job_spans: tuple = ()
     last_successful_job_event: Mapping[str, Any] | None = None
     runtime_path: str = ""

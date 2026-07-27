@@ -691,3 +691,50 @@ def test_prewarm_records_failed_install_and_continues(tmp_path, monkeypatch):
     payload = json.loads((result_dir / "dependency_prewarm.json").read_text(encoding="utf-8"))
     assert [entry["exit_code"] for entry in payload["installs"]] == [1, 0]
     assert "No solution found" in payload["installs"][0]["stderr_tail"]
+
+
+def test_prewarm_retries_transient_git_tls_failure(tmp_path, monkeypatch, capsys):
+    import json
+    from types import SimpleNamespace
+
+    from benchmark.harness.container import agent_run
+
+    monkeypatch.delenv("BENCHMARK_PREWARM_JOB_DEPENDENCIES", raising=False)
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "requirements.txt").write_text(
+        "transformers @ git+https://github.com/huggingface/transformers.git\n",
+        encoding="utf-8",
+    )
+    result_dir = tmp_path / "result"
+    result_dir.mkdir()
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr=(
+                    "Git operation failed: RPC failed; curl 56 GnuTLS recv error (-9); "
+                    "fetch-pack: unexpected disconnect; fatal: early EOF"
+                ),
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(agent_run.shutil, "which", lambda name: "uv")
+    monkeypatch.setattr(agent_run.subprocess, "run", fake_run)
+
+    agent_run.prewarm_job_dependencies(SimpleNamespace(run_input_dir=input_dir, result_dir=result_dir))
+
+    assert len(calls) == 2
+    assert "transient network/git failure" in capsys.readouterr().out
+    payload = json.loads((result_dir / "dependency_prewarm.json").read_text(encoding="utf-8"))
+    install = payload["installs"][0]
+    assert install["exit_code"] == 0
+    assert install["attempt_count"] == 2
+    assert [attempt["exit_code"] for attempt in install["attempts"]] == [1, 0]
+    assert install["attempts"][0]["transient"] is True
+    assert install["attempts"][1]["transient"] is False
+    assert install["recovered_transient_failure"] is True

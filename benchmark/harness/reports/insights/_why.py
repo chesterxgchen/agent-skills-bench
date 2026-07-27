@@ -1011,10 +1011,11 @@ def _failure_root_cause_chain(with_run: RunEvidence, base_run: RunEvidence) -> l
 
 
 def _root_cause_lead(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext | None = None) -> list[str]:
-    """Ranked, concrete root-cause bullets that LEAD the RCA section.
+    """Ranked, concrete time-attribution bullets for the RCA section.
 
-    Each bullet names the cause, the attributed seconds, and the evidence in one
-    sentence, so the answer is readable before the supporting driver tables.
+    These explain where elapsed time was spent. They are intentionally labeled
+    as time contributors rather than root causes: attempt-scoped runtime
+    defects are rendered separately from SDK evidence.
     """
 
     with_label = with_run.label or "With skills"
@@ -1091,7 +1092,7 @@ def _root_cause_lead(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportCo
     if not causes:
         return []
     causes.sort(key=lambda item: item[0], reverse=True)
-    lines = ["**Root causes (ranked by attributed time)**", ""]
+    lines = ["**Time contributors (ranked by attributed time)**", ""]
     lines.extend(f"{index}. {text}" for index, (_seconds, text) in enumerate(causes, start=1))
     return lines
 
@@ -1110,8 +1111,14 @@ def _agent_rca_section(run: RunEvidence, fallback_label: str, ev: Any = None) ->
         return []
     if "failed quality check(s)" in report.lower() and not run_quality_issues(run, ev):
         return []
+    investigation_label = (
+        "Agent slowdown investigation"
+        if "investigation_slowdown" in report
+        or re.search(r"\btook\s+\d+(?:\.\d+)?s\s+vs\s+\d+(?:\.\d+)?s\b", report, flags=re.IGNORECASE)
+        else "Agent root-cause investigation"
+    )
     return [
-        f"**Agent root-cause investigation ({run.label or fallback_label})** — agent-authored analysis "
+        f"**{investigation_label} ({run.label or fallback_label})** — agent-authored analysis "
         "(unverified); check the quoted evidence and `rca/investigation_*.jsonl` trail before acting on it.",
         "",
         sanitize_agent_markdown(report),
@@ -1198,6 +1205,12 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
         taint_lines = _infrastructure_taint_lines(with_run, base_run)
         if taint_lines:
             lines.extend([*taint_lines, ""])
+    # SDK attempt analysis names the actual failure/recovery mechanisms from
+    # attempt-scoped logs. Render it before elapsed-time attribution so a time
+    # comparison cannot be mistaken for the root cause.
+    root_cause_notes = _plugin_narrative(ctx, "why_root_cause")
+    if root_cause_notes:
+        lines.extend([*root_cause_notes, ""])
     if include_slowdown_context:
         root_causes = _root_cause_lead(with_run, base_run, ctx)
         if root_causes:

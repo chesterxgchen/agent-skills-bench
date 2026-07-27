@@ -381,7 +381,7 @@ def repeated_job_runs_section(runs: dict[str, RunEvidence], modes: list[str], ct
                 str(len(spans)),
                 fmt_seconds_with_unit(_span_total_seconds(spans)),
                 execution_list,
-                _job_rerun_reason(spans, run.raw),
+                ctx.job_execution(mode).rerun_reason or _job_rerun_reason(spans, run.raw),
             )
         )
     if not rows:

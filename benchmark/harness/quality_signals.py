@@ -41,14 +41,16 @@ GENERIC_VALIDATION_METRIC_PATTERN = (
 # detect/surface these metrics in agent output. It does NOT constrain which metric a job
 # may require -- the job's PRIMARY metric is declared in its instruction/README and flows
 # in as data at runtime, and any unrecognized (job-specific) name is handled generically.
-# The val-prefixed variants accept a snake_case boundary too ((?:\b|_)): runtime logs
-# compound them into larger tokens (e.g. NVFLARE site logs emit `global_valid_auroc=`),
-# and `_` is a word character, so a plain \b never matches inside those tokens.
+# Validation/evaluation-prefixed variants accept a snake_case boundary too
+# ((?:\b|_)): runtime logs compound them into larger tokens (e.g. NVFLARE site
+# logs emit `global_valid_auroc=`), and `_` is a word character, so a plain \b
+# never matches inside those tokens. Hugging Face Trainer uses the ``eval_``
+# namespace for validation-phase metrics.
 METRIC_ALIAS_PATTERNS = {
-    "AUROC": r"\b(?:AUROC|AUC)\b|(?:\b|_)(?:val|valid|validation)[_-]?auroc\b",
-    "accuracy": r"\baccuracy\b|(?:\b|_)(?:val|valid|validation)[_-]?(?:accuracy|acc)\b|\bacc\b",
-    "loss": r"\b(?:loss|train[_-]?loss)\b|(?:\b|_)(?:val|valid|validation)[_-]?loss\b",
-    "f1": r"\b(?:f1|f1[_-]?score)\b|(?:\b|_)(?:val|valid|validation)[_-]?f1\b",
+    "AUROC": r"\b(?:AUROC|AUC)\b|(?:\b|_)(?:val|valid|validation|eval)[_-]?auroc\b",
+    "accuracy": r"\baccuracy\b|(?:\b|_)(?:val|valid|validation|eval)[_-]?(?:accuracy|acc)\b|\bacc\b",
+    "loss": r"\b(?:loss|train[_-]?loss)\b|(?:\b|_)(?:val|valid|validation|eval)[_-]?loss\b",
+    "f1": r"\b(?:f1|f1[_-]?score)\b|(?:\b|_)(?:val|valid|validation|eval)[_-]?f1\b",
 }
 _COMMON_DL_METRIC_ALIASES = {
     "auroc": "AUROC",
@@ -56,21 +58,28 @@ _COMMON_DL_METRIC_ALIASES = {
     "val_auroc": "AUROC",
     "valid_auroc": "AUROC",
     "validation_auroc": "AUROC",
+    "eval_auroc": "AUROC",
+    "eval_auc": "AUROC",
     "accuracy": "accuracy",
     "acc": "accuracy",
     "val_accuracy": "accuracy",
     "valid_accuracy": "accuracy",
     "validation_accuracy": "accuracy",
+    "eval_accuracy": "accuracy",
+    "eval_acc": "accuracy",
     "loss": "loss",
     "val_loss": "loss",
     "valid_loss": "loss",
     "validation_loss": "loss",
+    "eval_loss": "loss",
     "train_loss": "loss",
     "f1": "f1",
     "f1_score": "f1",
     "val_f1": "f1",
     "valid_f1": "f1",
     "validation_f1": "f1",
+    "eval_f1": "f1",
+    "eval_f1_score": "f1",
 }
 
 

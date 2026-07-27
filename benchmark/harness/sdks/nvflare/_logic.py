@@ -281,6 +281,34 @@ def _has_exact_command_flag(command: str, flag: str) -> bool:
     )
 
 
+def _is_job_export_command(command: str) -> bool:
+    """Return whether a job entrypoint invocation is export-only.
+
+    ``--export`` is the NVFLARE Recipe API flag.  Generated jobs sometimes
+    introduce non-standard local aliases (for example ``--export_only``) or an
+    ``--action export`` dispatcher.  Those aliases are a generated-code
+    quality issue, but they still must not be counted as full job/simulator
+    executions in timing and rerun reports.
+    """
+
+    text = str(command or "")
+    if _has_exact_command_flag(text, "--export"):
+        return True
+    if any(
+        _has_exact_command_flag(text, flag)
+        for flag in ("--export_only", "--export-only", "--export_config", "--export-config")
+    ):
+        return True
+    tokens = _command_tokens(text)
+    for index, token in enumerate(tokens):
+        if token in {"--action", "--mode", "--operation"} and index + 1 < len(tokens):
+            if tokens[index + 1].lower() == "export":
+                return True
+        if re.fullmatch(r"--(?:action|mode|operation)=export", token, flags=re.IGNORECASE):
+            return True
+    return False
+
+
 def _python_script_name_from_segment(command: str) -> str:
     tokens = _command_tokens(command)
     index = 0
@@ -787,13 +815,33 @@ def _missing_module_recovery_summary(run: dict[str, Any], event: dict[str, Any],
     )
 
 
+_DATUM_OBJECT_TYPE_NAMES = {
+    1: "NUMPY_BYTES",
+    2: "NUMPY_FILE",
+    3: "NUMPY_DOWNLOAD",
+    4: "TENSOR_BYTES",
+    5: "TENSOR_FILE",
+    6: "TENSOR_DOWNLOAD",
+}
+
+
+def _datum_object_type_name(dot: int) -> str:
+    return _DATUM_OBJECT_TYPE_NAMES.get(dot, "unknown")
+
+
+def _datum_handler_error_summary(dot: int) -> str:
+    name = _datum_object_type_name(dot)
+    suffix = f"DOT {dot} is {name}" if name != "unknown" else f"DOT {dot} is not in the known registry"
+    return f"`cannot find handler for Datum Object Type {dot}` ({suffix})"
+
+
 def _nvflare_runtime_command_error_summary(output: str) -> str:
     """Extract the execution failure from a compound NVFLARE command's output."""
 
     text = strip_ansi(output)
-    dot6 = re.search(r"cannot find handler for Datum Object Type\s+6", text, flags=re.IGNORECASE)
-    if dot6:
-        return "`cannot find handler for Datum Object Type 6` (DOT 6 is TENSOR_DOWNLOAD)"
+    dot_match = re.search(r"cannot find handler for Datum Object Type\s+(\d+)", text, flags=re.IGNORECASE)
+    if dot_match:
+        return _datum_handler_error_summary(int(dot_match.group(1)))
     patterns = (
         r"ERROR - in-process trainer[^\n]+",
         r"FATAL_SYSTEM_ERROR received:[^\n]+",
@@ -918,7 +966,7 @@ def command_failure_rows(run: dict[str, Any]) -> list[dict[str, str]]:
         failure_evidence = _command_failure_evidence(event, events)
         missing_module = failure_evidence.get("missing_module", "")
         root_cause = failure_evidence["root_cause"]
-        if is_simulation_or_job_command(command) and not _has_exact_command_flag(command, "--export"):
+        if is_simulation_or_job_command(command) and not _is_job_export_command(command):
             runtime_details = _recovered_runtime_attempt_details(run)
             runtime_cause = (
                 str(runtime_details.get("cause") or "")
@@ -1428,7 +1476,7 @@ def last_successful_job_event(run: dict[str, Any]) -> dict[str, Any] | None:
     for event in reversed(agent_command_events(run)):
         if job_command_succeeded(event):
             command = str(event.get("command") or "")
-            if "--help" not in command and not _has_exact_command_flag(command, "--export"):
+            if "--help" not in command and not _is_job_export_command(command):
                 return event
     return None
 
@@ -1570,7 +1618,7 @@ def job_run_status(run: dict[str, Any]) -> str:
         event
         for event in agent_command_events(run)
         if "--help" not in str(event.get("command") or "")
-        and not _has_exact_command_flag(str(event.get("command") or ""), "--export")
+        and not _is_job_export_command(str(event.get("command") or ""))
         and (
             is_simulation_or_job_command(str(event.get("command") or ""))
             or invokes_nvflare_simulator(str(event.get("command") or ""), str(event.get("output") or ""))
@@ -1581,7 +1629,7 @@ def job_run_status(run: dict[str, Any]) -> str:
         for command in commands_for_run(run)
         if is_simulation_or_job_command(command)
         and "--help" not in command
-        and not _has_exact_command_flag(command, "--export")
+        and not _is_job_export_command(command)
     ]
     attempted = bool(executed_events or attempted_commands)
     # Successful evidence (a completed job command or captured runtime completion) must win over
@@ -2105,6 +2153,307 @@ def _recovered_semantic_attempt_root_cause_block(run: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _attempt_datum_handler_errors(run: dict[str, Any], attempt_root: str) -> list[dict[str, Any]]:
+    """Collect DOT handler failures from one attempt's client error logs."""
+
+    grouped: dict[int, dict[str, Any]] = {}
+    for label, text in sorted(
+        _attempt_artifact_texts(
+            run,
+            attempt_root,
+            r"(^|/)site-[^/]+/error_log\.txt$",
+            max_bytes=128_000,
+        )
+    ):
+        site_match = re.search(r"(^|/)(site-[^/]+)/error_log\.txt$", label, re.IGNORECASE)
+        site = site_match.group(2) if site_match else ""
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            match = re.search(r"cannot find handler for Datum Object Type\s+(\d+)", line, re.IGNORECASE)
+            if not match:
+                continue
+            dot = int(match.group(1))
+            detail = grouped.setdefault(
+                dot,
+                {
+                    "dot": dot,
+                    "dot_name": _datum_object_type_name(dot),
+                    "sites": set(),
+                    "occurrences": 0,
+                    "source": label,
+                    "source_line": line_number,
+                },
+            )
+            if site:
+                detail["sites"].add(site)
+            detail["occurrences"] += 1
+    results = []
+    for dot in sorted(grouped):
+        detail = dict(grouped[dot])
+        detail["sites"] = sorted(detail["sites"])
+        results.append(detail)
+    return results
+
+
+def _attempt_checkpoint_key_mismatch(run: dict[str, Any], attempt_root: str) -> dict[str, Any]:
+    """Return evidence that Hugging Face restored incompatible checkpoint keys."""
+
+    missing = False
+    unexpected = False
+    sites: set[str] = set()
+    source = ""
+    source_line = 0
+    for label, text in sorted(
+        _attempt_artifact_texts(
+            run,
+            attempt_root,
+            r"(^|/)site-[^/]+/(?:log(?:_fl)?\.txt|log\.json|error_log\.txt)$",
+            max_bytes=512_000,
+        )
+    ):
+        site_match = re.search(r"(^|/)(site-[^/]+)/", label, re.IGNORECASE)
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            line_missing = bool(re.search(r"missing keys in the checkpoint model loaded", line, re.IGNORECASE))
+            line_unexpected = bool(re.search(r"unexpected keys in the checkpoint model loaded", line, re.IGNORECASE))
+            if not (line_missing or line_unexpected):
+                continue
+            missing = missing or line_missing
+            unexpected = unexpected or line_unexpected
+            if site_match:
+                sites.add(site_match.group(2))
+            if not source:
+                source = label
+                source_line = line_number
+    # Hugging Face Trainer writes some checkpoint warnings directly to the
+    # foreground process stream rather than NVFLARE's per-site log files. Map
+    # the command back to the attempt via its unique simulator-workspace
+    # directory so those warnings remain attempt-scoped.
+    attempt_parent = str(Path(attempt_root).parent).replace("\\", "/")
+    attempt_dir = Path(attempt_parent).name
+    if not (missing and unexpected) and attempt_dir:
+        for event in agent_command_events(run):
+            command = str(event.get("command") or "").replace("\\", "/")
+            output = str(event.get("output") or "")
+            if (attempt_parent not in command and attempt_dir not in command) or not output:
+                continue
+            for line_number, line in enumerate(output.splitlines(), start=1):
+                line_missing = bool(re.search(r"missing keys in the checkpoint model loaded", line, re.IGNORECASE))
+                line_unexpected = bool(
+                    re.search(r"unexpected keys in the checkpoint model loaded", line, re.IGNORECASE)
+                )
+                if not (line_missing or line_unexpected):
+                    continue
+                missing = missing or line_missing
+                unexpected = unexpected or line_unexpected
+                if not source:
+                    event_id = str(event.get("id") or event.get("index") or "unknown")
+                    source = f"agent event {event_id} command output"
+                    source_line = line_number
+    if not (missing and unexpected):
+        return {}
+    return {
+        "sites": sorted(sites),
+        "source": source,
+        "source_line": source_line,
+    }
+
+
+def _attempt_tensor_streaming_enabled(run: dict[str, Any], attempt_root: str) -> bool:
+    configs = _attempt_artifact_texts(
+        run,
+        attempt_root,
+        r"(^|/)(?:server|site-[^/]+)/simulate_job/app_[^/]+/config/config_fed_(?:server|client)\.json$",
+        max_bytes=128_000,
+    )
+    text = "\n".join(value for _label, value in configs)
+    return "TensorServerStreamer" in text and "TensorClientStreamer" in text
+
+
+def _attempt_restore_state_disabled(run: dict[str, Any], attempt_root: str) -> bool:
+    texts = _attempt_artifact_texts(
+        run,
+        attempt_root,
+        r"(^|/)(?:config_fed_client\.json|custom/client\.py)$",
+        max_bytes=128_000,
+    )
+    combined = "\n".join(text for _label, text in texts)
+    return bool(
+        re.search(r"--flare_restore_state\s+(?:False|false|0)\b", combined)
+        or re.search(r"\brestore_state\s*=\s*False\b", combined)
+    )
+
+
+def _recovered_completed_attempt_issue_details(run: dict[str, Any]) -> dict[str, Any]:
+    """Explain why completed-but-dirty simulations were superseded.
+
+    A zero shell exit and ``Finished`` only prove orchestration completion.
+    Earlier attempts can still contain protocol deserialization errors or load
+    incompatible model checkpoints.  Compare attempt-scoped artifacts against
+    the latest completed attempt and report an issue only when it disappeared
+    from that final attempt.
+    """
+
+    attempts = _runtime_attempt_server_logs(run)
+    if len(attempts) < 2:
+        return {}
+    latest = attempts[0]
+    latest_root = str(latest["root"])
+    if not _runtime_log_finished(str(latest["text"])):
+        return {}
+
+    latest_dots = {detail["dot"] for detail in _attempt_datum_handler_errors(run, latest_root)}
+    latest_checkpoint_mismatch = bool(_attempt_checkpoint_key_mismatch(run, latest_root))
+    completed_earlier = [
+        attempt
+        for attempt in reversed(attempts[1:])
+        if _runtime_log_finished(str(attempt["text"]))
+    ]
+    if not completed_earlier:
+        return {}
+
+    dot_groups: dict[int, dict[str, Any]] = {}
+    checkpoint_attempts: list[dict[str, Any]] = []
+    for attempt in completed_earlier:
+        root = str(attempt["root"])
+        for detail in _attempt_datum_handler_errors(run, root):
+            dot = int(detail["dot"])
+            if dot in latest_dots:
+                continue
+            group = dot_groups.setdefault(
+                dot,
+                {
+                    "kind": "datum_handler",
+                    "dot": dot,
+                    "dot_name": detail["dot_name"],
+                    "attempts": [],
+                    "sites": set(),
+                    "occurrences": 0,
+                    "source": detail["source"],
+                    "source_line": detail["source_line"],
+                    "client_registration_still_failed": False,
+                },
+            )
+            group["attempts"].append(root)
+            group["sites"].update(detail["sites"])
+            group["occurrences"] += int(detail["occurrences"])
+            if _attempt_has_tensor_decomposer_registration(run, root):
+                group["client_registration_still_failed"] = True
+        checkpoint = _attempt_checkpoint_key_mismatch(run, root)
+        if checkpoint and not latest_checkpoint_mismatch:
+            checkpoint_attempts.append({"root": root, **checkpoint})
+
+    issues: list[dict[str, Any]] = []
+    for dot in sorted(dot_groups):
+        group = dict(dot_groups[dot])
+        group["sites"] = sorted(group["sites"])
+        issues.append(group)
+    if checkpoint_attempts:
+        sites = sorted({site for attempt in checkpoint_attempts for site in attempt["sites"]})
+        issues.append(
+            {
+                "kind": "checkpoint_keys",
+                "attempts": [attempt["root"] for attempt in checkpoint_attempts],
+                "sites": sites,
+                "source": checkpoint_attempts[0]["source"],
+                "source_line": checkpoint_attempts[0]["source_line"],
+            }
+        )
+    if not issues:
+        return {}
+    return {
+        "issues": issues,
+        "latest_root": latest_root,
+        "latest_tensor_streaming": _attempt_tensor_streaming_enabled(run, latest_root),
+        "latest_restore_state_disabled": _attempt_restore_state_disabled(run, latest_root),
+    }
+
+
+def _recovered_completed_attempt_issue_summary(run: dict[str, Any]) -> str:
+    details = _recovered_completed_attempt_issue_details(run)
+    if not details:
+        return ""
+    causes = []
+    affected_roots: set[str] = set()
+    for issue in details["issues"]:
+        affected_roots.update(issue["attempts"])
+        if issue["kind"] == "datum_handler":
+            dot = int(issue["dot"])
+            causes.append(
+                f"the DOT {dot}/{issue['dot_name']} tensor handler was unavailable during payload decoding"
+            )
+        elif issue["kind"] == "checkpoint_keys":
+            causes.append("Hugging Face checkpoint restoration loaded incompatible missing/unexpected parameter keys")
+    correction = []
+    if details["latest_tensor_streaming"]:
+        correction.append("configured recipe-level tensor streaming")
+    if details["latest_restore_state_disabled"]:
+        correction.append("disabled incompatible checkpoint restoration")
+    correction_text = " and ".join(correction) or "removed those runtime errors"
+    return (
+        f"{len(affected_roots)} earlier completed simulation attempt(s) were superseded because "
+        f"{'; '.join(causes)}; the final attempt {correction_text} and completed cleanly"
+    )
+
+
+def _recovered_completed_attempt_root_cause_block(run: dict[str, Any]) -> str:
+    details = _recovered_completed_attempt_issue_details(run)
+    if not details:
+        return ""
+    lines = [
+        "**Recovered completed-attempt root causes**",
+        "",
+        "Earlier simulations reached `Finished` and returned exit 0, but their attempt-scoped logs contained "
+        "runtime defects. Terminal completion therefore did not make those attempts clean validation runs.",
+        "",
+        "| Real root cause | Affected completed attempts | Direct evidence | Corrected final attempt |",
+        "|---|---|---|---|",
+    ]
+    for issue in details["issues"]:
+        source = str(issue.get("source") or "")
+        source_line = int(issue.get("source_line") or 0)
+        evidence_ref = f"{source}:{source_line}" if source and source_line else source or "captured attempt logs"
+        attempts = ", ".join(f"`{root}`" for root in issue["attempts"])
+        if issue["kind"] == "datum_handler":
+            dot = int(issue["dot"])
+            sites = issue.get("sites") or []
+            site_phrase = f" on {len(sites)} client site(s)" if sites else ""
+            cause = (
+                f"PyTorch payload deserialization ran without the DOT {dot}/{issue['dot_name']} "
+                f"`TensorDecomposer` handler{site_phrase}"
+            )
+            if issue.get("client_registration_still_failed"):
+                cause += (
+                    "; client-script registration was present in a still-affected attempt, proving it occurred "
+                    "too late for the parent-process payload decode"
+                )
+            evidence = (
+                f"`cannot find handler for Datum Object Type {dot}` "
+                f"({issue['occurrences']} captured occurrence(s)); `{evidence_ref}`"
+            )
+            correction = (
+                "recipe-level `TensorServerStreamer`/`TensorClientStreamer` configured; no DOT handler errors"
+                if details["latest_tensor_streaming"]
+                else "no corresponding DOT handler errors"
+            )
+        else:
+            sites = issue.get("sites") or []
+            site_phrase = f" across {len(sites)} client site(s)" if sites else ""
+            cause = (
+                "Hugging Face restored a checkpoint with incompatible model parameter namespaces"
+                f"{site_phrase}"
+            )
+            evidence = f"both missing-key and unexpected-key checkpoint warnings; `{evidence_ref}`"
+            correction = (
+                "checkpoint restore disabled; warnings disappeared"
+                if details["latest_restore_state_disabled"]
+                else "checkpoint key warnings disappeared"
+            )
+        lines.append(
+            f"| {markdown_cell(cause)} | {markdown_cell(attempts)} | {markdown_cell(evidence)} | "
+            f"`{markdown_cell(details['latest_root'])}` — {markdown_cell(correction)} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _runtime_attempt_failure_details(run: dict[str, Any], attempt_root: str) -> dict[str, Any]:
     error_logs = _attempt_artifact_texts(
         run,
@@ -2117,7 +2466,7 @@ def _runtime_attempt_failure_details(run: dict[str, Any], attempt_root: str) -> 
         return {}
     combined = "\n".join(text for _label, text in nonempty)
     dot_handler = re.search(
-        r"cannot find handler for Datum Object Type\s+6",
+        r"cannot find handler for Datum Object Type\s+(\d+)",
         combined,
         flags=re.IGNORECASE,
     )
@@ -2130,15 +2479,17 @@ def _runtime_attempt_failure_details(run: dict[str, Any], attempt_root: str) -> 
     )
     site_phrase = f" on {len(sites)} client site(s)" if sites else ""
     if dot_handler:
+        dot = int(dot_handler.group(1))
+        dot_name = _datum_object_type_name(dot)
         source_label = ""
         source_line = 0
         source_quote = ""
         for label, text in nonempty:
             for line_number, line in enumerate(text.splitlines(), start=1):
-                if re.search(r"cannot find handler for Datum Object Type\s+6", line, re.IGNORECASE):
+                if re.search(rf"cannot find handler for Datum Object Type\s+{dot}\b", line, re.IGNORECASE):
                     source_label = label
                     source_line = line_number
-                    source_quote = "cannot find handler for Datum Object Type 6"
+                    source_quote = f"cannot find handler for Datum Object Type {dot}"
                     break
             if source_label:
                 break
@@ -2150,19 +2501,31 @@ def _runtime_attempt_failure_details(run: dict[str, Any], attempt_root: str) -> 
         pytorch_exchange = str(executor.get("params_format") or "").lower() == "pytorch"
         client_registered = _attempt_has_tensor_decomposer_registration(run, attempt_root)
         if generic_in_process and pytorch_exchange and not client_registered:
+            transfer_kind = {
+                4: "tensor-bytes",
+                5: "tensor-file",
+                6: "tensor-download",
+            }.get(dot, f"DOT-{dot} tensor")
             cause = (
                 "NVFLARE's generic in-process `ClientAPIExecutor` did not register the PyTorch "
-                f"`TensorDecomposer`, so tensor download deserialization failed{site_phrase}: "
-                "`cannot find handler for Datum Object Type 6` (DOT 6 is TENSOR_DOWNLOAD)"
+                f"`TensorDecomposer`, so {transfer_kind} deserialization failed{site_phrase}: "
+                f"{_datum_handler_error_summary(dot)}"
             )
         else:
+            representation = (
+                f"{dot_name} tensor deserialization"
+                if dot_name != "unknown"
+                else f"DOT {dot} tensor deserialization"
+            )
             cause = (
-                f"PyTorch tensor download deserialization failed{site_phrase}: "
-                "`cannot find handler for Datum Object Type 6` "
-                "(the DOT 6/TENSOR_DOWNLOAD TensorDecomposer handler was not registered)"
+                f"PyTorch {representation} failed{site_phrase}: "
+                f"{_datum_handler_error_summary(dot)} "
+                f"(the DOT {dot}/{dot_name} TensorDecomposer handler was not registered)"
             )
         return {
             "cause": cause,
+            "dot": dot,
+            "dot_name": dot_name,
             "error_source": source_label,
             "error_line": source_line,
             "error_quote": source_quote,
@@ -3354,7 +3717,7 @@ def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
         elif (
             runtime_recovery
             and is_simulation_or_job_command(str(event.get("command") or ""))
-            and not _has_exact_command_flag(str(event.get("command") or ""), "--export")
+            and not _is_job_export_command(str(event.get("command") or ""))
         ):
             # The attempt-aware summary above already describes this recovered
             # runtime failure with its earlier/later artifact evidence.
@@ -3362,7 +3725,7 @@ def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
         elif not runtime_recovery or command_error_summary(output) != "no command output captured":
             command = str(event.get("command") or "")
             root_cause = failure_evidence["root_cause"]
-            if is_simulation_or_job_command(command) and not _has_exact_command_flag(command, "--export"):
+            if is_simulation_or_job_command(command) and not _is_job_export_command(command):
                 runtime_details = _recovered_runtime_attempt_details(run)
                 runtime_cause = (
                     str(runtime_details.get("cause") or "")
@@ -3391,7 +3754,7 @@ def _successful_job_spans(run: dict[str, Any]) -> list[dict[str, Any]]:
         for span in agent_command_spans(run)
         if job_command_succeeded(span)
         and "--help" not in str(span.get("command") or "")
-        and not _has_exact_command_flag(str(span.get("command") or ""), "--export")
+        and not _is_job_export_command(str(span.get("command") or ""))
     ]
 
 
@@ -3400,7 +3763,7 @@ def repeated_job_run_summary(run: dict[str, Any]) -> str:
     if len(spans) <= 1:
         return ""
     total = fmt_seconds_with_unit(_span_total_seconds(spans))
-    reason = _job_rerun_reason(spans, run)
+    reason = _recovered_completed_attempt_issue_summary(run) or _job_rerun_reason(spans, run)
     return (
         f"{len(spans)} successful job/simulator executions captured (total job time {total}; likely reason: {reason})"
     )
@@ -3768,6 +4131,28 @@ def _runtime_export_location_signal(run: dict[str, Any]) -> str:
     return ", ".join(signals) if signals else "not captured"
 
 
+def _nonstandard_export_interface_signal(run: dict[str, Any]) -> str:
+    job_text = _workspace_file_text(run, "job.py")
+    if not job_text:
+        return ""
+    aliases = sorted(
+        {
+            match.group(1)
+            for match in re.finditer(
+                r"""add_argument\s*\(\s*["'](--(?:export[_-](?:only|config)))["']""",
+                job_text,
+                flags=re.IGNORECASE,
+            )
+        }
+    )
+    if not aliases:
+        return ""
+    return (
+        f"generated job declares nonstandard local export flag(s): {', '.join(aliases)}; "
+        "NVFLARE Recipe jobs must use system flags --export and --export-dir"
+    )
+
+
 def _assessment_from_runtime_export_location(evidence: str) -> str:
     lowered = evidence.lower()
     if not lowered or lowered == "not captured":
@@ -3873,6 +4258,9 @@ def generated_code_quality_assessments(run: dict[str, Any]) -> list[tuple[str, s
         for label, evidence_getter, assessment_getter in CODE_QUALITY_ROWS:
             evidence = evidence_getter(run)
             rows.append((label, assessment_getter(evidence), evidence))
+        export_interface = _nonstandard_export_interface_signal(run)
+        if export_interface:
+            rows.append(("Recipe export interface", "poor", export_interface))
     rules = _run_evaluation_rules(run)
     routing_error = str(rules.get("routing_error") or "")
     if routing_error:

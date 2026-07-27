@@ -1302,8 +1302,10 @@ def test_common_dl_metric_aliases_are_recognized_and_unknown_names_kept_verbatim
     assert canonical_metric_name("val_auroc") == "AUROC"
     assert canonical_metric_name("acc") == "accuracy"
     assert canonical_metric_name("val_accuracy") == "accuracy"
+    assert canonical_metric_name("eval_accuracy") == "accuracy"
     assert canonical_metric_name("validation_loss") == "loss"
     assert canonical_metric_name("val_loss") == "loss"
+    assert canonical_metric_name("eval_loss") == "loss"
     # A job-specific / unrecognized metric is NOT aliased -- kept verbatim (structural only).
     assert canonical_metric_name("dice") == "dice"
     # Detection: the job declares AUROC, the agent logs the `AUC` variant -> still matched.
@@ -5007,7 +5009,7 @@ def test_later_successful_runtime_attempt_wins_over_stale_failed_attempt(tmp_pat
     )
     fragments = NvflareReportPlugin().explain(comparison, {})
     assert any(
-        fragment.anchor == "why_slowdown" and "**Recovered NVFLARE attempt root cause**" in fragment.text
+        fragment.anchor == "why_root_cause" and "**Recovered NVFLARE attempt root cause**" in fragment.text
         for fragment in fragments
     )
 
@@ -5172,7 +5174,7 @@ def test_completed_attempt_missing_metrics_is_reported_as_semantic_recovery(tmp_
     )
     fragments = NvflareReportPlugin().explain(comparison, {})
     assert any(
-        fragment.anchor == "why_slowdown" and "**Recovered completed-attempt metrics root cause**" in fragment.text
+        fragment.anchor == "why_root_cause" and "**Recovered completed-attempt metrics root cause**" in fragment.text
         for fragment in fragments
     )
 
@@ -5223,6 +5225,226 @@ def test_completed_attempt_without_metric_warning_is_not_inferred_as_semantic_re
     }
 
     assert _logic._recovered_semantic_attempt_details(run) == {}
+
+
+def test_completed_dirty_attempts_report_real_root_causes_and_exclude_exports(tmp_path):
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.evidence import SCHEMA_VERSION, ComparisonEvidence
+    from benchmark.harness.reports.insights._why import _why_slower
+    from benchmark.harness.sdks.nvflare import _logic
+    from benchmark.harness.sdks.nvflare.plugin import NvflareReportPlugin
+
+    mode_dir = tmp_path / "with_skills"
+    artifact_root = mode_dir / "workspace_delta" / "runtime_artifacts"
+
+    def artifact(rel_path: str, text: str, mtime_ns: int) -> dict:
+        path = artifact_root / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+        return {
+            "path": rel_path,
+            "artifact_path": f"runtime_artifacts/{rel_path}",
+            "source_mtime_ns": mtime_ns,
+            "size_bytes": len(text.encode("utf-8")),
+        }
+
+    def command_pair(item_id: str, command: str, start: str, end: str, output: str) -> list[str]:
+        return [
+            json.dumps(
+                {
+                    "type": "item.started",
+                    "harness_timestamp": start,
+                    "item": {
+                        "id": item_id,
+                        "type": "command_execution",
+                        "command": command,
+                        "status": "in_progress",
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "harness_timestamp": end,
+                    "item": {
+                        "id": item_id,
+                        "type": "command_execution",
+                        "command": command,
+                        "aggregated_output": output,
+                        "exit_code": 0,
+                        "status": "completed",
+                    },
+                }
+            ),
+        ]
+
+    roots = ["runtime/sim-1/job", "runtime/sim-2/job", "runtime/sim-3/job", "runtime/sim-final/job"]
+    mtimes = [100, 200, 300, 400]
+    finished = "Round 0 started.\nRound 1 started.\nRound 2 started.\nFinished FedAvg.\n"
+    dot6 = "Cell - ERROR - RuntimeError: cannot find handler for Datum Object Type 6\n"
+    checkpoint_warning = (
+        "WARNING - There were missing keys in the checkpoint model loaded: ['vit.layers.0.weight'].\n"
+        "WARNING - There were unexpected keys in the checkpoint model loaded: ['vit.encoder.layer.0.weight'].\n"
+    )
+    runtime_artifacts = []
+    for root, mtime in zip(roots, mtimes):
+        runtime_artifacts.append(artifact(f"{root}/server/log_fl.txt", finished, mtime))
+    for root, mtime in zip(roots[:3], mtimes[:3]):
+        runtime_artifacts.extend(
+            artifact(f"{root}/{site}/error_log.txt", dot6, mtime)
+            for site in ("site-1", "site-2", "site-3")
+        )
+    runtime_artifacts.append(artifact(f"{roots[0]}/site-1/log.txt", checkpoint_warning, mtimes[0]))
+    runtime_artifacts.append(
+        artifact(
+            f"{roots[2]}/site-1/simulate_job/app_site-1/custom/client.py",
+            "from nvflare.app_opt.pt.decomposers import TensorDecomposer\n"
+            "from nvflare.fuel.utils import fobs\n"
+            "fobs.register(TensorDecomposer)\n",
+            mtimes[2],
+        )
+    )
+    runtime_artifacts.extend(
+        [
+            artifact(
+                f"{roots[3]}/server/simulate_job/app_server/config/config_fed_server.json",
+                '{"components": [{"path": "nvflare.app_opt.tensor_stream.TensorServerStreamer"}]}',
+                mtimes[3],
+            ),
+            artifact(
+                f"{roots[3]}/site-1/simulate_job/app_site-1/config/config_fed_client.json",
+                '{"components": [{"path": "nvflare.app_opt.tensor_stream.TensorClientStreamer"}], '
+                '"train_args": "--flare_restore_state False"}',
+                mtimes[3],
+            ),
+        ]
+    )
+
+    changed_job_path = mode_dir / "workspace_delta" / "changed_files" / "job.py"
+    changed_job_path.parent.mkdir(parents=True, exist_ok=True)
+    changed_job_path.write_text(
+        'parser.add_argument("--export_only", action="store_true")\n'
+        "if args.export_only:\n"
+        "    recipe.export('fl_job')\n"
+        "else:\n"
+        "    recipe.execute(env)\n",
+        encoding="utf-8",
+    )
+
+    event_lines = []
+    for index in range(4):
+        minute = index * 2
+        event_lines.extend(
+            command_pair(
+                f"export-{index}",
+                "python job.py --export_only",
+                f"2026-07-27T08:{minute:02d}:00Z",
+                f"2026-07-27T08:{minute:02d}:03Z",
+                "Job exported to: fl_job",
+            )
+        )
+        event_lines.extend(
+            command_pair(
+                f"sim-{index}",
+                f"python job.py --sim_workspace sim-{index}",
+                f"2026-07-27T08:{minute:02d}:10Z",
+                f"2026-07-27T08:{minute:02d}:39Z",
+                "Finished FedAvg.",
+            )
+        )
+    run = {
+        "available": True,
+        "mode": WITH_SKILLS_MODE,
+        "label": "With skills",
+        "mode_dir": mode_dir,
+        "run": {"elapsed_seconds": 300},
+        "activity": {"commands": ["python job.py --export_only", "python job.py --sim_workspace sim"] * 4},
+        "agent_events_text": "\n".join(event_lines),
+        "workspace_delta": {
+            "runtime_artifacts": runtime_artifacts,
+            "changed_files": [
+                {
+                    "path": "job.py",
+                    "artifact_path": "changed_files/job.py",
+                    "size_bytes": changed_job_path.stat().st_size,
+                }
+            ],
+        },
+    }
+
+    assert _logic._is_job_export_command("python job.py --export_only")
+    assert _logic._is_job_export_command("python job.py --action export")
+    assert not _logic._is_job_export_command("python job.py --export-dir exported")
+    spans = _logic._successful_job_spans(run)
+    assert len(spans) == 4
+    assert all("--sim_workspace" in str(span["command"]) for span in spans)
+    summary = _logic.repeated_job_run_summary(run)
+    assert "4 successful job/simulator executions captured" in summary
+    assert "DOT 6/TENSOR_DOWNLOAD" in summary
+    assert "8 successful" not in summary
+
+    details = _logic._recovered_completed_attempt_issue_details(run)
+    assert {issue["kind"] for issue in details["issues"]} == {"datum_handler", "checkpoint_keys"}
+    dot_issue = next(issue for issue in details["issues"] if issue["kind"] == "datum_handler")
+    assert dot_issue["attempts"] == roots[:3]
+    assert dot_issue["sites"] == ["site-1", "site-2", "site-3"]
+    assert dot_issue["client_registration_still_failed"] is True
+    block = _logic._recovered_completed_attempt_root_cause_block(run)
+    assert "**Recovered completed-attempt root causes**" in block
+    assert "parent-process payload decode" in block
+    assert "missing-key and unexpected-key checkpoint warnings" in block
+    assert "TensorServerStreamer" in block
+    assert "checkpoint restore disabled" in block
+    assert _logic._nvflare_runtime_command_error_summary(
+        "RuntimeError: cannot find handler for Datum Object Type 4"
+    ) == "`cannot find handler for Datum Object Type 4` (DOT 4 is TENSOR_BYTES)"
+    assert (
+        "Recipe export interface",
+        "poor",
+        (
+            "generated job declares nonstandard local export flag(s): --export_only; "
+            "NVFLARE Recipe jobs must use system flags --export and --export-dir"
+        ),
+    ) in _logic.generated_code_quality_assessments(run)
+
+    base = {
+        "available": True,
+        "mode": NO_SKILLS_MODE,
+        "label": "No skills baseline",
+        "run": {"elapsed_seconds": 100},
+        "agent_events_text": "\n".join(
+            command_pair(
+                "base-sim",
+                "python job.py",
+                "2026-07-27T08:00:00Z",
+                "2026-07-27T08:00:29Z",
+                "Finished FedAvg.",
+            )
+        ),
+    }
+    comparison = ComparisonEvidence(
+        schema_version=SCHEMA_VERSION,
+        runs={NO_SKILLS_MODE: _ev(base), WITH_SKILLS_MODE: _ev(run)},
+        modes=[NO_SKILLS_MODE, WITH_SKILLS_MODE],
+        sdk_metadata={},
+    )
+    fragments = NvflareReportPlugin().explain(comparison, {})
+    assert any(
+        fragment.anchor == "why_root_cause"
+        and "**Recovered completed-attempt root causes**" in fragment.text
+        for fragment in fragments
+    )
+    why = "\n".join(
+        _why_slower(
+            _ev(run),
+            _ev(base),
+            _nv_ctx({WITH_SKILLS_MODE: run, NO_SKILLS_MODE: base}),
+        )
+    )
+    assert why.index("Recovered completed-attempt root causes") < why.index(
+        "Time contributors (ranked by attributed time)"
+    )
 
 
 def test_report_lifecycle_note_distinguishes_preliminary_and_final(tmp_path):
@@ -9013,6 +9235,38 @@ def test_metrics_chart_marks_mixed_metric_names_non_comparable():
     # The scorecard must show each run's own metric, not NA from the synthetic name.
     assert "| Metrics (mixed validation metrics) | accuracy 0.8123 | AUROC 0.7529 | not comparable |" in scorecard
     assert "NA |" not in scorecard.split("Metrics (mixed validation metrics)")[1].splitlines()[0]
+
+
+def test_metrics_chart_treats_huggingface_eval_accuracy_as_accuracy():
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import (
+        comparison_scorecard,
+        embedded_bar_chart,
+        outcome_metrics_table,
+    )
+
+    def run(label: str, metric_name: str, value: float) -> dict:
+        return {
+            "label": label,
+            "available": True,
+            "run": {"final_container_exit_code": 0},
+            "activity": {},
+            "validation_metric": {"name": metric_name, "value": value},
+        }
+
+    runs = {
+        NO_SKILLS_MODE: run("No skills baseline", "accuracy", 0.1319),
+        WITH_SKILLS_MODE: run("With skills", "eval_accuracy", 0.3333),
+    }
+
+    chart = embedded_bar_chart(_evruns(runs))
+    scorecard = comparison_scorecard(_evruns(runs))
+    table = outcome_metrics_table(_evruns(runs), [NO_SKILLS_MODE, WITH_SKILLS_MODE])
+
+    assert "Metrics (accuracy)" in chart
+    assert "Not comparable" not in chart
+    assert "| Metrics (accuracy) | accuracy 0.1319 | accuracy 0.3333 |" in table
+    assert "| Metrics (accuracy) | 0.1319 | 0.3333 |" in scorecard
 
 
 def test_metrics_chart_uses_common_runtime_metric_when_selected_keys_differ(tmp_path):

@@ -2,7 +2,7 @@
 
 **Why With skills is slower and has longer runtime after install** (+300s total / +50%; +180s runtime / +32% vs No skills baseline):
 
-**Root causes (ranked by attributed time)**
+**Time contributors (ranked by attributed time)**
 
 1. **Repeated simulator executions +370s** — With skills ran 2 successful executions (total 730s) vs 1 for No skills baseline; the reruns beyond the first are re-validation work (captured rationale in the repeated-executions table below).
 2. **Dependency install +120s** — With skills spent 150s on 1 requirements-file install(s), vs 30s for No skills baseline. The With skills install resolved an accelerator-capable dependency stack (nvidia-cublas-cu13, nvidia-cudnn-cu13).

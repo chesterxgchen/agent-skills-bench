@@ -95,6 +95,7 @@ class NvflareReportPlugin(ReportPlugin):
             status=job_run_status(raw),
             status_reason=job_run_status_reason(raw),
             recovered_summary=completed_job_recovered_issue_summary(raw),
+            rerun_reason=_logic._recovered_completed_attempt_issue_summary(raw),
             successful_job_spans=tuple(_logic._successful_job_spans(raw)),
             last_successful_job_event=_logic.last_successful_job_event(raw),
             runtime_path=_logic.job_runtime_path(_logic.longest_successful_job_span(raw)),
@@ -301,10 +302,15 @@ class NvflareReportPlugin(ReportPlugin):
             fragments.append(NarrativeFragment(text=result_failure_block, anchor="why_result_failure"))
         recovered_attempt_block = _logic._recovered_runtime_attempt_root_cause_block(cmp.runs[WITH_SKILLS_MODE].raw)
         if recovered_attempt_block:
-            fragments.append(NarrativeFragment(text=recovered_attempt_block, anchor="why_slowdown"))
+            fragments.append(NarrativeFragment(text=recovered_attempt_block, anchor="why_root_cause"))
         recovered_semantic_block = _logic._recovered_semantic_attempt_root_cause_block(cmp.runs[WITH_SKILLS_MODE].raw)
         if recovered_semantic_block:
-            fragments.append(NarrativeFragment(text=recovered_semantic_block, anchor="why_slowdown"))
+            fragments.append(NarrativeFragment(text=recovered_semantic_block, anchor="why_root_cause"))
+        recovered_completed_block = _logic._recovered_completed_attempt_root_cause_block(
+            cmp.runs[WITH_SKILLS_MODE].raw
+        )
+        if recovered_completed_block:
+            fragments.append(NarrativeFragment(text=recovered_completed_block, anchor="why_root_cause"))
         blocks = self._runtime_path_slowdown_blocks(
             with_je=(plugin.get(WITH_SKILLS_MODE) or PluginEvidence()).job_execution or JobExecutionSignal(),
             base_je=(plugin.get(base_mode) or PluginEvidence()).job_execution or JobExecutionSignal(),

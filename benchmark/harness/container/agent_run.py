@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -509,6 +510,21 @@ def prepare_input_workspace(config: AgentRunConfig) -> tuple[int, int]:
 
 
 PREWARM_INSTALL_TIMEOUT_SECONDS = 1800
+PREWARM_TRANSIENT_MAX_ATTEMPTS = 2
+_TRANSIENT_PREWARM_FAILURE_PATTERN = re.compile(
+    r"(?:"
+    r"gnutls|tls|ssl|rpc failed|early eof|unexpected disconnect|connection (?:reset|closed|timed out)|"
+    r"temporary failure|temporarily unavailable|network is unreachable|could not resolve host|"
+    r"failed to fetch|failed to clone|http 5\d\d"
+    r")",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_transient_prewarm_failure(stderr: str) -> bool:
+    """Return whether a dependency prewarm failure is safe to retry unchanged."""
+
+    return bool(_TRANSIENT_PREWARM_FAILURE_PATTERN.search(str(stderr or "")))
 
 
 def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | None = None) -> None:
@@ -556,21 +572,44 @@ def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | 
         for path in requirements:
             print(f"Dependency prewarm: installing from {path.name} ...", flush=True)
             start = epoch_seconds()
-            try:
-                proc = subprocess.run(
-                    [uv, "pip", "install", "--python", sys.executable, "-r", str(path)],
-                    capture_output=True,
-                    text=True,
-                    timeout=PREWARM_INSTALL_TIMEOUT_SECONDS,
+            attempts = []
+            exit_code: int | None = None
+            stderr_tail = ""
+            for attempt_number in range(1, PREWARM_TRANSIENT_MAX_ATTEMPTS + 1):
+                attempt_start = epoch_seconds()
+                try:
+                    proc = subprocess.run(
+                        [uv, "pip", "install", "--python", sys.executable, "-r", str(path)],
+                        capture_output=True,
+                        text=True,
+                        timeout=PREWARM_INSTALL_TIMEOUT_SECONDS,
+                    )
+                    exit_code = proc.returncode
+                    stderr_tail = proc.stderr[-2000:].strip()
+                except subprocess.TimeoutExpired:
+                    exit_code = None
+                    stderr_tail = f"prewarm install timed out after {PREWARM_INSTALL_TIMEOUT_SECONDS}s"
+                except OSError as exc:
+                    exit_code = None
+                    stderr_tail = f"prewarm install failed to launch: {exc}"
+                attempt_duration = epoch_seconds() - attempt_start
+                transient = exit_code not in (0, None) and _is_transient_prewarm_failure(stderr_tail)
+                attempts.append(
+                    {
+                        "attempt": attempt_number,
+                        "exit_code": exit_code,
+                        "duration_seconds": attempt_duration,
+                        "stderr_tail": stderr_tail,
+                        "transient": transient,
+                    }
                 )
-                exit_code: int | None = proc.returncode
-                stderr_tail = proc.stderr[-2000:]
-            except subprocess.TimeoutExpired:
-                exit_code = None
-                stderr_tail = f"prewarm install timed out after {PREWARM_INSTALL_TIMEOUT_SECONDS}s"
-            except OSError as exc:
-                exit_code = None
-                stderr_tail = f"prewarm install failed to launch: {exc}"
+                if exit_code == 0 or not transient or attempt_number >= PREWARM_TRANSIENT_MAX_ATTEMPTS:
+                    break
+                print(
+                    f"Dependency prewarm: transient network/git failure for {path.name}; "
+                    f"retrying ({attempt_number + 1}/{PREWARM_TRANSIENT_MAX_ATTEMPTS}) ...",
+                    flush=True,
+                )
             duration = epoch_seconds() - start
             outcome = f"exit {exit_code}" if exit_code is not None else stderr_tail
             print(f"Dependency prewarm: {path.name} finished in {duration}s ({outcome})", flush=True)
@@ -580,6 +619,9 @@ def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | 
                     "exit_code": exit_code,
                     "duration_seconds": duration,
                     "stderr_tail": stderr_tail.strip(),
+                    "attempt_count": len(attempts),
+                    "attempts": attempts,
+                    "recovered_transient_failure": exit_code == 0 and len(attempts) > 1,
                 }
             )
     finally:
