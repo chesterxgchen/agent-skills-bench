@@ -1616,13 +1616,54 @@ _BACKGROUND_COMPLETED_STATUSES = {"complete", "completed", "done", "finished", "
 _BACKGROUND_TERMINAL_STATUSES = _BACKGROUND_INTERRUPTED_STATUSES | _BACKGROUND_COMPLETED_STATUSES
 
 
+def _simulation_bash_tool(payload: dict[str, Any], item: dict[str, Any]) -> tuple[str, dict[str, Any], bool] | None:
+    """Return a simulation Bash tool candidate and whether backgrounding was explicit."""
+
+    if item.get("type") != "tool_use" or item.get("name") != "Bash":
+        return None
+    tool_input = item.get("input") if isinstance(item.get("input"), dict) else {}
+    command = str(tool_input.get("command") or payload.get("command_text") or "")
+    tool_id = str(item.get("id") or "")
+    if not tool_id or not (
+        is_simulation_or_job_command(command)
+        or invokes_nvflare_simulator(command, "")
+        or is_nvflare_simulator_wrapper_command(command)
+    ):
+        return None
+    return (
+        tool_id,
+        {
+            "command": command,
+            "description": str(tool_input.get("description") or payload.get("description") or ""),
+            "timestamp": parse_event_timestamp(payload.get("harness_timestamp") or payload.get("timestamp")),
+        },
+        bool(tool_input.get("run_in_background")),
+    )
+
+
+def _tool_result_background_task(payload: dict[str, Any], item: dict[str, Any]) -> tuple[str, str] | None:
+    """Return ``(tool_id, task_id)`` when a tool result was backgrounded."""
+
+    if item.get("type") != "tool_result":
+        return None
+    tool_id = str(item.get("tool_use_id") or "")
+    result = payload.get("tool_use_result") if isinstance(payload.get("tool_use_result"), dict) else {}
+    task_id = str(result.get("backgroundTaskId") or "")
+    if not task_id:
+        match = re.search(r"\bbackground with ID:\s*([A-Za-z0-9_-]+)", str(item.get("content") or ""))
+        task_id = match.group(1) if match else ""
+    return (tool_id, task_id) if tool_id and task_id else None
+
+
 def _background_simulation_task_state(run: dict[str, Any]) -> dict[str, Any]:
     """Parse background simulation task events from the agent event stream."""
 
     payloads = _agent_event_payloads(run)
-    background_tools: dict[str, dict[str, str]] = {}
+    simulation_tools: dict[str, dict[str, Any]] = {}
+    background_tools: dict[str, dict[str, Any]] = {}
     task_by_tool_id: dict[str, str] = {}
     task_statuses: dict[str, list[dict[str, Any]]] = {}
+    task_descriptions: dict[str, str] = {}
     result_payload = None
     result_timestamp = None
     result_index = None
@@ -1631,33 +1672,24 @@ def _background_simulation_task_state(run: dict[str, Any]) -> dict[str, Any]:
         event_type = str(payload.get("event_type") or payload.get("type") or "")
         timestamp = parse_event_timestamp(payload.get("harness_timestamp") or payload.get("timestamp"))
         for item in _message_content(payload):
-            if item.get("type") == "tool_use" and item.get("name") == "Bash":
-                tool_input = item.get("input") if isinstance(item.get("input"), dict) else {}
-                command = str(tool_input.get("command") or payload.get("command_text") or "")
-                tool_id = str(item.get("id") or "")
-                if (
-                    tool_id
-                    and tool_input.get("run_in_background")
-                    and (
-                        is_simulation_or_job_command(command)
-                        or invokes_nvflare_simulator(command, "")
-                        or is_nvflare_simulator_wrapper_command(command)
-                    )
-                ):
-                    background_tools[tool_id] = {
-                        "command": command,
-                        "description": str(tool_input.get("description") or payload.get("description") or ""),
-                    }
-            elif item.get("type") == "tool_result":
-                tool_id = str(item.get("tool_use_id") or "")
-                result = payload.get("tool_use_result") if isinstance(payload.get("tool_use_result"), dict) else {}
-                background_task_id = str(result.get("backgroundTaskId") or "")
-                if not background_task_id:
-                    match = re.search(r"\bbackground with ID:\s*([A-Za-z0-9_-]+)", str(item.get("content") or ""))
-                    background_task_id = match.group(1) if match else ""
-                if tool_id and background_task_id:
-                    task_by_tool_id[tool_id] = background_task_id
-            elif item.get("type") == "tool_use" and item.get("name") == "ScheduleWakeup":
+            simulation_tool = _simulation_bash_tool(payload, item)
+            if simulation_tool:
+                tool_id, details, explicitly_backgrounded = simulation_tool
+                simulation_tools[tool_id] = details
+                if explicitly_backgrounded:
+                    background_tools[tool_id] = details
+                continue
+            background_task = _tool_result_background_task(payload, item)
+            if background_task:
+                tool_id, task_id = background_task
+                task_by_tool_id[tool_id] = task_id
+                if tool_id in simulation_tools:
+                    # Claude can automatically background a long foreground Bash
+                    # call. The original tool input then has no run_in_background
+                    # flag, so the result's backgroundTaskId is authoritative.
+                    background_tools[tool_id] = simulation_tools[tool_id]
+                continue
+            if item.get("type") == "tool_use" and item.get("name") == "ScheduleWakeup":
                 saw_schedule_wakeup = True
         if event_type == "result.success" or (
             str(payload.get("type") or "") == "result" and str(payload.get("subtype") or "") == "success"
@@ -1671,28 +1703,59 @@ def _background_simulation_task_state(run: dict[str, Any]) -> dict[str, Any]:
             tool_id = str(payload.get("tool_use_id") or "")
             if task_id and tool_id:
                 task_by_tool_id[tool_id] = task_id
+                if tool_id in simulation_tools:
+                    background_tools[tool_id] = simulation_tools[tool_id]
+            description = str(payload.get("description") or "")
+            if task_id and description:
+                task_descriptions[task_id] = description
             continue
         if event_type in {"system.task_updated", "system.task_notification"}:
             task_id = str(payload.get("task_id") or "")
             if not task_id:
                 continue
+            description = str(payload.get("description") or payload.get("summary") or "")
+            if description:
+                task_descriptions[task_id] = description
             status = ""
             if isinstance(payload.get("patch"), dict):
                 status = str(payload["patch"].get("status") or "")
             status = status or str(payload.get("status") or "")
             if status:
                 task_statuses.setdefault(task_id, []).append(
-                    {"index": index, "status": status.lower(), "timestamp": timestamp}
+                    {
+                        "event_type": event_type,
+                        "index": index,
+                        "status": status.lower(),
+                        "timestamp": timestamp,
+                    }
                 )
     return {
         "background_tools": background_tools,
         "task_by_tool_id": task_by_tool_id,
         "task_statuses": task_statuses,
+        "task_descriptions": task_descriptions,
         "result_payload": result_payload,
         "result_timestamp": result_timestamp,
         "result_index": result_index,
         "saw_schedule_wakeup": saw_schedule_wakeup,
     }
+
+
+def _background_tool_has_later_finished_attempt(run: dict[str, Any], tool: dict[str, Any]) -> bool:
+    """Return true when the latest Finished server log postdates this launch."""
+
+    completed_attempt = _latest_completed_runtime_attempt(run)
+    launched_at = tool.get("timestamp")
+    if not completed_attempt or launched_at is None:
+        return False
+    try:
+        completed_mtime_ns = int(completed_attempt.get("mtime_ns") or 0)
+        launched_ns = int(launched_at.timestamp() * 1_000_000_000)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+    # Filesystems with coarse timestamp precision can round a just-created log
+    # down to the preceding second.
+    return completed_mtime_ns >= launched_ns - 1_000_000_000
 
 
 def _background_simulation_interruption_status(run: dict[str, Any]) -> str:
@@ -1707,7 +1770,7 @@ def _background_simulation_interruption_status(run: dict[str, Any]) -> str:
     if not background_tools or result_index is None:
         return ""
 
-    saw_unfinished_background_task = False
+    unfinished_background_tools = []
     for tool_id in background_tools:
         task_id = task_by_tool_id.get(tool_id)
         statuses = task_statuses.get(task_id, []) if task_id else []
@@ -1724,8 +1787,15 @@ def _background_simulation_interruption_status(run: dict[str, Any]) -> str:
             elif int(record.get("index") or -1) > result_index:
                 return "background_task_killed"
         if not terminal_status_records:
-            saw_unfinished_background_task = True
-    return "agent_left_simulation_running" if saw_unfinished_background_task else ""
+            unfinished_background_tools.append(background_tools[tool_id])
+    if (
+        len(unfinished_background_tools) == 1
+        and _background_tool_has_later_finished_attempt(run, unfinished_background_tools[0])
+    ):
+        # Some agent runtimes omit the terminal task notification even though
+        # the same background launch wrote a later terminal server log.
+        return ""
+    return "agent_left_simulation_running" if unfinished_background_tools else ""
 
 
 def job_run_status(run: dict[str, Any]) -> str:
@@ -1750,17 +1820,12 @@ def job_run_status(run: dict[str, Any]) -> str:
         and not _is_job_export_command(command)
     ]
     attempted = bool(executed_events or attempted_commands)
-    # Successful evidence (a completed job command or captured runtime completion) must win over
-    # background interruption classification: a background run can finish and capture results
-    # without ever emitting a terminal task-status event, which would otherwise be misread as
-    # "agent_left_simulation_running".
-    has_success_evidence = (
-        last_successful_job_event(run) or _has_task_result_artifact(run) or _latest_completed_runtime_attempt(run)
-    )
-    if not has_success_evidence:
-        background_status = _background_simulation_interruption_status(run)
-        if background_status:
-            return background_status
+    # A later background simulation that was still running (or was killed) when
+    # the agent finalized is authoritative. An earlier smoke/preflight success
+    # must not turn that incomplete final attempt into a completed benchmark run.
+    background_status = _background_simulation_interruption_status(run)
+    if background_status:
+        return background_status
     if _runtime_started_but_incomplete(run):
         return "started_failed"
     if last_successful_job_event(run):
@@ -2874,58 +2939,28 @@ def _message_content(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _background_task_interruption_summary(run: dict[str, Any]) -> str:
-    background_tools: dict[str, dict[str, str]] = {}
-    task_starts: dict[str, dict[str, str]] = {}
-    task_updates: dict[str, list[str]] = {}
-    task_notifications: dict[str, list[str]] = {}
-    for payload in _agent_event_payloads(run):
-        for item in _message_content(payload):
-            if item.get("type") != "tool_use" or item.get("name") != "Bash":
-                continue
-            tool_input = item.get("input") if isinstance(item.get("input"), dict) else {}
-            if not tool_input.get("run_in_background"):
-                continue
-            tool_id = str(item.get("id") or "")
-            if not tool_id:
-                continue
-            background_tools[tool_id] = {
-                "command": str(tool_input.get("command") or payload.get("command_text") or ""),
-                "description": str(tool_input.get("description") or payload.get("description") or ""),
-            }
-        event_type = str(payload.get("event_type") or payload.get("type") or "")
-        task_id = str(payload.get("task_id") or "")
+    state = _background_simulation_task_state(run)
+    background_tools = state["background_tools"]
+    task_by_tool_id = state["task_by_tool_id"]
+    task_statuses = state["task_statuses"]
+    task_descriptions = state["task_descriptions"]
+    for tool_id, tool in background_tools.items():
+        task_id = task_by_tool_id.get(tool_id)
         if not task_id:
             continue
-        if event_type == "system.task_started":
-            task_starts[task_id] = {
-                "description": str(payload.get("description") or ""),
-                "tool_use_id": str(payload.get("tool_use_id") or ""),
-            }
-            continue
-        if event_type == "system.task_updated":
-            patch = payload.get("patch") if isinstance(payload.get("patch"), dict) else {}
-            status = str(patch.get("status") or "")
-            if status:
-                task_updates.setdefault(task_id, []).append(status)
-            continue
-        if event_type == "system.task_notification":
-            status = str(payload.get("status") or "")
-            if status:
-                task_notifications.setdefault(task_id, []).append(status)
-
-    interrupted_statuses = {"failed", "killed", "stopped", "cancelled", "canceled", "interrupted"}
-    for task_id, started in task_starts.items():
-        tool_id = started.get("tool_use_id") or ""
-        if tool_id not in background_tools:
-            continue
-        updates = [status for status in task_updates.get(task_id, []) if status.lower() in interrupted_statuses]
+        records = [
+            record
+            for record in task_statuses.get(task_id, [])
+            if record.get("status") in _BACKGROUND_INTERRUPTED_STATUSES
+        ]
+        updates = [record["status"] for record in records if record.get("event_type") == "system.task_updated"]
         notifications = [
-            status for status in task_notifications.get(task_id, []) if status.lower() in interrupted_statuses
+            record["status"] for record in records if record.get("event_type") == "system.task_notification"
         ]
         if not updates and not notifications:
             continue
         details = []
-        description = started.get("description") or background_tools[tool_id].get("description")
+        description = task_descriptions.get(task_id) or tool.get("description")
         if description:
             details.append(description)
         if updates:
@@ -3720,10 +3755,21 @@ def _server_progress_summary(run: dict[str, Any]) -> str:
 
 
 def _metrics_artifact_summary(run: dict[str, Any]) -> str:
-    has_summary = _runtime_artifact_present(run, r"(^|/)server/simulate_job/metrics/metrics_summary\.json$")
-    _label, round_metrics = _read_runtime_artifact(
-        run, r"(^|/)server/simulate_job/metrics/round_metrics\.jsonl$", max_bytes=64_000
-    )
+    summary_pattern = r"(^|/)server/simulate_job/metrics/metrics_summary\.json$"
+    round_pattern = r"(^|/)server/simulate_job/metrics/round_metrics\.jsonl$"
+    attempts = _runtime_attempt_server_logs(run)
+    if attempts:
+        # Keep metric evidence on the same attempt as the latest server
+        # progress. A completed smoke workspace must not supply the summary for
+        # a later interrupted full-validation workspace.
+        attempt_root = str(attempts[0]["root"])
+        has_summary = _attempt_artifact_present(run, attempt_root, summary_pattern)
+        round_metrics = "\n".join(
+            text for _label, text in _attempt_artifact_texts(run, attempt_root, round_pattern, max_bytes=64_000)
+        )
+    else:
+        has_summary = _runtime_artifact_present(run, summary_pattern)
+        _label, round_metrics = _read_runtime_artifact(run, round_pattern, max_bytes=64_000)
     if has_summary:
         return "`metrics_summary.json` was captured."
     if round_metrics:
@@ -3754,7 +3800,7 @@ def _error_log_summary(run: dict[str, Any]) -> str:
 def result_failure_root_cause_block(run: dict[str, Any]) -> str:
     """Explain missing NVFLARE result metrics from captured runtime artifacts."""
 
-    if not run.get("available") or _has_task_result_artifact(run):
+    if not run.get("available"):
         return ""
     # This diagnostic explains a missing TRAINING result scalar
     # (metrics_summary.json). Tasks whose result is a different artifact —
@@ -3763,6 +3809,11 @@ def result_failure_root_cause_block(run: dict[str, Any]) -> str:
     if _resolved_evaluation_task(run) != "conversion":
         return ""
     status = job_run_status(run)
+    if _has_task_result_artifact(run) and status not in {
+        "background_task_killed",
+        "agent_left_simulation_running",
+    }:
+        return ""
     if status not in {
         "started_failed",
         "background_task_killed",

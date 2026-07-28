@@ -5561,6 +5561,277 @@ def test_background_interruption_cause_ignores_later_completed_simulation_task()
     assert _background_task_interruption_cause(run) == ""
 
 
+def test_auto_backgrounded_full_run_overrides_earlier_smoke_success(tmp_path):
+    from benchmark.harness.sdks.nvflare._logic import (
+        _background_task_interruption_cause,
+        job_run_status,
+        job_run_status_reason,
+        last_successful_job_event,
+        result_failure_root_cause_block,
+    )
+
+    mode_dir = tmp_path / "with_skills"
+    artifact_root = mode_dir / "workspace_delta" / "runtime_artifacts"
+
+    def runtime_artifact(rel_path: str, text: str, mtime_ns: int) -> dict:
+        path = artifact_root / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+        return {
+            "artifact_path": f"runtime_artifacts/{rel_path}",
+            "path": rel_path,
+            "size_bytes": len(text.encode("utf-8")),
+        }
+
+    smoke_root = "tmp/nvflare/hf_sst2_fedavg/smoke_ws/hf-sst2-fedavg"
+    full_root = "tmp/nvflare/hf_sst2_fedavg/workspace/hf-sst2-fedavg"
+    smoke_mtime = 1_785_198_698_000_000_000
+    full_mtime = smoke_mtime + 210_000_000_000
+    runtime_artifacts = [
+        runtime_artifact(
+            f"{smoke_root}/server/log_fl.txt",
+            "Round 0 started.\nFinished FedAvg.\n",
+            smoke_mtime,
+        ),
+        runtime_artifact(
+            f"{smoke_root}/server/simulate_job/metrics/metrics_summary.json",
+            '{"status":"metrics_reported","final_round":0}\n',
+            smoke_mtime,
+        ),
+        runtime_artifact(
+            f"{full_root}/server/log_fl.txt",
+            "Round 0 started.\nRound 1 started.\n",
+            full_mtime,
+        ),
+        runtime_artifact(
+            f"{full_root}/server/simulate_job/metrics/round_metrics.jsonl",
+            '{"round":0,"aggregated_metrics":[{"name":"eval_accuracy","value":0.5}]}\n',
+            full_mtime,
+        ),
+    ]
+    events = [
+        json.loads(_codex_command("python job.py --num-rounds 1 --workspace smoke_ws", "Finished FedAvg.", 0)),
+        {
+            "event_type": "assistant",
+            "harness_timestamp": "2026-07-28T00:32:25.656Z",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_full_job",
+                        "input": {
+                            "command": "python job.py --num-rounds 3 --workspace full_ws",
+                            "description": "Run full 3-site 3-round simulation",
+                        },
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            # Claude's automatically backgrounded task does not necessarily
+            # identify its originating tool on the task-start event.
+            "event_type": "system.task_started",
+            "harness_timestamp": "2026-07-28T00:32:28.677Z",
+            "task_id": "bs0xxa845",
+        },
+        {
+            "event_type": "system.task_updated",
+            "harness_timestamp": "2026-07-28T00:34:25.676Z",
+            "patch": {"is_backgrounded": True},
+            "task_id": "bs0xxa845",
+        },
+        {
+            "event_type": "user",
+            "harness_timestamp": "2026-07-28T00:34:25.814Z",
+            "message": {
+                "content": [
+                    {
+                        "content": "Command running in background with ID: bs0xxa845.",
+                        "tool_use_id": "toolu_full_job",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"backgroundTaskId": "bs0xxa845"},
+        },
+        {
+            "event_type": "result.success",
+            "harness_timestamp": "2026-07-28T00:34:59.689Z",
+            "stop_reason": "end_turn",
+            "subtype": "success",
+            "terminal_reason": "completed",
+            "type": "result",
+        },
+        {
+            "event_type": "system.task_updated",
+            "harness_timestamp": "2026-07-28T00:35:04.771Z",
+            "patch": {"status": "killed"},
+            "task_id": "bs0xxa845",
+        },
+        {
+            "event_type": "system.task_notification",
+            "harness_timestamp": "2026-07-28T00:35:04.772Z",
+            "status": "stopped",
+            "summary": "Run full 3-site 3-round simulation",
+            "task_id": "bs0xxa845",
+        },
+    ]
+    run = {
+        "available": True,
+        "mode_dir": mode_dir,
+        "activity": {
+            "commands": [
+                "python job.py --num-rounds 1 --workspace smoke_ws",
+                "python job.py --num-rounds 3 --workspace full_ws",
+            ]
+        },
+        "agent_events_text": "\n".join(json.dumps(event) for event in events),
+        "workspace_delta": {"runtime_artifacts": runtime_artifacts},
+    }
+
+    assert last_successful_job_event(run)
+    assert job_run_status(run) == "background_task_killed"
+    reason = job_run_status_reason(run)
+    assert "agent run ended while the background simulation was still running" in reason
+    assert "task was killed/stopped 5s after the agent result" in reason
+    assert "Background task `bs0xxa845` was interrupted after launch" in reason
+    assert "Run full 3-site 3-round simulation" in reason
+    assert "`round_metrics.jsonl` was captured with 1 non-empty row(s)" in reason
+    assert "but `metrics_summary.json` was not captured" in reason
+    assert _background_task_interruption_cause(run).startswith(
+        "agent run ended while the background simulation was still running"
+    )
+    root_cause = result_failure_root_cause_block(run)
+    assert "the agent ended while the simulation was still active" in root_cause
+    assert "`Round 1 started`" in root_cause
+    assert "`round_metrics.jsonl` was captured with 1 non-empty row(s)" in root_cause
+    assert "`metrics_summary.json` was captured." not in root_cause
+
+
+def test_auto_backgrounded_simulation_with_completed_task_status_is_completed():
+    from benchmark.harness.sdks.nvflare._logic import job_run_status
+
+    events = [
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_job",
+                        "input": {"command": "python job.py --num-rounds 3"},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "user",
+            "message": {
+                "content": [
+                    {
+                        "content": "Command running in background with ID: sim_task.",
+                        "tool_use_id": "toolu_job",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"backgroundTaskId": "sim_task"},
+        },
+        {
+            "event_type": "result.success",
+            "harness_timestamp": "2026-07-28T00:34:59.689Z",
+            "stop_reason": "end_turn",
+            "subtype": "success",
+            "terminal_reason": "completed",
+            "type": "result",
+        },
+        {
+            "event_type": "system.task_updated",
+            "harness_timestamp": "2026-07-28T00:35:04.771Z",
+            "patch": {"status": "completed"},
+            "task_id": "sim_task",
+        },
+    ]
+    run = {
+        "available": True,
+        "activity": {"commands": ["python job.py --num-rounds 3"]},
+        "agent_events_text": "\n".join(json.dumps(event) for event in events),
+    }
+
+    assert job_run_status(run) == "completed"
+
+
+def test_auto_backgrounded_simulation_accepts_later_finished_log_without_task_status(tmp_path):
+    from benchmark.harness.sdks.nvflare._logic import job_run_status
+
+    mode_dir = tmp_path / "with_skills"
+    rel_path = "tmp/nvflare/full_ws/fedavg/server/log_fl.txt"
+    log_path = mode_dir / "workspace_delta" / "runtime_artifacts" / rel_path
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("Round 2 started.\nFinished FedAvg.\n", encoding="utf-8")
+    completed_mtime_ns = 1_785_198_908_000_000_000
+    os.utime(log_path, ns=(completed_mtime_ns, completed_mtime_ns))
+    events = [
+        {
+            "event_type": "assistant",
+            "harness_timestamp": "2026-07-28T00:32:25.656Z",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_job",
+                        "input": {"command": "python job.py --num-rounds 3"},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "user",
+            "harness_timestamp": "2026-07-28T00:34:25.814Z",
+            "message": {
+                "content": [
+                    {
+                        "content": "Command running in background with ID: sim_task.",
+                        "tool_use_id": "toolu_job",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"backgroundTaskId": "sim_task"},
+        },
+        {
+            "event_type": "result.success",
+            "harness_timestamp": "2026-07-28T00:35:00.000Z",
+            "stop_reason": "end_turn",
+            "subtype": "success",
+            "terminal_reason": "completed",
+            "type": "result",
+        },
+    ]
+    run = {
+        "available": True,
+        "mode_dir": mode_dir,
+        "activity": {"commands": ["python job.py --num-rounds 3"]},
+        "agent_events_text": "\n".join(json.dumps(event) for event in events),
+        "workspace_delta": {
+            "runtime_artifacts": [
+                {
+                    "artifact_path": f"runtime_artifacts/{rel_path}",
+                    "path": rel_path,
+                    "size_bytes": log_path.stat().st_size,
+                    "source_mtime_ns": completed_mtime_ns,
+                }
+            ]
+        },
+    }
+
+    assert job_run_status(run) == "completed"
+
+
 def test_incomplete_background_runtime_overrides_successful_launch_status(tmp_path):
     from benchmark.harness.modes import WITH_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import why_section
