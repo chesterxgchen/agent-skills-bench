@@ -322,9 +322,27 @@ docker run --rm agent-skills-benchmark:claude-skills \
   /bin/bash -lc 'nvflare --version; ls /workspace/.claude/skills; cat /workspace/.claude/skills_list.json'
 ```
 
-The images do not install job-specific training dependencies: the container
-prewarms the job folder's own `requirements*.txt` identically in both modes
-before the measured agent phase.
+The images do not install job-specific training dependencies. Before the
+measured agent phase, each container prewarms the job folder's own top-level
+`requirements*.txt` identically in both modes.
+
+By default, benchmark containers share persistent uv and pip download caches at
+`~/.cache/agent-skills-bench/dependencies` on the host. The first workload that
+needs a package downloads it; the other mode and later runs can reuse the
+cached package bytes. Each container still has its own virtual environment, so
+packages are installed independently and do not leak installed state between
+the compared modes. `dependency_prewarm.json` records the cache locations and
+uv's reported package-download count.
+
+Configure or disable the shared cache with:
+
+```bash
+BENCHMARK_DEPENDENCY_CACHE_DIR=/fast/disk/benchmark-cache ./bin/run.sh ...
+BENCHMARK_SHARED_DEPENDENCY_CACHE=false ./bin/run.sh ...
+```
+
+Run untrusted job inputs with the shared cache disabled or with a disposable
+cache directory, because benchmark containers have write access to this cache.
 
 ## Add Another SDK
 

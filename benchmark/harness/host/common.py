@@ -37,12 +37,18 @@ SCRIPT_DIR = Path(__file__).resolve().parents[3]
 PROMPT_FILE_NAME = "benchmark_prompt.txt"
 CONTAINER_PROMPT_DIR = "/workspace/prompts"
 CONTAINER_PROMPT_PATH = f"{CONTAINER_PROMPT_DIR}/{PROMPT_FILE_NAME}"
+CONTAINER_DEPENDENCY_CACHE_ROOT = "/workspace/.cache/agent-skills-bench/dependencies"
+CONTAINER_UV_CACHE_DIR = f"{CONTAINER_DEPENDENCY_CACHE_ROOT}/uv"
+CONTAINER_PIP_CACHE_DIR = f"{CONTAINER_DEPENDENCY_CACHE_ROOT}/pip"
 OUTPUT_LOCK = threading.Lock()
 __all__ = [
     "SCRIPT_DIR",
     "PROMPT_FILE_NAME",
     "CONTAINER_PROMPT_DIR",
     "CONTAINER_PROMPT_PATH",
+    "CONTAINER_DEPENDENCY_CACHE_ROOT",
+    "CONTAINER_UV_CACHE_DIR",
+    "CONTAINER_PIP_CACHE_DIR",
     "OUTPUT_LOCK",
     "HostCliOptions",
     "ImageConfig",
@@ -54,6 +60,7 @@ __all__ = [
     "benchmark_agent_from_env",
     "case_config",
     "command_stdout_to_file",
+    "dependency_cache_dir_from_env",
     "default_results_root",
     "docker_args_for_case",
     "docker_env",
@@ -65,6 +72,7 @@ __all__ = [
     "optional_int_env",
     "parse_host_cli_options",
     "prepare_result_mount",
+    "prepare_dependency_cache_mount",
     "stage_read_only_mount_file",
     "print_usage",
     "stream_command",
@@ -100,6 +108,19 @@ def default_results_root() -> Path:
             os.environ.get("CODEX_DOCKER_RESULTS_ROOT", str(SCRIPT_DIR / "results")),
         )
     )
+
+
+def dependency_cache_dir_from_env() -> Path | None:
+    """Return the persistent host dependency cache, or None when disabled."""
+
+    if not env_bool("BENCHMARK_SHARED_DEPENDENCY_CACHE", "true"):
+        return None
+    configured = os.environ.get("BENCHMARK_DEPENDENCY_CACHE_DIR", "").strip()
+    if configured:
+        return absolute_path(configured)
+    cache_home = os.environ.get("XDG_CACHE_HOME", "").strip()
+    base = absolute_path(cache_home) if cache_home else Path.home() / ".cache"
+    return base / "agent-skills-bench" / "dependencies"
 
 
 def print_usage(command: str) -> None:
@@ -508,6 +529,32 @@ def prepare_result_mount(result_dir: Path, *, logs: Iterable[Path] = (), prefix:
             )
 
 
+def prepare_dependency_cache_mount(
+    cache_dir: Path,
+    *,
+    logs: Iterable[Path] = (),
+    prefix: str | None = None,
+) -> bool:
+    """Prepare writable uv/pip caches; return False when sharing is unavailable."""
+
+    try:
+        for directory in (cache_dir / "uv", cache_dir / "pip"):
+            directory.mkdir(parents=True, exist_ok=True)
+            mode = directory.stat().st_mode
+            directory.chmod(mode | stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+    except OSError as exc:
+        emit(
+            f"Shared dependency cache is unavailable; continuing with isolated container caches: "
+            f"{cache_dir}: {exc}",
+            logs=logs,
+            prefix=prefix,
+            stderr=True,
+        )
+        return False
+    emit(f"Shared dependency cache: {cache_dir}", logs=logs, prefix=prefix)
+    return True
+
+
 def stage_read_only_mount_file(source: Path, staging_dir: Path, index: int) -> Path:
     target_dir = staging_dir / f"mount_{index:02d}"
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -591,6 +638,7 @@ class CaseConfig:
     adapter: AgentAdapter
     host_agent_home: Path
     mount_host_agent_auth: bool
+    dependency_cache_dir: Path | None = None
     agent_timeout_seconds: int | None = None
     container_timeout_seconds: int | None = None
     result_size_budget_bytes: int | None = None
@@ -637,6 +685,7 @@ def case_config(
         adapter=adapter,
         host_agent_home=absolute_path(str(adapter.host_home_from_env(os.environ))),
         mount_host_agent_auth=adapter.mount_auth_from_env(os.environ),
+        dependency_cache_dir=dependency_cache_dir_from_env(),
         agent_timeout_seconds=optional_int_env("AGENT_TIMEOUT_SECONDS"),
         container_timeout_seconds=optional_int_env("CONTAINER_TIMEOUT_SECONDS"),
         result_size_budget_bytes=optional_int_env("RESULT_SIZE_BUDGET_BYTES"),
@@ -664,6 +713,16 @@ def docker_args_for_case(
     container_name: str | None = None,
 ) -> list[str]:
     runtime_env = config.adapter.runtime_env(config)
+    dependency_cache_args = []
+    if config.dependency_cache_dir is not None:
+        dependency_cache_args = [
+            "-v",
+            f"{config.dependency_cache_dir / 'uv'}:{CONTAINER_UV_CACHE_DIR}",
+            "-v",
+            f"{config.dependency_cache_dir / 'pip'}:{CONTAINER_PIP_CACHE_DIR}",
+            *docker_env("UV_CACHE_DIR", CONTAINER_UV_CACHE_DIR),
+            *docker_env("PIP_CACHE_DIR", CONTAINER_PIP_CACHE_DIR),
+        ]
     args = [
         "docker",
         "run",
@@ -675,12 +734,14 @@ def docker_args_for_case(
         f"{config.result_dir}:/workspace/results",
         "-v",
         f"{config.prompt_path}:{CONTAINER_PROMPT_PATH}:ro",
+        *dependency_cache_args,
         *docker_env("JOB_INPUT_DIR", "/workspace/input"),
         *docker_env("TRAINING_CODE", "/workspace/input"),
         *docker_env("PROMPT_SOURCE", CONTAINER_PROMPT_PATH),
         *docker_env("MODE", config.mode),
         *docker_env("USE_PREINSTALLED_SKILLS", config.use_preinstalled_skills),
         *docker_env("SDK_IMAGE_KIND", config.sdk_image_kind),
+        *docker_env("BENCHMARK_SHARED_DEPENDENCY_CACHE", config.dependency_cache_dir is not None),
         *docker_env("PROGRESS_INTERVAL_SECONDS", config.progress_interval_seconds),
         *docker_env("RESULT_DIR", "/workspace/results"),
         *docker_env("RECORDS_DIR", "/workspace/results/records"),
@@ -723,6 +784,8 @@ def write_runtime_image(config: CaseConfig) -> None:
             "agent_adapter": config.adapter.metadata(),
             "runtime_image": config.run_image,
             "report_image": config.images.report_image_name,
+            "shared_dependency_cache_enabled": config.dependency_cache_dir is not None,
+            "dependency_cache_dir": str(config.dependency_cache_dir) if config.dependency_cache_dir else "",
             "sdk_image_kind": config.sdk_image_kind,
             "container_prompt_source": CONTAINER_PROMPT_PATH,
             "container_python": "/workspace/venv/bin/python",

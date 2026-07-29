@@ -519,12 +519,19 @@ _TRANSIENT_PREWARM_FAILURE_PATTERN = re.compile(
     r")",
     flags=re.IGNORECASE,
 )
+_UV_DOWNLOADED_PACKAGE_PATTERN = re.compile(r"\bDownloaded\s+(\d+)\s+packages?\b", flags=re.IGNORECASE)
 
 
 def _is_transient_prewarm_failure(stderr: str) -> bool:
     """Return whether a dependency prewarm failure is safe to retry unchanged."""
 
     return bool(_TRANSIENT_PREWARM_FAILURE_PATTERN.search(str(stderr or "")))
+
+
+def _uv_downloaded_package_count(output: str) -> int:
+    """Extract uv's reported network downloads without treating silence as a cache hit."""
+
+    return sum(int(match) for match in _UV_DOWNLOADED_PACKAGE_PATTERN.findall(str(output or "")))
 
 
 def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | None = None) -> None:
@@ -547,7 +554,16 @@ def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | 
         write_json(out_path, {"enabled": False, "installs": [], "total_seconds": 0})
         return
     prewarm_start = epoch_seconds()
-    payload: dict[str, Any] = {"enabled": True, "installs": []}
+    shared_cache = os.environ.get("BENCHMARK_SHARED_DEPENDENCY_CACHE", "false") == "true"
+    payload: dict[str, Any] = {
+        "enabled": True,
+        "installs": [],
+        "cache": {
+            "shared": shared_cache,
+            "uv_cache_dir": os.environ.get("UV_CACHE_DIR", ""),
+            "pip_cache_dir": os.environ.get("PIP_CACHE_DIR", ""),
+        },
+    }
     requirements = sorted(path for path in config.run_input_dir.glob("requirements*.txt") if path.is_file())
     uv = shutil.which("uv")
     if requirements and uv is None:
@@ -577,6 +593,7 @@ def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | 
             stderr_tail = ""
             for attempt_number in range(1, PREWARM_TRANSIENT_MAX_ATTEMPTS + 1):
                 attempt_start = epoch_seconds()
+                downloaded_package_count = 0
                 try:
                     proc = subprocess.run(
                         [uv, "pip", "install", "--python", sys.executable, "-r", str(path)],
@@ -586,6 +603,7 @@ def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | 
                     )
                     exit_code = proc.returncode
                     stderr_tail = proc.stderr[-2000:].strip()
+                    downloaded_package_count = _uv_downloaded_package_count(f"{proc.stdout}\n{proc.stderr}")
                 except subprocess.TimeoutExpired:
                     exit_code = None
                     stderr_tail = f"prewarm install timed out after {PREWARM_INSTALL_TIMEOUT_SECONDS}s"
@@ -601,6 +619,7 @@ def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | 
                         "duration_seconds": attempt_duration,
                         "stderr_tail": stderr_tail,
                         "transient": transient,
+                        "downloaded_package_count": downloaded_package_count,
                     }
                 )
                 if exit_code == 0 or not transient or attempt_number >= PREWARM_TRANSIENT_MAX_ATTEMPTS:
@@ -613,6 +632,13 @@ def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | 
             duration = epoch_seconds() - start
             outcome = f"exit {exit_code}" if exit_code is not None else stderr_tail
             print(f"Dependency prewarm: {path.name} finished in {duration}s ({outcome})", flush=True)
+            downloaded_package_count = sum(attempt["downloaded_package_count"] for attempt in attempts)
+            if downloaded_package_count:
+                cache_outcome = "downloaded"
+            elif exit_code == 0:
+                cache_outcome = "no_download_reported"
+            else:
+                cache_outcome = "install_failed"
             payload["installs"].append(
                 {
                     "requirements": path.name,
@@ -622,14 +648,19 @@ def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | 
                     "attempt_count": len(attempts),
                     "attempts": attempts,
                     "recovered_transient_failure": exit_code == 0 and len(attempts) > 1,
+                    "downloaded_package_count": downloaded_package_count,
+                    "cache_outcome": cache_outcome,
                 }
             )
     finally:
         if progress is not None:
             progress.stop_heartbeat()
     payload["total_seconds"] = epoch_seconds() - prewarm_start
+    payload["downloaded_package_count"] = sum(install["downloaded_package_count"] for install in payload["installs"])
     if requirements:
-        print(f"Dependency prewarm: done in {payload['total_seconds']}s (excluded from measured agent time)", flush=True)
+        print(
+            f"Dependency prewarm: done in {payload['total_seconds']}s (excluded from measured agent time)", flush=True
+        )
     if progress is not None:
         progress.write("dependency_prewarm", "finished")
     write_json(out_path, payload)
@@ -1282,9 +1313,7 @@ def post_process(
     # (labelled by its workspace-relative path) and EXCLUDED from the workspace
     # source walk: runtime output is graded from runtime_artifacts/, and listing it
     # under changed_files/ would misreport it as agent-generated source.
-    run_output_markers = tuple(
-        marker for marker in capture_spec.runtime_output_markers if "simulate_job" in marker
-    )
+    run_output_markers = tuple(marker for marker in capture_spec.runtime_output_markers if "simulate_job" in marker)
     workspace_runtime_sources: list[tuple[str, Path]] = []
     for _label, run_root in resolve_runtime_output_roots(
         run_output_markers,

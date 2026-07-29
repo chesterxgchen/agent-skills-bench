@@ -60,6 +60,18 @@ def test_expand_home_path_uses_pathlib_expanduser():
     assert expand_home_path("/workspace/input") == "/workspace/input"
 
 
+def test_dependency_cache_dir_can_be_configured_or_disabled(tmp_path, monkeypatch):
+    from benchmark.harness.host.common import dependency_cache_dir_from_env
+
+    configured = tmp_path / "shared-dependencies"
+    monkeypatch.setenv("BENCHMARK_SHARED_DEPENDENCY_CACHE", "true")
+    monkeypatch.setenv("BENCHMARK_DEPENDENCY_CACHE_DIR", str(configured))
+    assert dependency_cache_dir_from_env() == configured
+
+    monkeypatch.setenv("BENCHMARK_SHARED_DEPENDENCY_CACHE", "false")
+    assert dependency_cache_dir_from_env() is None
+
+
 def test_agent_availability_probe_records_missing_cli(tmp_path, monkeypatch):
     from benchmark.harness.container import agent_run
     from benchmark.harness.container.agent_run import AgentRunConfig, run_agent_availability_probe
@@ -160,6 +172,56 @@ def test_host_docker_args_use_migrated_container_entrypoint(tmp_path):
     assert f"{prompt_path}:{CONTAINER_PROMPT_PATH}:ro" in args
     assert f"PROMPT_SOURCE={CONTAINER_PROMPT_PATH}" in args
     assert "RECORDS_DIR=/workspace/results/records" in args
+
+
+def test_host_docker_args_mount_shared_dependency_caches(tmp_path):
+    from benchmark.harness.agents.registry import load_agent_adapter
+    from benchmark.harness.host.common import (
+        CONTAINER_PIP_CACHE_DIR,
+        CONTAINER_UV_CACHE_DIR,
+        CaseConfig,
+        ImageConfig,
+        docker_args_for_case,
+        prepare_dependency_cache_mount,
+    )
+
+    job_input = tmp_path / "job"
+    prompt_path = tmp_path / "prompt.txt"
+    dependency_cache = tmp_path / "dependency-cache"
+    job_input.mkdir()
+    prompt_path.write_text("convert this job\n", encoding="utf-8")
+    config = CaseConfig(
+        mode="with_skills",
+        use_preinstalled_skills=True,
+        job_input_dir=job_input,
+        result_dir=tmp_path / "results",
+        prompt_path=prompt_path,
+        images=ImageConfig(
+            image_name="agent-skills-benchmark:codex-skills",
+            baseline_image_name="agent-skills-benchmark:codex-baseline",
+            report_image_name="agent-skills-benchmark:codex-skills",
+        ),
+        progress_interval_seconds="0",
+        agent="codex",
+        agent_model="unspecified_default",
+        model_was_explicit=False,
+        adapter=load_agent_adapter("codex"),
+        host_agent_home=tmp_path / ".codex",
+        mount_host_agent_auth=False,
+        dependency_cache_dir=dependency_cache,
+    )
+
+    assert prepare_dependency_cache_mount(dependency_cache)
+    args = docker_args_for_case(config)
+
+    assert (dependency_cache / "uv").is_dir()
+    assert (dependency_cache / "pip").is_dir()
+    assert f"{dependency_cache / 'uv'}:{CONTAINER_UV_CACHE_DIR}" in args
+    assert f"{dependency_cache / 'pip'}:{CONTAINER_PIP_CACHE_DIR}" in args
+    assert f"UV_CACHE_DIR={CONTAINER_UV_CACHE_DIR}" in args
+    assert f"PIP_CACHE_DIR={CONTAINER_PIP_CACHE_DIR}" in args
+    assert "BENCHMARK_SHARED_DEPENDENCY_CACHE=true" in args
+    assert stat.S_IMODE((dependency_cache / "uv").stat().st_mode) & stat.S_IWOTH
 
 
 def test_host_idle_sleep_prevention_wraps_with_caffeinate_on_macos(monkeypatch):

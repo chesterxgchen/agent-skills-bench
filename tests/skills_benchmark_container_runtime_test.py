@@ -609,10 +609,14 @@ def test_prewarm_installs_job_requirements_into_current_python(tmp_path, monkeyp
 
     def fake_run(args, **kwargs):
         calls.append(args)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        stderr = "Downloaded 3 packages in 1.2s" if len(calls) == 1 else "Audited 4 packages in 2ms"
+        return SimpleNamespace(returncode=0, stdout="", stderr=stderr)
 
     monkeypatch.setattr(agent_run.shutil, "which", lambda name: "/usr/local/bin/uv")
     monkeypatch.setattr(agent_run.subprocess, "run", fake_run)
+    monkeypatch.setenv("BENCHMARK_SHARED_DEPENDENCY_CACHE", "true")
+    monkeypatch.setenv("UV_CACHE_DIR", "/workspace/shared/uv")
+    monkeypatch.setenv("PIP_CACHE_DIR", "/workspace/shared/pip")
     agent_run.prewarm_job_dependencies(config)
 
     # The user must see what the long pause is: an announcement, per-file
@@ -639,6 +643,17 @@ def test_prewarm_installs_job_requirements_into_current_python(tmp_path, monkeyp
     assert all(entry["exit_code"] == 0 for entry in payload["installs"])
     assert isinstance(payload["total_seconds"], int)
     assert all(isinstance(entry["duration_seconds"], int) for entry in payload["installs"])
+    assert payload["cache"] == {
+        "shared": True,
+        "uv_cache_dir": "/workspace/shared/uv",
+        "pip_cache_dir": "/workspace/shared/pip",
+    }
+    assert payload["downloaded_package_count"] == 3
+    assert [entry["cache_outcome"] for entry in payload["installs"]] == [
+        "downloaded",
+        "no_download_reported",
+    ]
+    assert payload["installs"][0]["attempts"][0]["downloaded_package_count"] == 3
 
 
 def test_prewarm_disabled_by_env_records_and_installs_nothing(tmp_path, monkeypatch):

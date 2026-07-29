@@ -25,7 +25,7 @@ import tempfile
 import traceback
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,12 +57,14 @@ from .common import (
     add_agent_auth_mounts,
     add_agent_passthrough_env,
     default_results_root,
+    dependency_cache_dir_from_env,
     docker_args_for_case,
     docker_env,
     emit,
     force_remove_container,
     host_idle_sleep_prevention_command,
     parse_host_cli_options,
+    prepare_dependency_cache_mount,
     prepare_result_mount,
     stream_command,
     timestamp_slug,
@@ -145,15 +147,22 @@ class RuntimeAuthOptions:
 
 def run_one_case(config: CaseConfig, *, logs: Iterable[Path] = (), prefix: str | None = None) -> int:
     prepare_result_mount(config.result_dir, logs=logs, prefix=prefix)
+    effective_config = config
+    if config.dependency_cache_dir is not None and not prepare_dependency_cache_mount(
+        config.dependency_cache_dir,
+        logs=logs,
+        prefix=prefix,
+    ):
+        effective_config = replace(config, dependency_cache_dir=None)
     emit(f"Running mode={config.mode} with runtime image: {config.run_image}", logs=logs, prefix=prefix)
     emit(f"Report image: {config.images.report_image_name}", logs=logs, prefix=prefix)
     emit(f"Job folder: {config.job_input_dir} -> /workspace/input", logs=logs, prefix=prefix)
     emit(f"Prompt file: {config.prompt_path} -> {CONTAINER_PROMPT_PATH}", logs=logs, prefix=prefix)
-    write_runtime_image(config)
+    write_runtime_image(effective_config)
     container_name = f"agent-benchmark-{config.mode}-{uuid.uuid4().hex[:12]}"
     with tempfile.TemporaryDirectory(prefix="agent-benchmark-auth-") as auth_staging:
         command = docker_args_for_case(
-            config,
+            effective_config,
             logs=logs,
             prefix=prefix,
             auth_staging_dir=Path(auth_staging),
@@ -649,6 +658,7 @@ def case_config_for_entry(
         adapter=adapter,
         host_agent_home=host_agent_home,
         mount_host_agent_auth=mount_host_agent_auth,
+        dependency_cache_dir=dependency_cache_dir_from_env(),
         agent_timeout_seconds=positive_int_resource_value(resource_policy.get("agent_timeout_seconds")),
         container_timeout_seconds=positive_int_resource_value(resource_policy.get("container_timeout_seconds")),
         result_size_budget_bytes=positive_int_resource_value(resource_policy.get("result_size_budget_bytes")),
