@@ -221,6 +221,7 @@ def test_host_docker_args_mount_shared_dependency_caches(tmp_path):
     assert f"UV_CACHE_DIR={CONTAINER_UV_CACHE_DIR}" in args
     assert f"PIP_CACHE_DIR={CONTAINER_PIP_CACHE_DIR}" in args
     assert "BENCHMARK_SHARED_DEPENDENCY_CACHE=true" in args
+    assert "BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS=3600" in args
     assert stat.S_IMODE((dependency_cache / "uv").stat().st_mode) & stat.S_IWOTH
 
 

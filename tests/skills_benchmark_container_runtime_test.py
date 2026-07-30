@@ -595,6 +595,7 @@ def test_prewarm_installs_job_requirements_into_current_python(tmp_path, monkeyp
     from benchmark.harness.container import agent_run
 
     monkeypatch.delenv("BENCHMARK_PREWARM_JOB_DEPENDENCIES", raising=False)
+    monkeypatch.delenv("BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS", raising=False)
     input_dir = tmp_path / "input"
     input_dir.mkdir()
     (input_dir / "requirements-train.txt").write_text("xgboost\npandas\n", encoding="utf-8")
@@ -606,9 +607,11 @@ def test_prewarm_installs_job_requirements_into_current_python(tmp_path, monkeyp
     config = SimpleNamespace(run_input_dir=input_dir, result_dir=result_dir)
 
     calls = []
+    timeouts = []
 
     def fake_run(args, **kwargs):
         calls.append(args)
+        timeouts.append(kwargs["timeout"])
         stderr = "Downloaded 3 packages in 1.2s" if len(calls) == 1 else "Audited 4 packages in 2ms"
         return SimpleNamespace(returncode=0, stdout="", stderr=stderr)
 
@@ -634,8 +637,10 @@ def test_prewarm_installs_job_requirements_into_current_python(tmp_path, monkeyp
     ]
     for args in calls:
         assert args[:5] == ["/usr/local/bin/uv", "pip", "install", "--python", sys.executable]
+    assert timeouts == [3600, 3600]
     payload = json.loads((result_dir / "dependency_prewarm.json").read_text(encoding="utf-8"))
     assert payload["enabled"] is True
+    assert payload["install_timeout_seconds"] == 3600
     assert [entry["requirements"] for entry in payload["installs"]] == [
         "requirements-download.txt",
         "requirements-train.txt",
@@ -676,6 +681,34 @@ def test_prewarm_disabled_by_env_records_and_installs_nothing(tmp_path, monkeypa
 
     payload = json.loads((result_dir / "dependency_prewarm.json").read_text(encoding="utf-8"))
     assert payload == {"enabled": False, "installs": [], "total_seconds": 0}
+
+
+def test_prewarm_uses_configured_install_timeout(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from benchmark.harness.container import agent_run
+
+    monkeypatch.delenv("BENCHMARK_PREWARM_JOB_DEPENDENCIES", raising=False)
+    monkeypatch.setenv("BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS", "7200")
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "requirements.txt").write_text("torch\n", encoding="utf-8")
+    result_dir = tmp_path / "result"
+    result_dir.mkdir()
+    observed = {}
+
+    def fake_run(_args, **kwargs):
+        observed["timeout"] = kwargs["timeout"]
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(agent_run.shutil, "which", lambda name: "uv")
+    monkeypatch.setattr(agent_run.subprocess, "run", fake_run)
+    agent_run.prewarm_job_dependencies(SimpleNamespace(run_input_dir=input_dir, result_dir=result_dir))
+
+    payload = json.loads((result_dir / "dependency_prewarm.json").read_text(encoding="utf-8"))
+    assert observed["timeout"] == 7200
+    assert payload["install_timeout_seconds"] == 7200
 
 
 def test_prewarm_records_failed_install_and_continues(tmp_path, monkeypatch):

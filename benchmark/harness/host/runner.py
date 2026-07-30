@@ -35,7 +35,7 @@ from ..acceptance import ACCEPTANCE_CHECKS_FILENAME, apply_acceptance_gates
 from ..agent_identity import preferred_agent_model
 from ..agents.parsers import parse_cached_usage_and_activity
 from ..agents.registry import DEFAULT_BENCHMARK_AGENT, load_agent_adapter
-from ..common import load_json, write_json
+from ..common import DEFAULT_PREWARM_INSTALL_TIMEOUT_SECONDS, load_json, write_json
 from ..host_environment import host_os_display, read_host_environment, write_host_environment
 from ..modes import PAIR_RUNS
 from ..profile_metadata import MODE_METADATA_FILENAME, clear_root_descriptor, write_root_descriptor
@@ -63,6 +63,7 @@ from .common import (
     emit,
     force_remove_container,
     host_idle_sleep_prevention_command,
+    optional_int_env,
     parse_host_cli_options,
     prepare_dependency_cache_mount,
     prepare_result_mount,
@@ -659,6 +660,9 @@ def case_config_for_entry(
         host_agent_home=host_agent_home,
         mount_host_agent_auth=mount_host_agent_auth,
         dependency_cache_dir=dependency_cache_dir_from_env(),
+        prewarm_install_timeout_seconds=(
+            optional_int_env("BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS") or DEFAULT_PREWARM_INSTALL_TIMEOUT_SECONDS
+        ),
         agent_timeout_seconds=positive_int_resource_value(resource_policy.get("agent_timeout_seconds")),
         container_timeout_seconds=positive_int_resource_value(resource_policy.get("container_timeout_seconds")),
         result_size_budget_bytes=positive_int_resource_value(resource_policy.get("result_size_budget_bytes")),

@@ -50,7 +50,15 @@ from ..agents.base import (
 )
 from ..agents.registry import load_agent_adapter
 from ..artifacts import capture_workspace_delta, write_workspace_baseline
-from ..common import bool_from_text, epoch_seconds, load_json, make_tree_readable, utc_timestamp, write_json
+from ..common import (
+    DEFAULT_PREWARM_INSTALL_TIMEOUT_SECONDS,
+    bool_from_text,
+    epoch_seconds,
+    load_json,
+    make_tree_readable,
+    utc_timestamp,
+    write_json,
+)
 from ..modes import mode_spec
 from ..records import AgentRecordSynthesisInputs, merge_record, synthesize_agent_record, write_run_summary
 from ..sdks.capture_spec import capture_spec_from_metadata
@@ -60,7 +68,6 @@ from .skills import apply_skill_exposure
 from .skills import copy_optional_metadata_files as _copy_optional_metadata_files
 
 DEFAULT_CONTAINER_VENV_DIR = "/workspace/venv"
-RUNTIME_ARTIFACT_ROOT = Path("/tmp/agent_benchmark")
 AGENT_TIMEOUT_EXIT_CODE = 124
 AGENT_TERMINATE_GRACE_SECONDS = 10
 MAX_STDOUT_TAIL_LINES = 1000
@@ -509,7 +516,6 @@ def prepare_input_workspace(config: AgentRunConfig) -> tuple[int, int]:
     return start, epoch_seconds()
 
 
-PREWARM_INSTALL_TIMEOUT_SECONDS = 1800
 PREWARM_TRANSIENT_MAX_ATTEMPTS = 2
 _TRANSIENT_PREWARM_FAILURE_PATTERN = re.compile(
     r"(?:"
@@ -554,10 +560,18 @@ def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | 
         write_json(out_path, {"enabled": False, "installs": [], "total_seconds": 0})
         return
     prewarm_start = epoch_seconds()
+    install_timeout_seconds = (
+        optional_positive_int_env(
+            "BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS",
+            os.environ.get("BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS"),
+        )
+        or DEFAULT_PREWARM_INSTALL_TIMEOUT_SECONDS
+    )
     shared_cache = os.environ.get("BENCHMARK_SHARED_DEPENDENCY_CACHE", "false") == "true"
     payload: dict[str, Any] = {
         "enabled": True,
         "installs": [],
+        "install_timeout_seconds": install_timeout_seconds,
         "cache": {
             "shared": shared_cache,
             "uv_cache_dir": os.environ.get("UV_CACHE_DIR", ""),
@@ -599,14 +613,14 @@ def prewarm_job_dependencies(config: AgentRunConfig, progress: ProgressWriter | 
                         [uv, "pip", "install", "--python", sys.executable, "-r", str(path)],
                         capture_output=True,
                         text=True,
-                        timeout=PREWARM_INSTALL_TIMEOUT_SECONDS,
+                        timeout=install_timeout_seconds,
                     )
                     exit_code = proc.returncode
                     stderr_tail = proc.stderr[-2000:].strip()
                     downloaded_package_count = _uv_downloaded_package_count(f"{proc.stdout}\n{proc.stderr}")
                 except subprocess.TimeoutExpired:
                     exit_code = None
-                    stderr_tail = f"prewarm install timed out after {PREWARM_INSTALL_TIMEOUT_SECONDS}s"
+                    stderr_tail = f"prewarm install timed out after {install_timeout_seconds}s"
                 except OSError as exc:
                     exit_code = None
                     stderr_tail = f"prewarm install failed to launch: {exc}"
@@ -1350,7 +1364,7 @@ def post_process(
         config.result_dir / "input_baseline_manifest.json",
         config.result_dir / "input_delta",
         input_delta_manifest,
-        RUNTIME_ARTIFACT_ROOT,
+        config.run_root,
         delta_scope="input_snapshot",
         include_runtime_artifacts=False,
         structure_file_names=structure_file_names,
@@ -1361,7 +1375,7 @@ def post_process(
         config.result_dir / "workspace_baseline_manifest.json",
         config.result_dir / "workspace_delta",
         workspace_delta_manifest,
-        RUNTIME_ARTIFACT_ROOT,
+        config.run_root,
         delta_scope="agent_workspace",
         extra_runtime_artifact_sources=runtime_sources,
         structure_file_names=structure_file_names,

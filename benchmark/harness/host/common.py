@@ -31,7 +31,7 @@ from typing import Iterable
 
 from ..agents.base import AgentAdapter, DockerMount
 from ..agents.registry import DEFAULT_BENCHMARK_AGENT, load_agent_adapter, validate_benchmark_agent
-from ..common import write_json
+from ..common import DEFAULT_PREWARM_INSTALL_TIMEOUT_SECONDS, write_json
 
 SCRIPT_DIR = Path(__file__).resolve().parents[3]
 PROMPT_FILE_NAME = "benchmark_prompt.txt"
@@ -639,6 +639,7 @@ class CaseConfig:
     host_agent_home: Path
     mount_host_agent_auth: bool
     dependency_cache_dir: Path | None = None
+    prewarm_install_timeout_seconds: int = DEFAULT_PREWARM_INSTALL_TIMEOUT_SECONDS
     agent_timeout_seconds: int | None = None
     container_timeout_seconds: int | None = None
     result_size_budget_bytes: int | None = None
@@ -686,6 +687,9 @@ def case_config(
         host_agent_home=absolute_path(str(adapter.host_home_from_env(os.environ))),
         mount_host_agent_auth=adapter.mount_auth_from_env(os.environ),
         dependency_cache_dir=dependency_cache_dir_from_env(),
+        prewarm_install_timeout_seconds=(
+            optional_int_env("BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS") or DEFAULT_PREWARM_INSTALL_TIMEOUT_SECONDS
+        ),
         agent_timeout_seconds=optional_int_env("AGENT_TIMEOUT_SECONDS"),
         container_timeout_seconds=optional_int_env("CONTAINER_TIMEOUT_SECONDS"),
         result_size_budget_bytes=optional_int_env("RESULT_SIZE_BUDGET_BYTES"),
@@ -742,6 +746,7 @@ def docker_args_for_case(
         *docker_env("USE_PREINSTALLED_SKILLS", config.use_preinstalled_skills),
         *docker_env("SDK_IMAGE_KIND", config.sdk_image_kind),
         *docker_env("BENCHMARK_SHARED_DEPENDENCY_CACHE", config.dependency_cache_dir is not None),
+        *docker_env("BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS", config.prewarm_install_timeout_seconds),
         *docker_env("PROGRESS_INTERVAL_SECONDS", config.progress_interval_seconds),
         *docker_env("RESULT_DIR", "/workspace/results"),
         *docker_env("RECORDS_DIR", "/workspace/results/records"),
@@ -786,6 +791,9 @@ def write_runtime_image(config: CaseConfig) -> None:
             "report_image": config.images.report_image_name,
             "shared_dependency_cache_enabled": config.dependency_cache_dir is not None,
             "dependency_cache_dir": str(config.dependency_cache_dir) if config.dependency_cache_dir else "",
+            "dependency_prewarm": {
+                "install_timeout_seconds": config.prewarm_install_timeout_seconds,
+            },
             "sdk_image_kind": config.sdk_image_kind,
             "container_prompt_source": CONTAINER_PROMPT_PATH,
             "container_python": "/workspace/venv/bin/python",

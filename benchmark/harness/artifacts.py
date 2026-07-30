@@ -252,6 +252,7 @@ def capture_workspace_delta(
     if include_runtime_artifacts:
         runtime_sources = [
             ("runtime_job_config", runtime_artifact_root / "job_config"),
+            ("runtime_generated", runtime_artifact_root / "generated"),
         ]
         if extra_runtime_artifact_sources:
             runtime_sources.extend(extra_runtime_artifact_sources)

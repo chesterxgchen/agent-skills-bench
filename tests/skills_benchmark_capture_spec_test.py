@@ -490,3 +490,49 @@ def test_in_workspace_run_root_is_runtime_evidence_not_generated_source(tmp_path
     assert "nvflare_runtime/simulation/job/server/log.txt" in runtime_paths
     assert "nvflare_runtime/simulation/job/site-1/simulate_job/meta.json" in runtime_paths
     assert "nvflare_runtime/job_config/app/config/config_fed_server.json" in runtime_paths
+
+
+def test_capture_includes_harness_owned_sibling_runtime_outputs(tmp_path):
+    """Regression for run 222: outputs beside workspace must remain FL evidence."""
+
+    import json
+
+    run_root = tmp_path / "run" / "with_skills"
+    workspace = run_root / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "client.py").write_text("x = 1\n", encoding="utf-8")
+    baseline = tmp_path / "baseline.json"
+    write_workspace_baseline(workspace, baseline)
+
+    exported_config = run_root / "job_config" / "ames_fedavg" / "app" / "config" / "config_fed_server.json"
+    exported_config.parent.mkdir(parents=True)
+    exported_config.write_text('{"workflows": []}\n', encoding="utf-8")
+    metrics = run_root / "generated" / "workspace" / "server" / "simulate_job" / "metrics"
+    metrics.mkdir(parents=True)
+    (metrics / "metrics_summary.json").write_text(
+        '{"status": "metrics_reported", "best_metrics": [{"name": "val_auroc", "value": 0.783342}]}\n',
+        encoding="utf-8",
+    )
+    simulation_log = run_root / "generated" / "logs" / "simulation.log"
+    simulation_log.parent.mkdir(parents=True)
+    simulation_log.write_text("Finished FedAvg.\n", encoding="utf-8")
+
+    manifest_path = tmp_path / "workspace_delta_manifest.json"
+    capture_workspace_delta(
+        workspace,
+        baseline,
+        tmp_path / "delta",
+        manifest_path,
+        run_root,
+        delta_scope="agent_workspace",
+        structure_file_names=("client.py",),
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    runtime_paths = {entry["path"] for entry in manifest["runtime_artifacts"]}
+    assert runtime_paths == {
+        "runtime_job_config/ames_fedavg/app/config/config_fed_server.json",
+        "runtime_generated/logs/simulation.log",
+        "runtime_generated/workspace/server/simulate_job/metrics/metrics_summary.json",
+    }
+    assert manifest["runtime_artifact_count"] == 3

@@ -341,6 +341,13 @@ BENCHMARK_DEPENDENCY_CACHE_DIR=/fast/disk/benchmark-cache ./bin/run.sh ...
 BENCHMARK_SHARED_DEPENDENCY_CACHE=false ./bin/run.sh ...
 ```
 
+Each requirements-file installation has a 3600-second timeout by default.
+Increase it for unusually slow networks or very large dependency graphs:
+
+```bash
+BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS=7200 ./bin/run.sh ...
+```
+
 Run untrusted job inputs with the shared cache disabled or with a disposable
 cache directory, because benchmark containers have write access to this cache.
 
