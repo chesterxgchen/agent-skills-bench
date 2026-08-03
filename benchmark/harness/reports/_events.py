@@ -1020,6 +1020,7 @@ def command_error_summary(output: str) -> str:
         r"ProtocolError: [^\n]+",
         r"IncompleteRead\([^\n]+",
         r"Connection broken: [^\n]+",
+        r"background task (?:stopped|killed) before command completion",
         r"No module named [^\n]+",
         r"sed: can't read [^\n]+",
         r"ERROR - [^\n]+",
@@ -1033,7 +1034,11 @@ def command_error_summary(output: str) -> str:
         lowered = line.lower()
         if any(token in lowered for token in ("error", "failed", "traceback", "missing", "not found")):
             return truncate(line, 320)
-    return truncate(text, 320) if text.strip() else "no command output captured"
+    # A compound shell command can emit successful probe output before a later
+    # command returns non-zero.  Do not promote that ordinary stdout (version
+    # strings, executable paths, environment details, and so on) into a root
+    # cause merely because no actual error was captured.
+    return "no explicit failure detail captured" if text.strip() else "no command output captured"
 
 
 def command_failure_root_cause(command: str, output: str) -> str:

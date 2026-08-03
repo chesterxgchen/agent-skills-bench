@@ -153,10 +153,22 @@ once on the host.
 
 ### Common options
 
-To use a non-default agent home directory:
+Select the agent profile with `--agent`. The default is `codex`; for example,
+to run Claude:
 
 ```bash
 ./bin/run.sh pair \
+  --agent claude \
+  --prompt /path/to/prompt.txt \
+  /path/to/job-folder
+```
+
+`--agent-home` does not select an agent. It overrides the host authentication
+and configuration directory for the selected agent profile:
+
+```bash
+./bin/run.sh pair \
+  --agent codex \
   --agent-home /path/to/agent-home \
   --prompt /path/to/prompt.txt \
   /path/to/job-folder
@@ -351,6 +363,15 @@ BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS=7200 ./bin/run.sh ...
 Run untrusted job inputs with the shared cache disabled or with a disposable
 cache directory, because benchmark containers have write access to this cache.
 
+The SDK under evaluation is installed from the staged local wheel and protected
+from replacement during job dependency installation. The container wraps
+`uv pip install`, `pip install`, and `python -m pip install`: an SDK requirement
+is removed from index resolution, requested SDK extras are expanded from the
+installed wheel metadata, and every other job requirement is left intact. This
+prevents an agent or requirements file from silently replacing a development
+wheel with a different published SDK. When the guard acts, it writes an auditable
+`sdk_install_guard.jsonl` record in the mode result directory.
+
 ## Add Another SDK
 
 Add one SDK profile file:
@@ -432,7 +453,7 @@ unless a future profile field explicitly defines a portable checker source.
 Run the benchmark tests after adding the plugin:
 
 ```bash
-python -m pytest tests/unit_test/skills_benchmark
+python -m pytest -q
 ```
 
 ## Prompt Inputs
@@ -450,6 +471,23 @@ Inside the container:
 - The prompt file is mounted read-only at
   `/workspace/prompts/benchmark_prompt.txt`.
 - The result directory is mounted at `/workspace/results`.
+
+Each mode then uses this harness-owned lifecycle layout:
+
+| Path | Purpose |
+| --- | --- |
+| `/workspace/run/<mode>/input` | Per-run reference copy used to detect unexpected source-input mutations. |
+| `/workspace/run/<mode>/workspace` | Writable agent working copy and command working directory. |
+| `/workspace/run/<mode>/generated` | Runtime workspaces, logs, metrics, and other execution output. |
+| `/workspace/run/<mode>/job_config` | Exported SDK job configuration. |
+
+After the agent exits, source changes are captured from `workspace`, while the
+two sibling output directories are captured under
+`workspace_delta/runtime_artifacts/runtime_generated/` and
+`workspace_delta/runtime_artifacts/runtime_job_config/`. This keeps simulator
+logs and FL result artifacts such as `metrics_summary.json` available to the
+quality gates even when they are intentionally written outside the source
+workspace. Capture remains bounded and skips large model/checkpoint formats.
 
 The harness copies the prompt verbatim. It does not append mode names, workflow
 instructions, record paths, or skill instructions. The prompt should describe
@@ -632,6 +670,11 @@ live agent or Docker:
 `report` requires a `run_plan.json` in the result root and captured
 `agent_events.jsonl` files under the canonical records tree.
 
+Report replay is intentionally offline: it uses only the retained record and
+runtime artifacts. It cannot retrieve files from a benchmark container that has
+already exited, so artifacts missing from an older capture cannot be recovered
+by rerunning `report`; rerun that benchmark with the current harness instead.
+
 ## Interactive Container
 
 Use `interactive` to inspect the runtime image, auth mounts, or job input:
@@ -667,6 +710,7 @@ records/agent=<agent>/model=<model>/workflow=<workflow>/job=<job>/mode=with_skil
 |-- agent_usage.json
 |-- benchmark_record.json
 |-- container_exit_code.json
+|-- dependency_prewarm.json
 |-- evaluation_rules/
 |-- prompt.txt
 |-- prompt_metadata.json
@@ -674,9 +718,14 @@ records/agent=<agent>/model=<model>/workflow=<workflow>/job=<job>/mode=with_skil
 |   |-- with_skills_agent_record.json
 |   `-- with_skills_record.json
 |-- record_summary.json
+|-- runtime_image.json
 |-- run_summary.json
+|-- sdk_install_guard.jsonl       # only when an SDK requirement was filtered
 |-- timing.json
 |-- workspace_delta/
+|   `-- runtime_artifacts/
+|       |-- runtime_generated/
+|       `-- runtime_job_config/
 `-- workspace_delta_manifest.json
 ```
 
@@ -714,6 +763,12 @@ Start with these files:
 - `records/.../mode=<mode>/agent_stderr.txt`: agent stderr.
 - `records/.../mode=<mode>/workspace_delta/`: generated files retained for
   review.
+- `records/.../mode=<mode>/dependency_prewarm.json`: pre-agent dependency
+  installation duration, cache locations, retries, and uv-reported downloads.
+- `records/.../mode=<mode>/sdk_install_guard.jsonl`: protected-SDK requirements
+  filtered from installer commands, when any were encountered.
+- `records/.../mode=<mode>/workspace_delta/runtime_artifacts/`: exported jobs,
+  simulator logs/configuration, and captured FL result artifacts.
 - `console_output.log`: complete host-side console log for paired runs.
 
 When a case fails, look for:
@@ -741,9 +796,26 @@ reports are organized around these areas:
 | **Cost and explanation** | **Cost And Work Comparison**, **Why**, **Interpretation** | Total time, runtime seconds, dependency-install seconds, non-install command seconds, tokens, commands, unique commands, slowdown drivers, elapsed-time accounting, longest commands, runtime path differences, runtime winner, token-use winner, and cost-comparison caveats. |
 | **Retained artifacts** | **Artifacts** | Pointers to generated reports and retained records for deeper inspection. |
 
+Framework labels prefer captured `nvflare agent inspect` evidence. Textual
+inference is only a fallback, so a Hugging Face or Lightning conversion that
+uses PyTorch tensor exchange is not mislabeled as plain PyTorch merely because
+its final message mentions that exchange format.
+
+Execution classification is similarly evidence-based. A successful export is
+not treated as a successful simulation; conversion runs need a successful job
+command, a terminal runtime marker such as `Finished`, or a captured task result.
+A background simulation still running—or killed—when the agent exits remains an
+incomplete run even if an earlier smoke run succeeded. Command failures that are
+later recovered retain their concrete root cause and recovery evidence, while
+explicitly evidenced negative parser-rejection tests are not presented as
+accidental failures.
+
 The generated metrics report includes an SVG chart and an HTML version renders
 the chart directly. This README excerpt uses a checked-in SVG asset so the
-chart renders in GitHub Markdown.
+chart renders in GitHub Markdown. The example reflects the current prewarmed
+layout: total time, tokens, commands, structure, code quality, and the result
+metric. Legacy runs with agent-side dependency installation can include separate
+runtime and dependency-install panels.
 
 The excerpt below shows only the metrics section, not the full generated
 report.
@@ -754,7 +826,7 @@ report.
 
 | Metric | No skills baseline | With skills |
 |---|---|---|
-| Metrics (AUROC) | AUROC NA | AUROC 0.7484 |
+| Metrics (AUROC) | AUROC 0.7228 | AUROC 0.7845 |
 
 ## Configuration Inputs
 
@@ -775,8 +847,8 @@ Use CLI flags for normal runs:
 | `--sdk-repo` | SDK source checkout used for wheel builds and repo-relative evaluation criteria. |
 | `--evaluation-criteria` | Explicit evaluation criteria path; accepts harness YAML/rules directories and supported SDK-native layouts, overriding the SDK-profile repo path. |
 
-Use environment variables only for provider-native credentials or compatibility
-with older scripts:
+Use environment variables for provider-native credentials, dependency-runtime
+tuning, or compatibility with older scripts:
 
 | Variable | Purpose |
 | --- | --- |
@@ -784,6 +856,9 @@ with older scripts:
 | `ANTHROPIC_API_KEY` | Optional Claude API key passed through to the container. |
 | `ANTHROPIC_AUTH_TOKEN` | Optional Claude bearer token passed through to the container. |
 | `ANTHROPIC_BASE_URL` | Optional Claude API base URL (proxy/gateway) passed through to the container. |
+| `BENCHMARK_SHARED_DEPENDENCY_CACHE` | Set to `false` to disable the persistent host uv/pip cache; defaults to `true`. |
+| `BENCHMARK_DEPENDENCY_CACHE_DIR` | Override the host dependency-cache directory. |
+| `BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS` | Per-requirements-file prewarm timeout; defaults to `3600`. |
 
 Compatibility fallbacks such as `BENCHMARK_AGENT`, `BENCHMARK_AGENT_MODEL`,
 `MODE`, `JOB_INPUT_DIR`, `TRAINING_CODE`, `RESULT_ROOT`, and `RESULT_DIR` still
@@ -905,23 +980,33 @@ Check these files in the result root:
 
 No validation metric in reports:
 
-The report extracts metrics from agent evidence. If the agent final message or
-record does not expose the requested scalar metric, the report shows `NA`
-instead of inventing a value.
+For conversion tasks, the report prefers a captured FL-level artifact such as
+`metrics_summary.json`; an agent-reported value alone is partial evidence. Check
+`workspace_delta_manifest.json` for `runtime_artifact_count`, then inspect
+`workspace_delta/runtime_artifacts/runtime_generated/`. Current runs always
+capture the harness-owned sibling `generated/` and `job_config/` directories.
+Older runs that omitted those files must be rerun rather than report-replayed.
 
 Slow skills run:
 
 Compare `phase_seconds.agent_elapsed_seconds`, `activity.command_count`,
 `activity.command_prefix_counts`, and `activity.hint_counts` in each
 `run_summary.json`. Skill installation happens at image-build time, not during
-the measured agent run.
+the measured agent run. Dependency prewarm is also outside measured agent time;
+compare `dependency_prewarm.json.total_seconds`, per-file install durations, and
+`downloaded_package_count` separately. A cold shared cache can increase
+container wall time without making the agent phase slower.
 
 Job dependency failure:
 
-Inspect `records/.../mode=<mode>/agent_last_message.txt`,
+Inspect `records/.../mode=<mode>/dependency_prewarm.json`,
+`sdk_install_guard.jsonl` when present,
+`records/.../mode=<mode>/agent_last_message.txt`,
 `records/.../mode=<mode>/agent_stderr.txt`, and
 `records/.../mode=<mode>/workspace_delta/`. The prompt should instruct the
 agent to install job dependencies from available requirements files when needed.
+The prewarm timeout defaults to 3600 seconds per requirements file and can be
+raised with `BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS`.
 
 ## Harness Modules
 

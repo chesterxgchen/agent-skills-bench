@@ -1207,6 +1207,90 @@ def test_benchmark_target_prefers_agent_inspector_framework_over_pytorch_prose(t
     assert "PyTorch target" not in report
 
 
+def test_benchmark_target_reads_current_inspector_ownership_before_prompt_framework_mentions(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import benchmark_report, collect_benchmark_runs
+
+    entries = []
+    for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
+        record_dir = (
+            tmp_path
+            / "records"
+            / "agent=codex"
+            / "model=default"
+            / "job=ames"
+            / f"mode={mode}"
+        )
+        record_dir.mkdir(parents=True)
+        entries.append(
+            {
+                "run_id": f"run_{index:05d}",
+                "mode": mode,
+                "agent": "codex",
+                "agent_model": "default",
+                "scenario_name": "pair codex ames",
+                "job_name": "ames",
+                "job_slug": "ames",
+                "job_path": "/tmp/jobs/ames",
+                "record_dir": str(record_dir.relative_to(tmp_path)),
+            }
+        )
+        write_json(
+            record_dir / "run_summary.json",
+            {
+                "mode": mode,
+                "elapsed_seconds": 10,
+                "token_count": 100,
+                "agent_exit_code": 0,
+                "final_container_exit_code": 0,
+            },
+        )
+        write_json(record_dir / "container_exit_code.json", {"exit_code": 0})
+        write_json(record_dir / "benchmark_record.json", {"mode": mode})
+        (record_dir / "prompt.txt").write_text(
+            "Downloading the source project's public Hugging Face model checkpoint is authorized.\n",
+            encoding="utf-8",
+        )
+        (record_dir / "agent_last_message.txt").write_text(
+            "No Hugging Face checkpoint was needed because this is a local character-level PyTorch CNN.\n",
+            encoding="utf-8",
+        )
+        if mode == WITH_SKILLS_MODE:
+            inspector_output = json.dumps(
+                {
+                    "schema_version": "1",
+                    "status": "ok",
+                    "data": {
+                        "schema_version": "3",
+                        "capability": "source",
+                        "routing": {
+                            "recommended_skill": "nvflare-convert-pytorch",
+                            "reason": "clear_owner",
+                        },
+                        "ownership": {
+                            "state": "clear",
+                            "framework": "pytorch",
+                            "candidate_frameworks": ["pytorch"],
+                            "owner_file": "train.py",
+                        },
+                    },
+                }
+            )
+            (record_dir / "agent_events.jsonl").write_text(
+                _codex_command("nvflare agent inspect source . --format json", inspector_output) + "\n",
+                encoding="utf-8",
+            )
+    write_json(tmp_path / "run_plan.json", {"entries": entries})
+
+    report = benchmark_report(tmp_path, collect_benchmark_runs(tmp_path))
+
+    assert "| ames | PyTorch target | pair codex ames | /tmp/jobs/ames |" in report
+    assert "| No skills baseline | ames | PyTorch target | agent=codex, model=default |" in report
+    assert "| With skills | ames | PyTorch target | agent=codex, model=default |" in report
+    assert "Hugging Face target" not in report
+
+
 def test_framework_inference_ignores_skill_usage_names(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
@@ -8426,6 +8510,66 @@ def test_explicit_single_negative_parser_test_is_not_a_recovered_failure():
 
     assert command_failure_rows(run) == []
     assert completed_job_recovered_issue_summary(run) == ""
+
+
+def test_optional_agents_instruction_discovery_miss_is_not_a_recovered_failure():
+    from benchmark.harness.sdks.nvflare._logic import (
+        command_failure_rows,
+        completed_job_recovered_issue_summary,
+    )
+
+    failed_discovery = _codex_command(
+        "/bin/bash -lc \"python3 - <<'PY'\n"
+        "print('environment probe')\n"
+        "PY\n"
+        "nvflare --version\n"
+        "command -v nvflare\n"
+        "command -v python3\n"
+        "rg --files -g 'AGENTS.md' -g '!output/**'\"",
+        output=(
+            "NVFlare version is 2.9.0dev0+10.geec1786b9\n"
+            "/opt/benchmark-sdk-bin/nvflare\n"
+            "/opt/benchmark-sdk-guard-bin/python3\n"
+        ),
+        exit_code=1,
+    )
+    later_python = _codex_command("python3 -m py_compile client.py job.py", output="", exit_code=0)
+    successful_job = _codex_command("python3 job.py", output="Finished FedAvg.\n", exit_code=0)
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join((failed_discovery, later_python, successful_job)),
+    }
+
+    assert command_failure_rows(run) == []
+    assert completed_job_recovered_issue_summary(run) == ""
+
+
+def test_agents_instruction_discovery_does_not_hide_a_real_error():
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows
+
+    failed_discovery = _codex_command(
+        "/bin/bash -lc \"python3 probe.py\nrg --files -g 'AGENTS.md'\"",
+        output="Traceback (most recent call last):\nRuntimeError: probe failed\n",
+        exit_code=1,
+    )
+    run = {"available": True, "agent_events_text": failed_discovery}
+
+    rows = command_failure_rows(run)
+
+    assert len(rows) == 1
+    assert rows[0]["root_cause"] == "RuntimeError: probe failed"
+
+
+def test_ordinary_compound_command_stdout_is_not_used_as_failure_detail():
+    from benchmark.harness.reports._events import command_failure_root_cause
+
+    output = (
+        "NVFlare version is 2.9.0dev0+10.geec1786b9\n"
+        "/opt/benchmark-sdk-bin/nvflare\n"
+        "/opt/benchmark-sdk-guard-bin/python3\n"
+    )
+
+    assert command_failure_root_cause("false", output) == "no explicit failure detail captured"
 
 
 def test_blank_failed_import_uses_bounded_later_diagnostic_for_root_cause():

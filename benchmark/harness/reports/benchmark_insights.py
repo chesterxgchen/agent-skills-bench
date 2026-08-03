@@ -217,17 +217,27 @@ def _nested_dicts(value: Any, depth: int = 12):
 
 def _detected_framework_from_payload(value: Any) -> str:
     for mapping in _nested_dicts(value):
-        if "detected_framework" not in mapping:
-            continue
-        framework = _canonical_inspector_framework(mapping.get("detected_framework"))
-        if framework:
-            return framework
+        if "detected_framework" in mapping:
+            framework = _canonical_inspector_framework(mapping.get("detected_framework"))
+            if framework:
+                return framework
+        # Inspector schema v3 reports source ownership under
+        # ``data.ownership.framework``.  This is the authoritative framework
+        # classification for conversion routing; prompt text can legitimately
+        # mention another ecosystem (for example, authorizing a Hugging Face
+        # checkpoint download for an otherwise plain-PyTorch project).
+        ownership = mapping.get("ownership")
+        if isinstance(ownership, dict):
+            framework = _canonical_inspector_framework(ownership.get("framework"))
+            if framework:
+                return framework
     return ""
 
 
 def _detected_framework_from_json_text(value: str) -> str:
     text = str(value or "")[:200_000]
-    if "detected_framework" not in text.lower():
+    lowered = text.lower()
+    if "detected_framework" not in lowered and not ("ownership" in lowered and "framework" in lowered):
         return ""
     decoder = json.JSONDecoder()
     candidates = [0, *(match.start() for match in re.finditer(r"\{", text))]

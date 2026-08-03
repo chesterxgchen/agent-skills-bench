@@ -1044,6 +1044,44 @@ def _expected_negative_parser_test_indexes(
     return expected
 
 
+def _expected_repository_instruction_discovery_miss(event: dict[str, Any]) -> bool:
+    """Return true for a bare final ``rg --files`` miss for ``AGENTS.md``.
+
+    Ripgrep deliberately exits 1 when a search has no matches.  Repository
+    instruction discovery is optional, so a no-match result is not a command
+    failure.  Restrict this exception to a bare final ``rg --files`` stage and
+    require the aggregate output to contain no explicit failure detail; a
+    malformed glob (exit 2) or an earlier traceback in the same compound shell
+    command remains reportable.
+    """
+
+    if event.get("exit_code") != 1:
+        return False
+    command = str(event.get("command") or "")
+    parts = _shell_command_parts(command)
+    if not parts:
+        return False
+    final_segment = parts[-1][0]
+    # ``_shell_command_parts`` separates explicit shell operators but retains
+    # newline-separated commands (including heredocs) in one segment.  The
+    # aggregate shell status still comes from its final non-empty command line.
+    final_lines = [line.strip() for line in final_segment.splitlines() if line.strip()]
+    if not final_lines:
+        return False
+    final_command = final_lines[-1]
+    # Pipelines have their own status semantics and are not the bare discovery
+    # form responsible for this false positive.
+    if "|" in _strip_quoted(final_command):
+        return False
+    tokens = _strip_execution_prefix_tokens(_command_tokens(final_command))
+    if not tokens or Path(tokens[0]).name != "rg" or "--files" not in tokens:
+        return False
+    if not any(Path(token).name == "AGENTS.md" for token in tokens):
+        return False
+    detail = command_error_summary(str(event.get("output") or ""))
+    return detail in {"no command output captured", "no explicit failure detail captured"}
+
+
 def _selected_command_failure_events(run: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply one selection policy to both failure rows and recovered summaries."""
 
@@ -1051,7 +1089,9 @@ def _selected_command_failure_events(run: dict[str, Any], events: list[dict[str,
     failed_events = [
         event
         for event in events
-        if command_failed(event) and int(event.get("index") or 0) not in expected_negative_tests
+        if command_failed(event)
+        and int(event.get("index") or 0) not in expected_negative_tests
+        and not _expected_repository_instruction_discovery_miss(event)
     ]
     material_events = [event for event in failed_events if is_material_failed_command(event)]
     return material_events or [
