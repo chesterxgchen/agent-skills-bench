@@ -1047,6 +1047,67 @@ def execute_run_plan(
     return statuses, summary
 
 
+def refresh_replayed_usage_artifacts(record_dir: Path, mode: str, usage: dict[str, object]) -> None:
+    """Propagate reparsed usage into every replayed summary/record view.
+
+    ``report`` reparses the raw event stream, but older code only rewrote
+    ``agent_usage.json``.  The report loaders prefer the already-materialized
+    ``run_summary.json``/record ``process_metrics``, leaving corrected parser
+    values invisible in charts and RCA. Keep those derived views in sync so a
+    parser fix actually changes an offline replay.
+    """
+
+    metrics_update = {
+        key: value
+        for key, value in {
+            "token_count": usage.get("total_tokens"),
+            "cache_tokens": usage.get("cache_tokens"),
+            "cost": usage.get("cost"),
+            "token_parser": usage.get("token_parser"),
+        }.items()
+        if value is not None
+    }
+    warnings = usage.get("parser_warnings") or usage.get("token_parser_warnings")
+    record_paths = (
+        record_dir / "agent_record.json",
+        record_dir / "benchmark_record.json",
+        record_dir / "records" / f"{mode}_agent_record.json",
+        record_dir / "records" / f"{mode}_record.json",
+    )
+    for path in record_paths:
+        record = load_json(path, None)
+        if not isinstance(record, dict):
+            continue
+        metrics = record.get("process_metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+            record["process_metrics"] = metrics
+        metrics.update(metrics_update)
+        if warnings:
+            metrics["token_parser_warning_count"] = len(warnings)
+        else:
+            metrics.pop("token_parser_warning_count", None)
+        record["agent_usage"] = usage
+        write_json(path, record)
+
+    for path in (record_dir / "run_summary.json", record_dir / "record_summary.json"):
+        summary = load_json(path, None)
+        if not isinstance(summary, dict):
+            continue
+        summary.update(metrics_update)
+        process_metrics = summary.get("process_metrics")
+        if not isinstance(process_metrics, dict):
+            process_metrics = {}
+            summary["process_metrics"] = process_metrics
+        process_metrics.update(metrics_update)
+        if warnings:
+            process_metrics["token_parser_warning_count"] = len(warnings)
+        else:
+            process_metrics.pop("token_parser_warning_count", None)
+        summary["agent_usage"] = usage
+        write_json(path, summary)
+
+
 def replay_result_root(result_root: Path, *, logs: Iterable[Path] = ()) -> dict[str, object]:
     replay_metadata = {
         "schema_version": "1",
@@ -1065,15 +1126,19 @@ def replay_result_root(result_root: Path, *, logs: Iterable[Path] = ()) -> dict[
             continue
         record_dir = result_root / str(entry["record_dir"])
         events_path = record_dir / "agent_events.jsonl"
+        usage: dict[str, object] | None = None
         if events_path.is_file():
             adapter = load_agent_adapter(str(entry["agent"]))
-            write_json(record_dir / "agent_usage.json", adapter.parse_usage(events_path))
+            usage = adapter.parse_usage(events_path)
+            write_json(record_dir / "agent_usage.json", usage)
             write_json(record_dir / "agent_activity.json", adapter.parse_activity(events_path))
             emit(f"Replayed parsers for {entry['run_id']}: {events_path}", logs=logs)
         container_exit = load_json(record_dir / "container_exit_code.json", {}) or {}
         if isinstance(container_exit, dict) and isinstance(container_exit.get("exit_code"), int):
             statuses[str(entry["run_id"])] = int(container_exit["exit_code"])
         canonicalize_entry_artifacts(result_root, entry, statuses.get(str(entry["run_id"])))
+        if usage is not None:
+            refresh_replayed_usage_artifacts(record_dir, str(entry["mode"]), usage)
     return write_scenario_summaries(result_root, statuses)
 
 

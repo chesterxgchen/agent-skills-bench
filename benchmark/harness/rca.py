@@ -804,7 +804,10 @@ def seed_slowdown_context(result_root: Path, mode: str, run_id: str | None = Non
             "seed_question": (
                 f"The {mode} run took {elapsed:.0f}s while {base} took {base_elapsed:.0f}s (+{delta:.0f}s). "
                 "From the captured evidence, what operations account for the extra time — what did this run "
-                f"spend time doing that {base} did not?"
+                f"spend time doing that {base} did not? Use cumulative provider/API duration when the usage "
+                "artifact exposes it, count every full and smoke job execution in both modes, and compare result "
+                "quality and generated structure before calling the outcomes equivalent. Timing gaps locate "
+                "latency but do not prove that token generation or skill-induced reasoning caused it."
             ),
         }
 
@@ -1033,6 +1036,10 @@ def _synthesis_prompt(seed: dict[str, Any], steps: list[InvestigationStep]) -> s
         "SHORT quote (trim quotes to the decisive fragment, under ~25 words).\n"
         "- `### Recommendation` — bullets, one per actionable change, each starting with the owner "
         "in bold (e.g. **Prompt:**, **Skill:**, **Harness:**).\n"
+        "For slowdown reports, separate measured provider/API time, captured command time, and unsupported "
+        "causal hypotheses. Do not infer that tokens, response gaps, skill loading, or reasoning caused latency "
+        "from correlation alone. Count full and smoke executions in both modes, and do not call outcomes "
+        "identical when metrics, quality checks, or required structure differ.\n"
         "Keep every sentence short. Do not add headers above ###.\n\n"
         f"{_UNTRUSTED_DATA_PREAMBLE}\n\n"
         f"Observation investigated:\n{_captured_block(seed['headline'])}\n\n"

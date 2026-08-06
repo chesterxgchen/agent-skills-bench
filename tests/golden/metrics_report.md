@@ -154,12 +154,13 @@ Both runs need review; neither side is a valid comparison winner until the resul
 
 **Elapsed time accounting**
 
-| Run | Total | Dependency install | Runtime after install | Captured non-install commands | Agent/model interaction residual |
+| Run | Total | Dependency install | Runtime after install | Captured non-install commands | Agent/provider residual |
 |---|---:|---:|---:|---:|---:|
 | With skills | 240s | 60s | 180s | 170s | 10s |
 | No skills baseline | 180s | 30s | 150s | 140s | 10s |
 
-`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time. The residual column is the best available indicator that wall time came from agent/model round trips, tool orchestration, background command gaps, or other non-command activity.
+`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.
+The residual column is uninstrumented time after captured command spans. It can include provider round trips, tool orchestration, background gaps, and other activity, so do not assign it to skill-induced reasoning without separate evidence.
 
 **Longest command comparison**
 

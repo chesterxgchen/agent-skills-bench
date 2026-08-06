@@ -561,10 +561,102 @@ def test_claude_stream_usage_accumulates_multiple_result_events(tmp_path):
 
     usage = adapter.parse_usage(events_path)
 
-    assert usage["total_tokens"] == 34
-    assert usage["cache_tokens"] == 7
+    assert usage["total_tokens"] == 52
+    assert usage["input_tokens"] == 30
+    assert usage["output_tokens"] == 12
+    assert usage["cache_tokens"] == 10
     assert usage["result_usage_objects_seen"] == 2
-    assert "final cumulative result usage was used" in usage["parser_warnings"][0]
+    assert usage["is_cumulative"] is True
+    assert usage["usage_source"] == "sum of incremental Claude result usage objects"
+    assert "incremental result usage objects were summed" in usage["parser_warnings"][0]
+
+
+def test_claude_stream_usage_prefers_primary_model_cumulative_usage_across_continuations(tmp_path):
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    adapter = load_agent_adapter("claude")
+    events_path = tmp_path / "agent_events.jsonl"
+    raw_events = [
+        {
+            "type": "system",
+            "subtype": "init",
+            "model": "claude-opus-4-8[1m]",
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "duration_api_ms": 841998,
+            "total_cost_usd": 5.599895,
+            "usage": {
+                "input_tokens": 3358,
+                "output_tokens": 57382,
+                "cache_creation_input_tokens": 197792,
+                "cache_read_input_tokens": 5823492,
+            },
+            "modelUsage": {
+                "claude-haiku-4-5-20251001": {
+                    "inputTokens": 509,
+                    "outputTokens": 20,
+                    "cacheCreationInputTokens": 0,
+                    "cacheReadInputTokens": 0,
+                },
+                "claude-opus-4-8[1m]": {
+                    "inputTokens": 3358,
+                    "outputTokens": 57382,
+                    "cacheCreationInputTokens": 197792,
+                    "cacheReadInputTokens": 5823492,
+                },
+            },
+        },
+        {
+            "type": "system",
+            "subtype": "init",
+            "model": "claude-opus-4-8[1m]",
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "duration_api_ms": 912138,
+            "total_cost_usd": 6.35008725,
+            "usage": {
+                "input_tokens": 437,
+                "output_tokens": 4881,
+                "cache_creation_input_tokens": 7109,
+                "cache_read_input_tokens": 1163102,
+            },
+            "modelUsage": {
+                "claude-haiku-4-5-20251001": {
+                    "inputTokens": 509,
+                    "outputTokens": 20,
+                    "cacheCreationInputTokens": 0,
+                    "cacheReadInputTokens": 0,
+                },
+                "claude-opus-4-8[1m]": {
+                    "inputTokens": 3795,
+                    "outputTokens": 62263,
+                    "cacheCreationInputTokens": 204901,
+                    "cacheReadInputTokens": 6986594,
+                },
+            },
+        },
+    ]
+    with events_path.open("w", encoding="utf-8") as stream:
+        for raw_event in raw_events:
+            stream.write(json.dumps(adapter.normalize_event(json.dumps(raw_event))) + "\n")
+
+    usage = adapter.parse_usage(events_path)
+
+    assert usage["input_tokens"] == 3795
+    assert usage["output_tokens"] == 62263
+    assert usage["cache_creation_input_tokens"] == 204901
+    assert usage["cache_read_input_tokens"] == 6986594
+    assert usage["total_tokens"] == 7257553
+    assert usage["cost"] == 6.35008725
+    assert usage["model_usage_primary_model"] == "claude-opus-4-8[1m]"
+    assert usage["usage_source"] == "final cumulative modelUsage for the primary Claude model"
+    assert usage["is_cumulative"] is True
+    assert usage["provider_api_seconds"] == 912.138
+    assert usage["parser_warnings"] == []
 
 
 def test_claude_stream_parser_ignores_non_shell_tool_command_fields(tmp_path):

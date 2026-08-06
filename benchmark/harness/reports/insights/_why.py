@@ -101,6 +101,12 @@ def cost_comparison_section(runs: dict[str, RunEvidence], modes: list[str]) -> s
     right_summary = run_summary(right_run)
     left_dependency_seconds = _dependency_install_total_seconds(left_run)
     right_dependency_seconds = _dependency_install_total_seconds(right_run)
+    left_provider_seconds = _provider_api_seconds(left_run)
+    right_provider_seconds = _provider_api_seconds(right_run)
+    has_provider_timing = left_provider_seconds is not None and right_provider_seconds is not None
+    interaction_label = "Provider/API seconds" if has_provider_timing else "Agent/provider residual seconds"
+    left_interaction = left_provider_seconds if has_provider_timing else _agent_interaction_seconds(left_run)
+    right_interaction = right_provider_seconds if has_provider_timing else _agent_interaction_seconds(right_run)
     rows = [
         ("Total time seconds", left_summary.get("elapsed_seconds"), right_summary.get("elapsed_seconds"), "seconds"),
         (
@@ -117,12 +123,30 @@ def cost_comparison_section(runs: dict[str, RunEvidence], modes: list[str]) -> s
             "seconds",
         ),
         (
-            "Agent/model interaction seconds",
-            _agent_interaction_seconds(left_run),
-            _agent_interaction_seconds(right_run),
+            interaction_label,
+            left_interaction,
+            right_interaction,
             "seconds",
         ),
         ("Total tokens", left_summary.get("token_count"), right_summary.get("token_count"), "short"),
+        (
+            "Output tokens",
+            _run_usage(left_run).get("output_tokens"),
+            _run_usage(right_run).get("output_tokens"),
+            "short",
+        ),
+        (
+            "Unique model requests",
+            _run_usage(left_run).get("model_request_count"),
+            _run_usage(right_run).get("model_request_count"),
+            "number",
+        ),
+        (
+            "Effective cost",
+            _run_usage(left_run).get("total_cost_usd"),
+            _run_usage(right_run).get("total_cost_usd"),
+            "cost",
+        ),
         (
             "Commands",
             run_activity(left_run.raw).get("command_count"),
@@ -148,6 +172,12 @@ def cost_comparison_section(runs: dict[str, RunEvidence], modes: list[str]) -> s
             "number",
         ),
     ]
+    optional_usage_labels = {"Output tokens", "Unique model requests", "Effective cost"}
+    rows = [
+        row
+        for row in rows
+        if row[0] not in optional_usage_labels or (as_number(row[1]) or 0) > 0 or (as_number(row[2]) or 0) > 0
+    ]
     lines = [
         "## Cost And Work Comparison",
         "",
@@ -155,8 +185,15 @@ def cost_comparison_section(runs: dict[str, RunEvidence], modes: list[str]) -> s
         "",
         "`Runtime seconds` is total elapsed time minus captured dependency-install command/background-task time. "
         "`Dependency install seconds` is captured dependency-install command/background-task time. "
-        "`Non-install command seconds` is summed duration of captured non-install shell/tool commands, so it can be lower than runtime when the agent spends time reasoning, waiting, or using non-command tools. "
-        "`Agent/model interaction seconds` is the remaining runtime after subtracting captured non-install command spans; it is a residual signal for model round trips, tool orchestration, background command gaps, and other time not attributed to command spans.",
+        "`Non-install command seconds` is summed duration of captured non-install shell/tool commands, so it can be lower than runtime when the agent spends time reasoning, waiting, or using non-command tools.",
+        (
+            "`Provider/API seconds` comes directly from the agent provider's cumulative API-duration field; it "
+            "locates provider latency but does not by itself identify whether tokens, skills, service load, or "
+            "another provider-side factor caused it."
+            if has_provider_timing
+            else "`Agent/provider residual seconds` is the remaining runtime after subtracting captured "
+            "non-install command spans; it is uninstrumented time, not proof of model reasoning or skill overhead."
+        ),
         "Command span timing is operation-level evidence, not a strict wall-clock partition; it can differ from total elapsed time when agent event timestamps overlap, are truncated, or come from a different clock than the harness timer.",
         "",
         f"| Signal | {markdown_cell(left_run.label or left)} | {markdown_cell(right_run.label or right)} | Delta right-left |",
@@ -166,9 +203,14 @@ def cost_comparison_section(runs: dict[str, RunEvidence], modes: list[str]) -> s
         left_num = as_number(left_value)
         right_num = as_number(right_value)
         delta = right_num - left_num if left_num is not None and right_num is not None else None
-        formatter = fmt_short if value_kind == "short" else fmt_seconds if value_kind == "seconds" else fmt_number
+        formatter = (
+            fmt_short
+            if value_kind == "short"
+            else fmt_seconds if value_kind == "seconds" else _cost_display if value_kind == "cost" else fmt_number
+        )
+        delta_display = _cost_delta_display(right_value, left_value) if value_kind == "cost" else formatter(delta)
         lines.append(
-            f"| {markdown_cell(label)} | {formatter(left_value)} | {formatter(right_value)} | {formatter(delta)} |"
+            f"| {markdown_cell(label)} | {formatter(left_value)} | {formatter(right_value)} | {delta_display} |"
         )
     return "\n".join(lines)
 
@@ -180,28 +222,39 @@ def _elapsed_time_accounting_note(with_run: RunEvidence, base_run: RunEvidence) 
         (with_label, with_run),
         (base_label, base_run),
     ]
+    provider_timings = [_provider_api_seconds(run) for _label, run in rows]
+    has_provider_timing = all(value is not None for value in provider_timings)
+    interaction_label = "Provider/API time" if has_provider_timing else "Agent/provider residual"
     lines = [
         "**Elapsed time accounting**",
         "",
-        "| Run | Total | Dependency install | Runtime after install | Captured non-install commands | Agent/model interaction residual |",
+        f"| Run | Total | Dependency install | Runtime after install | Captured non-install commands | {interaction_label} |",
         "|---|---:|---:|---:|---:|---:|",
     ]
-    for label, run in rows:
+    for index, (label, run) in enumerate(rows):
+        interaction_seconds = provider_timings[index] if has_provider_timing else _agent_interaction_seconds(run)
         lines.append(
             f"| {markdown_cell(label)} | "
             f"{fmt_seconds_with_unit(run_summary(run).get('elapsed_seconds'))} | "
             f"{fmt_seconds_with_unit(_dependency_install_total_seconds(run))} | "
             f"{fmt_seconds_with_unit(_elapsed_excluding_dependency_install(run))} | "
             f"{fmt_seconds_with_unit(_non_dependency_command_seconds(run))} | "
-            f"{fmt_seconds_with_unit(_agent_interaction_seconds(run))} |"
+            f"{fmt_seconds_with_unit(interaction_seconds)} |"
         )
     lines.extend(
         [
             "",
             "`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. "
-            "Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time. "
-            "The residual column is the best available indicator that wall time came from agent/model round trips, "
-            "tool orchestration, background command gaps, or other non-command activity.",
+            "Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.",
+            (
+                "The provider/API column is the cumulative API duration reported by the agent provider. It "
+                "measures where latency occurred; it does not prove that token generation, skill content, or "
+                "reasoning caused the difference."
+                if has_provider_timing
+                else "The residual column is uninstrumented time after captured command spans. It can include "
+                "provider round trips, tool orchestration, background gaps, and other activity, so do not assign "
+                "it to skill-induced reasoning without separate evidence."
+            ),
         ]
     )
     return "\n".join(lines)
@@ -215,11 +268,18 @@ def _agent_interaction_seconds(run: RunEvidence) -> float | None:
     return max(0.0, runtime - command_seconds)
 
 
+def _provider_api_seconds(run: RunEvidence) -> float | None:
+    return as_number(_run_usage(run).get("provider_api_seconds"))
+
+
 def _agent_interaction_slowdown_note(with_run: RunEvidence, base_run: RunEvidence) -> str:
     with_label = with_run.label or "With skills"
     base_label = base_run.label or "No skills baseline"
-    with_residual = _agent_interaction_seconds(with_run)
-    base_residual = _agent_interaction_seconds(base_run)
+    with_provider = _provider_api_seconds(with_run)
+    base_provider = _provider_api_seconds(base_run)
+    has_provider_timing = with_provider is not None and base_provider is not None
+    with_residual = with_provider if has_provider_timing else _agent_interaction_seconds(with_run)
+    base_residual = base_provider if has_provider_timing else _agent_interaction_seconds(base_run)
     with_commands = _non_dependency_command_seconds(with_run)
     base_commands = _non_dependency_command_seconds(base_run)
     if with_residual is None or base_residual is None:
@@ -237,14 +297,21 @@ def _agent_interaction_slowdown_note(with_run: RunEvidence, base_run: RunEvidenc
             f"({fmt_seconds_with_unit(with_commands)} vs {fmt_seconds_with_unit(base_commands)}), "
             "so the slowdown is not explained by longer measured shell/job commands."
         )
+    if has_provider_timing:
+        return (
+            "- **Measured provider/API latency was higher**: "
+            f"{with_label} reported {fmt_seconds_with_unit(with_residual)} of cumulative provider/API time vs "
+            f"{fmt_seconds_with_unit(base_residual)} for {base_label} (+{fmt_seconds_with_unit(residual_delta)})."
+            f"{command_phrase} This identifies where the latency occurred, not why the provider took longer; "
+            "response gaps and output-token differences alone do not establish skill-induced reasoning as the cause."
+        )
     return (
-        "- **Root cause: more agent/model loop time, not measured command runtime**: "
-        f"{with_label} spent {fmt_seconds_with_unit(with_residual)} outside captured dependency and "
-        f"non-install command spans vs {fmt_seconds_with_unit(base_residual)} for {base_label} "
-        f"(+{fmt_seconds_with_unit(residual_delta)})."
-        f"{command_phrase} Read this with the turn/tool rows above: extra assistant turns, skill loading, "
-        "tool lookups, file/source inspection, and validation retries compound wall time even when generated "
-        "artifact count is smaller."
+        "- **Uninstrumented agent/provider time was higher**: "
+        f"{with_label} had {fmt_seconds_with_unit(with_residual)} outside captured dependency and non-install "
+        f"command spans vs {fmt_seconds_with_unit(base_residual)} for {base_label} "
+        f"(+{fmt_seconds_with_unit(residual_delta)}).{command_phrase} This residual does not isolate model "
+        "reasoning, skill loading, tool orchestration, or provider latency, so no one cause should be assigned "
+        "without separate evidence."
     )
 
 
@@ -602,13 +669,24 @@ def _slowdown_reason_table(
         _elapsed_excluding_dependency_install(base_run),
         "agent/job runtime after dependency setup",
     )
-    _append_time_reason_row(
-        rows,
-        "Agent/model interaction residual",
-        _agent_interaction_seconds(with_run),
-        _agent_interaction_seconds(base_run),
-        "time not attributed to captured dependency or non-install command spans",
-    )
+    with_provider = _provider_api_seconds(with_run)
+    base_provider = _provider_api_seconds(base_run)
+    if with_provider is not None and base_provider is not None:
+        _append_time_reason_row(
+            rows,
+            "Provider/API time",
+            with_provider,
+            base_provider,
+            "cumulative provider API duration; location of latency, not proof of token or skill causality",
+        )
+    else:
+        _append_time_reason_row(
+            rows,
+            "Agent/provider residual",
+            _agent_interaction_seconds(with_run),
+            _agent_interaction_seconds(base_run),
+            "uninstrumented time not attributed to captured dependency or non-install command spans",
+        )
     command_interpretation = (
         "captured command time contributing to wall-clock slowdown"
         if elapsed_is_slower
@@ -1066,26 +1144,46 @@ def _root_cause_lead(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportCo
                 )
             )
 
-    with_residual = _agent_interaction_seconds(with_run)
-    base_residual = _agent_interaction_seconds(base_run)
+    with_provider = _provider_api_seconds(with_run)
+    base_provider = _provider_api_seconds(base_run)
+    has_provider_timing = with_provider is not None and base_provider is not None
+    with_commands = _non_dependency_command_seconds(with_run)
+    base_commands = _non_dependency_command_seconds(base_run)
+    command_delta = with_commands - base_commands if with_commands is not None and base_commands is not None else None
+    if has_provider_timing and command_delta is not None and command_delta >= 10:
+        causes.append(
+            (
+                command_delta,
+                f"**Captured command time +{fmt_seconds(command_delta)}s** — {with_label} spent "
+                f"{fmt_seconds_with_unit(with_commands)} in captured command spans vs "
+                f"{fmt_seconds_with_unit(base_commands)} for {base_label}. The longest-command table below "
+                "shows the different execution paths; both modes' full and smoke executions must be counted.",
+            )
+        )
+
+    with_residual = with_provider if has_provider_timing else _agent_interaction_seconds(with_run)
+    base_residual = base_provider if has_provider_timing else _agent_interaction_seconds(base_run)
     if with_residual is not None and base_residual is not None:
         residual_delta = with_residual - base_residual
         if residual_delta > 30:
-            with_turns = _assistant_turns(with_run)
-            base_turns = _assistant_turns(base_run)
-            with_skill_calls = count_map(with_run, "tool_counts").get("Skill", 0)
-            base_skill_calls = count_map(base_run, "tool_counts").get("Skill", 0)
-            turn_phrase = ""
-            if with_turns is not None and base_turns is not None:
-                turn_phrase = f" ({with_turns} vs {base_turns} assistant turns"
-                if with_skill_calls or base_skill_calls:
-                    turn_phrase += f", {with_skill_calls} vs {base_skill_calls} Skill loads"
-                turn_phrase += ")"
+            if has_provider_timing:
+                label = "Provider/API latency"
+                detail = (
+                    f"direct cumulative provider API duration was {fmt_seconds_with_unit(with_residual)} vs "
+                    f"{fmt_seconds_with_unit(base_residual)}. This locates the latency but does not establish "
+                    "that token generation, skill content, or reasoning caused it"
+                )
+            else:
+                label = "Agent/provider residual"
+                detail = (
+                    f"uninstrumented time outside captured command spans was "
+                    f"{fmt_seconds_with_unit(with_residual)} vs {fmt_seconds_with_unit(base_residual)}. This "
+                    "does not isolate provider latency, reasoning, tool orchestration, or skill loading"
+                )
             causes.append(
                 (
                     residual_delta,
-                    f"**Agent/model loop +{fmt_seconds(residual_delta)}s** — time outside captured commands: "
-                    f"model round-trips, skill loading, and file inspection{turn_phrase}.",
+                    f"**{label} +{fmt_seconds(residual_delta)}s** — {detail}.",
                 )
             )
 
@@ -1097,7 +1195,84 @@ def _root_cause_lead(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportCo
     return lines
 
 
-def _agent_rca_section(run: RunEvidence, fallback_label: str, ev: Any = None) -> list[str]:
+def _token_latency_causality_guard(with_run: RunEvidence, base_run: RunEvidence) -> str:
+    with_tokens = as_number(run_summary(with_run).get("token_count"))
+    base_tokens = as_number(run_summary(base_run).get("token_count"))
+    with_requests = as_number(_run_usage(with_run).get("model_request_count"))
+    base_requests = as_number(_run_usage(base_run).get("model_request_count"))
+    with_provider = _provider_api_seconds(with_run)
+    base_provider = _provider_api_seconds(base_run)
+    if (
+        with_tokens is None
+        or base_tokens is None
+        or with_tokens >= base_tokens
+        or with_requests is None
+        or base_requests is None
+        or with_requests > base_requests
+        or with_provider is None
+        or base_provider is None
+        or with_provider <= base_provider
+    ):
+        return ""
+    token_pct = (base_tokens - with_tokens) / base_tokens * 100 if base_tokens else 0
+    with_output = as_number(_run_usage(with_run).get("output_tokens"))
+    base_output = as_number(_run_usage(base_run).get("output_tokens"))
+    output_note = ""
+    if with_output is not None and base_output is not None:
+        output_delta_pct = (with_output - base_output) / base_output * 100 if base_output else 0
+        output_note = (
+            f" Output tokens were {fmt_short(with_output)} vs {fmt_short(base_output)} "
+            f"({output_delta_pct:+.1f}%), but that correlation alone is not causal evidence."
+        )
+    with_cost = as_number(_run_usage(with_run).get("total_cost_usd"))
+    base_cost = as_number(_run_usage(base_run).get("total_cost_usd"))
+    cost_note = ""
+    if with_cost is not None and base_cost is not None and with_cost < base_cost:
+        cost_pct = (base_cost - with_cost) / base_cost * 100 if base_cost else 0
+        cost_note = (
+            f" Effective cost was ${with_cost:.4f} vs ${base_cost:.4f} "
+            f"({cost_pct:.1f}% lower with skills)."
+        )
+    return (
+        "- **Token/request volume does not explain the provider latency delta**: "
+        f"{with_run.label or 'With skills'} used {fmt_short(with_tokens)} total tokens vs "
+        f"{fmt_short(base_tokens)} ({token_pct:.1f}% fewer) and {fmt_number(with_requests)} vs "
+        f"{fmt_number(base_requests)} unique model requests, yet provider/API time was "
+        f"{fmt_seconds_with_unit(with_provider)} vs {fmt_seconds_with_unit(base_provider)}."
+        f"{output_note}{cost_note} Long response gaps show where latency occurred, not why."
+    )
+
+
+def _agent_rca_usage_conflict(report: str, run: RunEvidence, peer_run: RunEvidence | None) -> str:
+    if peer_run is None:
+        return ""
+    match = re.search(
+        r"generated\s+([\d,]+)\s+output tokens\s+vs\s+([\d,]+)",
+        report,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    claimed_run = float(match.group(1).replace(",", ""))
+    claimed_peer = float(match.group(2).replace(",", ""))
+    actual_run = as_number(_run_usage(run).get("output_tokens"))
+    actual_peer = as_number(_run_usage(peer_run).get("output_tokens"))
+    if actual_run is None or actual_peer is None:
+        return ""
+    if claimed_run == actual_run and claimed_peer == actual_peer:
+        return ""
+    return (
+        f"stored RCA cites {fmt_number(claimed_run)} vs {fmt_number(claimed_peer)} output tokens, "
+        f"but replayed cumulative usage is {fmt_number(actual_run)} vs {fmt_number(actual_peer)}"
+    )
+
+
+def _agent_rca_section(
+    run: RunEvidence,
+    fallback_label: str,
+    ev: Any = None,
+    peer_run: RunEvidence | None = None,
+) -> list[str]:
     """Render an agent-driven RCA report (benchmark.harness.rca) for a run, if one exists.
 
     The report is an AGENT-AUTHORED post-run analysis, not captured Stage-3
@@ -1111,6 +1286,13 @@ def _agent_rca_section(run: RunEvidence, fallback_label: str, ev: Any = None) ->
         return []
     if "failed quality check(s)" in report.lower() and not run_quality_issues(run, ev):
         return []
+    usage_conflict = _agent_rca_usage_conflict(report, run, peer_run)
+    if usage_conflict:
+        return [
+            f"**Stored agent RCA omitted ({run.label or fallback_label})** — {usage_conflict}. "
+            "Re-run or resynthesize the investigation from the corrected parser artifacts before acting on it.",
+            "",
+        ]
     investigation_label = (
         "Agent slowdown investigation"
         if "investigation_slowdown" in report
@@ -1223,7 +1405,15 @@ def _why_slower(with_run: RunEvidence, base_run: RunEvidence, ctx: ReportContext
     root_cause_chain = _failure_root_cause_chain(with_run, base_run)
     if root_cause_chain:
         lines.extend([*root_cause_chain, ""])
-    rca_lines = _agent_rca_section(with_run, "With skills", ctx.evidence.get(with_run.mode) if ctx else None)
+    causality_guard = _token_latency_causality_guard(with_run, base_run)
+    if causality_guard and include_slowdown_context:
+        lines.extend([causality_guard, ""])
+    rca_lines = _agent_rca_section(
+        with_run,
+        "With skills",
+        ctx.evidence.get(with_run.mode) if ctx else None,
+        peer_run=base_run,
+    )
     if rca_lines:
         lines.extend(rca_lines)
     elif root_cause_chain:
@@ -1446,11 +1636,18 @@ def _why_more_tokens(with_run: RunEvidence, base_run: RunEvidence) -> list[str]:
         cost_delta = with_cost - base_cost
         cost_pct = round(cost_delta / base_cost * 100) if base_cost > 0 else 0
         detailed_notes += 1
-        lines.append(
-            f"- **Effective cost** (${with_cost:.4f} vs ${base_cost:.4f}, +${cost_delta:.4f} / +{cost_pct}%): "
-            f"despite {pct}% more total tokens, the cost premium is much smaller because "
-            f"cache-read tokens are priced significantly lower than regular input tokens."
-        )
+        if cost_delta >= 0:
+            lines.append(
+                f"- **Effective cost** (${with_cost:.4f} vs ${base_cost:.4f}, "
+                f"+${cost_delta:.4f} / +{cost_pct}%): despite {pct}% more total tokens, the cost premium can be "
+                "smaller when more of the usage is lower-priced cache reads."
+            )
+        else:
+            lines.append(
+                f"- **Effective cost decreased** (${with_cost:.4f} vs ${base_cost:.4f}, "
+                f"-${abs(cost_delta):.4f} / {cost_pct}%): the run used more headline tokens but cost less; "
+                "do not describe this as a cost premium. Cache-read mix and model pricing affect cost."
+            )
     if detailed_notes == 0:
         lines.append(
             "- Detailed token subcomponents were not available or did not isolate one dominant cause; use the table above "

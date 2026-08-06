@@ -1450,9 +1450,16 @@ def test_replay_result_root_regenerates_agent_parser_artifacts(tmp_path):
 
     usage = json.loads((record_dir / "agent_usage.json").read_text(encoding="utf-8"))
     activity = json.loads((record_dir / "agent_activity.json").read_text(encoding="utf-8"))
+    run_summary = json.loads((record_dir / "run_summary.json").read_text(encoding="utf-8"))
+    record_summary = json.loads((record_dir / "record_summary.json").read_text(encoding="utf-8"))
+    benchmark_record = json.loads((record_dir / "benchmark_record.json").read_text(encoding="utf-8"))
     replay_metadata = json.loads((result_root / "replay_metadata.json").read_text(encoding="utf-8"))
     assert usage["total_tokens"] == 9
     assert usage["cost"] == 0.01
+    assert run_summary["token_count"] == 9
+    assert run_summary["process_metrics"]["token_count"] == 9
+    assert record_summary["token_count"] == 9
+    assert benchmark_record["process_metrics"]["token_count"] == 9
     assert activity["commands"] == ["python job.py"]
     assert replay_metadata["replayed"] is True
     assert replay_metadata["agent_invocation"] == "replayed"

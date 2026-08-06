@@ -3958,10 +3958,50 @@ def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
 
 
 def _successful_job_spans(run: dict[str, Any]) -> list[dict[str, Any]]:
+    spans = agent_command_spans(run)
+
+    def redirected_paths(command: str) -> set[str]:
+        return {
+            match.group(1).strip("'\"")
+            for match in re.finditer(r"(?:^|\s)\d*>>?\s*([^\s;&|]+)", command)
+            if match.group(1) and not match.group(1).startswith("&")
+        }
+
+    def background_success_verified_later(span: dict[str, Any]) -> bool:
+        """Accept an auto-backgrounded job only when its own log is later verified.
+
+        Claude returns the foreground Bash tool before a long command finishes,
+        so that span contains only ``Command running in background``. A later
+        grep/tail of the exact redirected log can carry the terminal NVFLARE
+        success marker. Associate that evidence with the original span instead
+        of dropping the full run and reporting only an earlier smoke test.
+        """
+
+        output = str(span.get("output") or "")
+        if (
+            "Command running in background with ID:" not in output
+            or str(span.get("status") or "") != "completed"
+            or span.get("exit_code") not in (None, 0)
+        ):
+            return False
+        paths = redirected_paths(str(span.get("command") or ""))
+        if not paths:
+            return False
+        span_index = int(span.get("index") or 0)
+        for candidate in spans:
+            if int(candidate.get("index") or 0) <= span_index:
+                continue
+            candidate_command = str(candidate.get("command") or "")
+            if not any(path in candidate_command for path in paths):
+                continue
+            if command_succeeded(candidate) and job_output_succeeded(str(candidate.get("output") or "")):
+                return True
+        return False
+
     return [
         span
-        for span in agent_command_spans(run)
-        if job_command_succeeded(span)
+        for span in spans
+        if (job_command_succeeded(span) or background_success_verified_later(span))
         and "--help" not in str(span.get("command") or "")
         and not _is_job_export_command(str(span.get("command") or ""))
     ]

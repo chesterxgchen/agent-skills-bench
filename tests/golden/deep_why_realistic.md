@@ -14,7 +14,7 @@
 | Total elapsed | 900s | 600s | +300s | overall wall-clock comparison |
 | Dependency install | 150s | 30s | +120s | dependency setup/download time |
 | Runtime after install | 750s | 570s | +180s | agent/job runtime after dependency setup |
-| Agent/model interaction residual | 19s | 10s | +9s | time not attributed to captured dependency or non-install command spans |
+| Agent/provider residual | 19s | 10s | +9s | uninstrumented time not attributed to captured dependency or non-install command spans |
 | Captured command time | 881s | 590s | +291s | captured command time contributing to wall-clock slowdown |
 | Unique model requests | 15 | 8 | +7 | extra provider requests, deduplicated by request ID |
 | Extended-reasoning events | 6 | 1 | +5 | extra reasoning activity |
@@ -33,12 +33,13 @@ Baseline comparison: No skills baseline had 1 command classified successful job/
 
 **Elapsed time accounting**
 
-| Run | Total | Dependency install | Runtime after install | Captured non-install commands | Agent/model interaction residual |
+| Run | Total | Dependency install | Runtime after install | Captured non-install commands | Agent/provider residual |
 |---|---:|---:|---:|---:|---:|
 | With skills | 900s | 150s | 750s | 731s | 19s |
 | No skills baseline | 600s | 30s | 570s | 560s | 10s |
 
-`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time. The residual column is the best available indicator that wall time came from agent/model round trips, tool orchestration, background command gaps, or other non-command activity.
+`Runtime after install` is total elapsed time minus captured dependency-install command/background-task time. Captured command spans identify slow operations but are not guaranteed to add up exactly to total elapsed time.
+The residual column is uninstrumented time after captured command spans. It can include provider round trips, tool orchestration, background gaps, and other activity, so do not assign it to skill-induced reasoning without separate evidence.
 
 **Longest command comparison**
 
@@ -92,4 +93,4 @@ Baseline comparison: No skills baseline had 1 command classified successful job/
 - **Tool-set-change cache misses are reported separately** (1 vs 0; associated cache creation delta 8.0k): this conservative signal requires a non-initial request with zero cache-read and nonzero cache creation immediately after `ToolSearch`. Its cache rebuild is attributed to changed tool schemas, not to a Skill call.
 - **New context written to cache** (+12.0k cache-creation tokens): the With skills run wrote more new content into the prompt cache (skill docs, tool schemas, or conversation history not present in the No skills baseline run).
 - **Output tokens increased** (16.0k vs 8.0k, +8.0k): the With skills run generated more text, contributing directly to the token delta.
-- **Effective cost** ($0.9500 vs $0.4200, +$0.5300 / +126%): despite 100% more total tokens, the cost premium is much smaller because cache-read tokens are priced significantly lower than regular input tokens.
+- **Effective cost** ($0.9500 vs $0.4200, +$0.5300 / +126%): despite 100% more total tokens, the cost premium can be smaller when more of the usage is lower-priced cache reads.

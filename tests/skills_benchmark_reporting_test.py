@@ -1016,6 +1016,65 @@ def test_metrics_report_preserves_run_plan_identity_for_code_quality_scoring(tmp
     assert metric_ctx.code_quality(NO_SKILLS_MODE).score == insight_ctx.code_quality(NO_SKILLS_MODE).score
 
 
+def test_slowdown_rca_uses_cumulative_provider_timing_and_rejects_stale_token_causality():
+    from benchmark.harness.reports.insights._why import _why_slower, cost_comparison_section
+
+    base = _ev(
+        {
+            "available": True,
+            "mode": "without_skills",
+            "label": "No skills baseline",
+            "run": {"elapsed_seconds": 1101, "token_count": 7257553},
+            "usage": {
+                "output_tokens": 62263,
+                "model_request_count": 79,
+                "provider_api_seconds": 912.138,
+                "total_cost_usd": 6.35008725,
+            },
+            "activity": {"event_types": {"assistant": 164}},
+        }
+    )
+    with_skills = _ev(
+        {
+            "available": True,
+            "mode": "with_skills",
+            "label": "With skills",
+            "run": {"elapsed_seconds": 1189, "token_count": 4239069},
+            "usage": {
+                "output_tokens": 71445,
+                "model_request_count": 47,
+                "provider_api_seconds": 967.433,
+                "total_cost_usd": 4.7720215,
+            },
+            "activity": {"event_types": {"assistant": 122}, "tool_counts": {"Skill": 1}},
+            "rca_report": (
+                "### Causal chain\n\n"
+                "The model generated 71,445 output tokens vs 4,881, so skill reasoning caused the delay."
+            ),
+        }
+    )
+
+    cost = cost_comparison_section(
+        {"without_skills": base, "with_skills": with_skills},
+        ["without_skills", "with_skills"],
+    )
+    why = "\n".join(_why_slower(with_skills, base))
+
+    assert "| Provider/API seconds | 912 | 967 | 55 |" in cost
+    assert "| Output tokens | 62.3k | 71.4k | 9.2k |" in cost
+    assert "| Unique model requests | 79 | 47 | -32 |" in cost
+    assert "| Effective cost | $6.3501 | $4.7720 | -$1.5781 |" in cost
+    assert "Provider/API latency +55s" in why
+    assert "47 vs 79 unique model requests" in why
+    assert "41.6% fewer" in why
+    assert "Output tokens were 71.4k vs 62.3k (+14.7%)" in why
+    assert "Effective cost was $4.7720 vs $6.3501 (24.9% lower with skills)" in why
+    assert "correlation alone is not causal evidence" in why
+    assert "Stored agent RCA omitted" in why
+    assert "stored RCA cites 71445 vs 4881 output tokens" in why
+    assert "skill reasoning caused the delay" not in why
+
+
 def test_metrics_report_embeds_agent_rca_report(tmp_path):
     # The primary metrics report must render the agent-authored RCA investigation,
     # not just the RCA heading/tables. It loads runs via runs_by_mode_for_insights,
@@ -5846,6 +5905,97 @@ def test_auto_backgrounded_simulation_with_completed_task_status_is_completed():
     }
 
     assert job_run_status(run) == "completed"
+
+
+def test_successful_job_spans_associate_backgrounded_full_run_with_later_log_verification():
+    from benchmark.harness.sdks.nvflare._logic import _successful_job_spans
+
+    events = [
+        {
+            "event_type": "assistant",
+            "harness_timestamp": "2026-08-03T20:26:17Z",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_full",
+                        "input": {
+                            "command": (
+                                "timeout 1200 python3 fedavg_job.py --num-rounds 3 "
+                                "> /tmp/ames_full.log 2>&1; tail -20 /tmp/ames_full.log"
+                            )
+                        },
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "system.task_started",
+            "harness_timestamp": "2026-08-03T20:26:18Z",
+            "task_id": "full_task",
+            "tool_use_id": "toolu_full",
+        },
+        {
+            "event_type": "user",
+            "harness_timestamp": "2026-08-03T20:28:17Z",
+            "message": {
+                "content": [
+                    {
+                        "content": "Command running in background with ID: full_task.",
+                        "tool_use_id": "toolu_full",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"backgroundTaskId": "full_task"},
+        },
+        {
+            "event_type": "system.task_notification",
+            "harness_timestamp": "2026-08-03T20:29:10Z",
+            "status": "completed",
+            "summary": "Background command completed (exit code 0)",
+            "task_id": "full_task",
+        },
+        {
+            "event_type": "assistant",
+            "harness_timestamp": "2026-08-03T20:29:11Z",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_verify",
+                        "input": {"command": "grep -E 'Finished FedAvg' /tmp/ames_full.log"},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "user",
+            "harness_timestamp": "2026-08-03T20:29:12Z",
+            "message": {
+                "content": [
+                    {
+                        "content": "2026-08-03 - INFO - Finished FedAvg.",
+                        "tool_use_id": "toolu_verify",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": {"stdout": "2026-08-03 - INFO - Finished FedAvg."},
+        },
+    ]
+    run = {
+        "available": True,
+        "agent_events_text": "\n".join(json.dumps(event) for event in events),
+    }
+
+    spans = _successful_job_spans(run)
+
+    assert len(spans) == 1
+    assert spans[0]["duration_seconds"] == 120
+    assert "--num-rounds 3" in spans[0]["command"]
 
 
 def test_auto_backgrounded_simulation_accepts_later_finished_log_without_task_status(tmp_path):
