@@ -525,13 +525,10 @@ class ConfigurableAgentAdapter(AgentAdapter):
         subs = {"container_home": self.container_home, "agent": self.name}
         for key, value in (self._cfg.raw.get("runtime_env") or {}).items():
             env[str(key)] = render_string(str(value), subs)
-        # unattended_env is the harness->skill run-mode contract (e.g.
-        # AGENT_HARNESS_UNATTENDED). It applies ONLY to non-interactive benchmark
-        # runs. An interactive debug shell (InteractiveRuntimeConfig, unattended
-        # False) reuses this same runtime_env, and must NOT be told the run is
-        # unattended -- otherwise a skill launched from that shell would skip its
-        # approval prompts and take the unattended install/run path. Configs that
-        # do not declare `unattended` default to True (every benchmark case run).
+        # unattended_env carries non-interactive runtime context only. It is
+        # omitted from interactive debug shells, and it must never be treated as
+        # user authorization for dependency installation. Automated install
+        # authorization is materialized separately into the measured prompt.
         if getattr(config, "unattended", True):
             for key, value in (self._cfg.raw.get("unattended_env") or {}).items():
                 env[str(key)] = render_string(str(value), subs)

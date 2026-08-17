@@ -29,6 +29,9 @@ GENERATED_PROMPT_DIR = ".agent_benchmark/rendered_prompts"
 PROMPT_TEMPLATE_VARIABLE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 PROMPT_TEMPLATE_SCALAR_TYPES = (str, int, float, bool)
 PROMPT_TEMPLATE_LITERAL_BRACE_HINT = "Use '{{' and '}}' for literal braces in prompt templates."
+UNATTENDED_DEPENDENCY_INSTALL_AUTHORIZATION = """Automation authorization for this benchmark run:
+If dependency installation is needed, statically inspect and audit every declared dependency input, flag suspicious or ambiguous entries, and show a user-visible redacted install plan containing the target environment, requirement and constraint files, complete declared package/source list, installer options, and exact combined command. Then install that reviewed plan unattended without waiting for a follow-up confirmation. This authorization applies only to that combined install command; do not perform other environment mutations, and stop if a suspicious or ambiguous input remains unresolved.
+"""
 
 
 def prompt_template_fields(template_text: str) -> set[str]:
@@ -125,6 +128,19 @@ def rendered_prompt_filename(source_path: Path, rendered_bytes: bytes) -> str:
     return f"{slugify(source_path.stem)}_{rendered_hash[:12]}.txt"
 
 
+def add_unattended_dependency_install_authorization(prompt_bytes: bytes, source_path: Path) -> bytes:
+    """Append the explicit user authorization required by dependency policy."""
+
+    try:
+        prompt_text = prompt_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ScenarioValidationError(
+            f"Prompt must be UTF-8 text when unattended dependency installation is enabled: {source_path}"
+        ) from exc
+    separator = "\n" if prompt_text.endswith("\n") else "\n\n"
+    return f"{prompt_text}{separator}{UNATTENDED_DEPENDENCY_INSTALL_AUTHORIZATION}".encode("utf-8")
+
+
 def contains_inline_template_placeholder(value: str) -> bool:
     try:
         return any(
@@ -137,7 +153,10 @@ def contains_inline_template_placeholder(value: str) -> bool:
 
 def materialize_prompt_for_output(scenario: dict[str, Any], run_plan: dict[str, Any], output_dir: Path) -> None:
     prompt = scenario.get("prompt")
-    if not isinstance(prompt, dict) or prompt.get("source_type") != "template":
+    if not isinstance(prompt, dict):
+        return
+    composition = prompt.get("composition") if isinstance(prompt.get("composition"), dict) else {}
+    if prompt.get("source_type") != "template" and not composition.get("unattended_dependency_install"):
         return
     rendered_text = prompt.get("_rendered_text")
     filename = prompt.get("_rendered_filename")
@@ -165,7 +184,13 @@ def materialize_prompt_for_output(scenario: dict[str, Any], run_plan: dict[str, 
             entry["prompt_source"] = str(rendered_path)
 
 
-def resolve_prompt(raw: Mapping[str, Any], base_dir: Path, *, allow_external_prompt: bool = False) -> dict[str, Any]:
+def resolve_prompt(
+    raw: Mapping[str, Any],
+    base_dir: Path,
+    *,
+    allow_external_prompt: bool = False,
+    unattended_dependency_install: bool = False,
+) -> dict[str, Any]:
     value = raw.get("prompt_path") or raw.get("prompt_file") or raw.get("prompt")
     source_type = "file"
     variables: dict[str, str] = {}
@@ -204,6 +229,13 @@ def resolve_prompt(raw: Mapping[str, Any], base_dir: Path, *, allow_external_pro
                 f"Rendered prompt exceeds max size {MAX_PROMPT_BYTES} bytes: "
                 f"{resolved_prompt_path} ({len(prompt_bytes)} bytes)"
             )
+    if unattended_dependency_install:
+        prompt_bytes = add_unattended_dependency_install_authorization(prompt_bytes, resolved_prompt_path)
+        if len(prompt_bytes) > MAX_PROMPT_BYTES:
+            raise ScenarioValidationError(
+                f"Prompt with unattended dependency-install authorization exceeds max size {MAX_PROMPT_BYTES} bytes: "
+                f"{resolved_prompt_path} ({len(prompt_bytes)} bytes)"
+            )
     prompt_sha = hashlib.sha256(prompt_bytes).hexdigest()
     source_sha = hashlib.sha256(source_bytes).hexdigest()
     prompt = {
@@ -217,7 +249,12 @@ def resolve_prompt(raw: Mapping[str, Any], base_dir: Path, *, allow_external_pro
         "source_sha256": source_sha,
         "source_bytes": len(source_bytes),
     }
-    if source_type == "template":
+    if unattended_dependency_install:
+        prompt["composition"] = {
+            "unattended_dependency_install": True,
+            "authorization_source": "explicit_cli_or_scenario_option",
+        }
+    if source_type == "template" or unattended_dependency_install:
         prompt["_rendered_text"] = prompt_bytes.decode("utf-8")
         prompt["_rendered_filename"] = rendered_prompt_filename(resolved_prompt_path, prompt_bytes)
     return prompt

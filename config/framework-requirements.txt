@@ -7,6 +7,9 @@
 # installs the job's own top-level requirements*.txt identically in both
 # modes (see benchmark.harness.container.agent_run.prewarm_job_dependencies;
 # BENCHMARK_PREWARM_JOB_DEPENDENCIES=0 disables it).
+# Disable prewarm when the benchmark is intended to exercise an agent skill's
+# dependency audit, redacted preview, authorization, or terminal-failure path;
+# harness-owned prewarm is setup evidence and never skill-compliance evidence.
 #
 # Populate this file only to pre-bake packages into BOTH image variants as a
 # build-time cache for a fleet whose jobs are known in advance — it changes

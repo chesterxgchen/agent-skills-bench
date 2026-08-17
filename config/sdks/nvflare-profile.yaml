@@ -24,7 +24,7 @@
 # - skills.setup.expected_source defaults to local_sdk_wheel.
 # - evaluation.criteria_path is an optional repo-relative path to evaluation
 #   criteria. It can be a harness-compatible YAML rules file/directory; NVFLARE
-#   also supports the SDK-native dev_tools/agent/skill_evals directory. When it
+#   also supports SDK-native evals co-located at skills/<skill>/evals. When it
 #   is absent, bin/build.sh requires --evaluation-criteria.
 
 name: nvflare
@@ -110,4 +110,4 @@ skills:
     expected_source: skills_cli
 
 evaluation:
-  criteria_path: dev_tools/agent/skill_evals
+  criteria_path: skills

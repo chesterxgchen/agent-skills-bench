@@ -402,7 +402,7 @@ def test_nvflare_sdk_native_skill_evals_are_converted_to_rules(tmp_path):
     from benchmark.harness.sdks.base import SdkSource
 
     repo = tmp_path / "NVFlare"
-    evals_dir = repo / "dev_tools" / "agent" / "skill_evals" / "nvflare-convert-pytorch"
+    evals_dir = repo / "skills" / "nvflare-convert-pytorch" / "evals"
     evals_dir.mkdir(parents=True)
     evals_dir.joinpath("evals.json").write_text(
         json.dumps(
@@ -435,7 +435,7 @@ def test_nvflare_sdk_native_skill_evals_are_converted_to_rules(tmp_path):
     context.mkdir()
     sdk = SimpleNamespace(
         name="nvflare",
-        evaluation_criteria=lambda: SimpleNamespace(repo_relative_path=Path("dev_tools/agent/skill_evals")),
+        evaluation_criteria=lambda: SimpleNamespace(repo_relative_path=Path("skills")),
     )
 
     prepared = build.resolve_and_stage_evaluation_criteria(
@@ -453,7 +453,7 @@ def test_nvflare_sdk_native_skill_evals_are_converted_to_rules(tmp_path):
     assert prepared.staged_entrypoint == "."
     assert "mandatory_behavior__inspect-first" in signals
     assert signals["mandatory_behavior__inspect-first"]["native_behavior"]["cases"] == ["pytorch-basic"]
-    assert (staged / "native" / "nvflare_skill_evals" / "nvflare-convert-pytorch" / "evals.json").is_file()
+    assert (staged / "native" / "nvflare_skill_evals" / "nvflare-convert-pytorch" / "evals" / "evals.json").is_file()
 
 
 def test_nvflare_sdk_native_skill_eval_fixture_generators_are_staged(tmp_path):
@@ -461,7 +461,7 @@ def test_nvflare_sdk_native_skill_eval_fixture_generators_are_staged(tmp_path):
     from benchmark.harness.sdks.base import SdkSource
 
     repo = tmp_path / "NVFlare"
-    evals_dir = repo / "dev_tools" / "agent" / "skill_evals" / "nvflare-fed-stats"
+    evals_dir = repo / "skills" / "nvflare-fed-stats" / "evals"
     evals_dir.mkdir(parents=True)
     evals_dir.joinpath("files").mkdir()
     evals_dir.joinpath("files", "generate_csv.py").write_text(
@@ -503,7 +503,7 @@ def test_nvflare_sdk_native_skill_eval_fixture_generators_are_staged(tmp_path):
     context.mkdir()
     sdk = SimpleNamespace(
         name="nvflare",
-        evaluation_criteria=lambda: SimpleNamespace(repo_relative_path=Path("dev_tools/agent/skill_evals")),
+        evaluation_criteria=lambda: SimpleNamespace(repo_relative_path=Path("skills")),
     )
 
     build.resolve_and_stage_evaluation_criteria(
@@ -513,7 +513,7 @@ def test_nvflare_sdk_native_skill_eval_fixture_generators_are_staged(tmp_path):
         context=context,
     )
 
-    staged = context / "evaluation_rules" / "native" / "nvflare_skill_evals" / "nvflare-fed-stats"
+    staged = context / "evaluation_rules" / "native" / "nvflare_skill_evals" / "nvflare-fed-stats" / "evals"
     assert staged.joinpath("files", "generate_csv.py").read_text(encoding="utf-8").startswith("from pathlib import")
     assert (
         staged.joinpath("files", "images-intensity", "generate_images.py").read_text(encoding="utf-8")
@@ -529,8 +529,8 @@ def test_nvflare_sdk_native_skill_eval_fixture_path_escape_is_rejected(tmp_path)
 
     from benchmark.harness.host import build
 
-    source = tmp_path / "skill_evals"
-    evals_dir = source / "nvflare-fed-stats"
+    source = tmp_path / "skills"
+    evals_dir = source / "nvflare-fed-stats" / "evals"
     evals_dir.mkdir(parents=True)
     source.joinpath("outside.py").write_text("print('outside')\n", encoding="utf-8")
     evals_dir.joinpath("evals.json").write_text(
@@ -547,8 +547,8 @@ def test_nvflare_sdk_native_skill_eval_fixture_absolute_path_is_rejected(tmp_pat
 
     from benchmark.harness.host import build
 
-    source = tmp_path / "skill_evals"
-    evals_dir = source / "nvflare-fed-stats"
+    source = tmp_path / "skills"
+    evals_dir = source / "nvflare-fed-stats" / "evals"
     files_dir = evals_dir / "files"
     files_dir.mkdir(parents=True)
     fixture = files_dir / "generate_csv.py"
@@ -572,8 +572,8 @@ def test_nvflare_sdk_native_skill_eval_fixture_symlink_is_rejected(tmp_path):
 
     from benchmark.harness.host import build
 
-    source = tmp_path / "skill_evals"
-    evals_dir = source / "nvflare-fed-stats"
+    source = tmp_path / "skills"
+    evals_dir = source / "nvflare-fed-stats" / "evals"
     files_dir = evals_dir / "files"
     files_dir.mkdir(parents=True)
     target = files_dir / "target.py"
@@ -597,8 +597,8 @@ def test_nvflare_sdk_native_skill_eval_fixture_directory_symlink_is_rejected(tmp
 
     from benchmark.harness.host import build
 
-    source = tmp_path / "skill_evals"
-    evals_dir = source / "nvflare-fed-stats"
+    source = tmp_path / "skills"
+    evals_dir = source / "nvflare-fed-stats" / "evals"
     images_dir = evals_dir / "files" / "images-intensity"
     images_dir.mkdir(parents=True)
     target = images_dir / "target.py"
@@ -843,7 +843,7 @@ def test_nvflare_sdk_adapter_loads_build_contract():
     assert skills.wheel_exclude_globs == ()
     assert baseline.reuse_existing is True
     assert baseline.wheel_globs == skills.wheel_globs == ("nvflare-*.whl", "nvflare_nightly-*.whl")
-    assert sdk.evaluation_criteria().repo_relative_path == Path("dev_tools/agent/skill_evals")
+    assert sdk.evaluation_criteria().repo_relative_path == Path("skills")
     # NVFLARE dropped `nvflare agent skills install`; skills come from the
     # Agent Skills CLI against the staged local SDK skills tree by default.
     assert 'npx --yes skills add "${SKILLS_SOURCE_REF}"' in build_args["SKILLS_INSTALL_COMMAND"]

@@ -203,10 +203,9 @@ def test_runtime_env_omits_agent_model_when_not_explicit():
 
 
 @pytest.mark.parametrize("agent", ["codex", "claude"])
-def test_runtime_env_declares_unattended_sandbox_contract(agent):
-    # The benchmark always runs unattended in a disposable sandbox container.
-    # These vars are the harness->skill contract that keeps the skill from
-    # stalling on an approval prompt that no one can answer (not_started runs).
+def test_runtime_env_declares_noninteractive_container_context(agent):
+    # These values describe the no-follow-up container context. They are not
+    # dependency-install authorization; that must be in the measured prompt.
     from benchmark.harness.agents.registry import load_agent_adapter
 
     class Config:
@@ -222,10 +221,9 @@ def test_runtime_env_declares_unattended_sandbox_contract(agent):
 
 
 @pytest.mark.parametrize("agent", ["codex", "claude"])
-def test_runtime_env_omits_unattended_contract_for_interactive_shell(agent):
-    # An interactive `docker run -it` debug shell reuses runtime_env but must NOT
-    # be told the run is unattended, or a skill launched from it would skip its
-    # approval prompts. InteractiveRuntimeConfig reports unattended=False.
+def test_runtime_env_omits_noninteractive_context_for_interactive_shell(agent):
+    # InteractiveRuntimeConfig reports unattended=False because a debug shell
+    # has a follow-up channel.
     from benchmark.harness.agents.registry import load_agent_adapter
     from benchmark.harness.host.runner import InteractiveRuntimeConfig
 

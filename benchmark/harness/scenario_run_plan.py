@@ -109,6 +109,21 @@ class JobSpec:
     acceptance_checks: dict[str, Any] | None = None
 
 
+def resolve_automation(raw: Mapping[str, Any]) -> dict[str, bool]:
+    value = raw.get("automation")
+    if value is None:
+        return {"unattended_dependency_install": False}
+    automation = require_mapping(value, "automation")
+    allowed = {"unattended_dependency_install"}
+    unknown = sorted(str(key) for key in automation if key not in allowed)
+    if unknown:
+        raise ScenarioValidationError(f"automation contains unsupported key(s): {', '.join(unknown)}")
+    unattended = automation.get("unattended_dependency_install", False)
+    if not isinstance(unattended, bool):
+        raise ScenarioValidationError("automation.unattended_dependency_install must be true or false")
+    return {"unattended_dependency_install": unattended}
+
+
 def resolve_agents(raw: Mapping[str, Any]) -> tuple[dict[str, AgentSpec], list[dict[str, Any]]]:
     agents_raw = as_list(raw.get("agents"), "agents")
     if not agents_raw:
@@ -838,6 +853,7 @@ def scenario_reproducibility_metadata(
     prompt: Mapping[str, Any],
     comparison: Mapping[str, Any],
     jobs: list[JobSpec],
+    automation: Mapping[str, bool],
 ) -> dict[str, Any]:
     agent_metadata = {}
     image_targets = {}
@@ -879,6 +895,7 @@ def scenario_reproducibility_metadata(
         "compiled_at": utc_timestamp(),
         "prompt_hash": prompt.get("sha256"),
         "prompt_bytes": prompt.get("bytes"),
+        "automation": dict(automation),
         "agent_adapters": agent_metadata,
         "agent_versions": agent_versions,
         "image_targets": image_targets,
@@ -909,7 +926,13 @@ def compile_scenario(
 ) -> ScenarioCompilation:
     base_path = Path(base_dir)
     name = require_non_empty_string(raw.get("name"), "name")
-    prompt = resolve_prompt(raw, base_path, allow_external_prompt=allow_external_prompt)
+    automation = resolve_automation(raw)
+    prompt = resolve_prompt(
+        raw,
+        base_path,
+        allow_external_prompt=allow_external_prompt,
+        unattended_dependency_install=automation["unattended_dependency_install"],
+    )
     agents, resolved_agents = resolve_agents(raw)
     workflows, resolved_workflows = resolve_workflows(raw)
     jobs, resolved_jobs = resolve_jobs(raw, base_path)
@@ -924,6 +947,7 @@ def compile_scenario(
         "scenario_slug": slugify(name),
         "source_path": str(Path(source_path).resolve()) if source_path else None,
         "prompt": prompt,
+        "automation": automation,
         "agents": resolved_agents,
         "workflows": resolved_workflows,
         "jobs": resolved_jobs,
@@ -939,6 +963,7 @@ def compile_scenario(
         prompt=prompt,
         comparison=comparison,
         jobs=jobs,
+        automation=automation,
     )
     run_plan = expand_run_plan(
         scenario_name=name,
@@ -953,10 +978,22 @@ def compile_scenario(
     )
     run_plan["source_path"] = scenario["source_path"]
     run_plan["fail_fast"] = fail_fast
+    run_plan["automation"] = automation
     return ScenarioCompilation(scenario=scenario, run_plan=run_plan)
 
 
-def compile_scenario_file(path: str | Path) -> ScenarioCompilation:
+def compile_scenario_file(
+    path: str | Path, *, unattended_dependency_install: bool | None = None
+) -> ScenarioCompilation:
     scenario_path = Path(path)
     raw = load_yaml_file(scenario_path)
+    if unattended_dependency_install:
+        raw = copy.deepcopy(raw)
+        automation = raw.get("automation")
+        if automation is None:
+            automation = {}
+            raw["automation"] = automation
+        if not isinstance(automation, dict):
+            raise ScenarioValidationError("automation must be a mapping")
+        automation["unattended_dependency_install"] = True
     return compile_scenario(raw, base_dir=scenario_path.parent, source_path=scenario_path)

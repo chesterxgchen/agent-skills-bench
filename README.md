@@ -338,6 +338,11 @@ The images do not install job-specific training dependencies. Before the
 measured agent phase, each container prewarms the job folder's own top-level
 `requirements*.txt` identically in both modes.
 
+Prewarming is harness-owned setup, not evidence that an agent followed a
+skill's dependency-install policy. Disable it with
+`BENCHMARK_PREWARM_JOB_DEPENDENCIES=0` for a benchmark intended to exercise the
+agent's dependency audit, preview, authorization, or failure behavior.
+
 By default, benchmark containers share persistent uv and pip download caches at
 `~/.cache/agent-skills-bench/dependencies` on the host. The first workload that
 needs a package downloads it; the other mode and later runs can reuse the
@@ -402,8 +407,8 @@ evaluation:
 The path may identify one self-contained YAML file, a composed rules directory
 containing `index.yaml` (or `<sdk>/index.yaml`), or an SDK-native criteria
 directory when the harness knows how to convert it. The default NVFLARE profile
-uses `dev_tools/agent/skill_evals`; build preparation converts those
-`*/evals.json` files into a captured harness rules bundle and keeps the source
+uses the co-located `skills/<skill>/evals/evals.json` suites; build preparation
+converts those files into a captured harness rules bundle and keeps the source
 JSON alongside it for audit. Override or supply the input directly when the SDK
 profile has no repo-relative path:
 
@@ -489,10 +494,27 @@ logs and FL result artifacts such as `metrics_summary.json` available to the
 quality gates even when they are intentionally written outside the source
 workspace. Capture remains bounded and skips large model/checkpoint formats.
 
-The harness copies the prompt verbatim. It does not append mode names, workflow
-instructions, record paths, or skill instructions. The prompt should describe
-the conversion task and ask the agent to report final artifacts, validation
-steps, and any validation metric requested by the job documentation.
+By default, the harness copies the prompt verbatim. It does not append mode
+names, workflow instructions, record paths, or skill instructions. The prompt
+should describe the conversion task and ask the agent to report final artifacts,
+validation steps, and any validation metric requested by the job documentation.
+
+Automated runs that may need the agent to install missing dependencies require
+an explicit user authorization in the actual prompt. Enable the harness-owned,
+recorded prompt composition with `--unattended-dependency-install`:
+
+```bash
+./bin/run.sh pair --unattended-dependency-install \
+  --prompt ./prompt.txt /path/to/job-folder
+```
+
+The option appends the same authorization to both comparison legs. It tells the
+agent to audit all dependency inputs, show a user-visible redacted plan, and run
+only that reviewed combined install command without waiting for a follow-up
+reply. The original prompt hash, effective prompt hash, composition metadata,
+and effective prompt text remain in the result artifacts. Environment variables,
+container isolation, and agent approval-bypass flags do not count as dependency
+installation authorization.
 
 Scenario YAML may also use prompt templates:
 
@@ -519,6 +541,10 @@ Install job dependencies from requirements files when needed.
 Run cheap validation before full simulation, then report final artifact paths
 and validation metrics.
 ```
+
+Without the CLI option, put equivalent explicit unattended-install language in
+the prompt itself or allow the skill to stop for confirmation when installation
+is needed.
 
 ## Run A Pair
 
@@ -605,6 +631,9 @@ name: ames mode ablation
 
 prompt: ./prompt.txt
 fail_fast: false
+
+automation:
+  unattended_dependency_install: true
 
 agents:
   - name: codex
@@ -1003,8 +1032,10 @@ Inspect `records/.../mode=<mode>/dependency_prewarm.json`,
 `sdk_install_guard.jsonl` when present,
 `records/.../mode=<mode>/agent_last_message.txt`,
 `records/.../mode=<mode>/agent_stderr.txt`, and
-`records/.../mode=<mode>/workspace_delta/`. The prompt should instruct the
-agent to install job dependencies from available requirements files when needed.
+`records/.../mode=<mode>/workspace_delta/`. For an automated retry that may need
+an agent-side install, pass `--unattended-dependency-install` or put equivalent
+explicit authorization in the prompt; a general conversion request or harness
+environment flag is not authorization under the skill dependency policy.
 The prewarm timeout defaults to 3600 seconds per requirements file and can be
 raised with `BENCHMARK_PREWARM_INSTALL_TIMEOUT_SECONDS`.
 

@@ -910,6 +910,7 @@ def test_scenario_cli_accepts_generic_auth_flags(tmp_path):
             "--agent-home",
             str(agent_home),
             "--no-agent-auth-mount",
+            "--unattended-dependency-install",
         ]
     )
 
@@ -917,6 +918,7 @@ def test_scenario_cli_accepts_generic_auth_flags(tmp_path):
     assert options.result_root == output_dir
     assert options.agent_home == agent_home
     assert options.mount_agent_auth is False
+    assert options.unattended_dependency_install is True
 
 
 def test_run_scenario_passes_generic_auth_flags_to_execution(tmp_path, monkeypatch):
@@ -957,6 +959,7 @@ def test_run_scenario_passes_generic_auth_flags_to_execution(tmp_path, monkeypat
     def fake_execute(compilation, *, result_root, logs=(), runtime_auth_options=None):
         captured["result_root"] = result_root
         captured["runtime_auth_options"] = runtime_auth_options
+        captured["automation"] = compilation.scenario["automation"]
         return {"run_00001": 0}, {"status": "passed"}
 
     monkeypatch.setattr(runner, "execute_run_plan", fake_execute)
@@ -969,6 +972,7 @@ def test_run_scenario_passes_generic_auth_flags_to_execution(tmp_path, monkeypat
             "--agent-home",
             str(agent_home),
             "--no-agent-auth-mount",
+            "--unattended-dependency-install",
         ]
     )
 
@@ -976,6 +980,7 @@ def test_run_scenario_passes_generic_auth_flags_to_execution(tmp_path, monkeypat
     assert captured["result_root"] == output_dir
     assert captured["runtime_auth_options"].agent_home == agent_home
     assert captured["runtime_auth_options"].mount_agent_auth is False
+    assert captured["automation"] == {"unattended_dependency_install": True}
 
 
 def test_default_results_root_uses_codex_compat_alias(monkeypatch, tmp_path):
@@ -1030,6 +1035,7 @@ def test_pair_compilation_uses_direct_run_selection_flags(tmp_path, monkeypatch)
             "fedavg",
             "--job-scale",
             "medium",
+            "--unattended-dependency-install",
             str(job_input),
         ],
         "pair",
@@ -1043,6 +1049,8 @@ def test_pair_compilation_uses_direct_run_selection_flags(tmp_path, monkeypatch)
     assert {entry["agent_model"] for entry in entries} == {"codex-test"}
     assert {entry["workflow"] for entry in entries} == {"fedavg"}
     assert {entry["job_scale"] for entry in entries} == {"medium"}
+    assert compilation.scenario["automation"] == {"unattended_dependency_install": True}
+    assert compilation.scenario["prompt"]["composition"]["unattended_dependency_install"] is True
 
 
 def _write_site_split_csv_dataset(job_input: Path) -> None:

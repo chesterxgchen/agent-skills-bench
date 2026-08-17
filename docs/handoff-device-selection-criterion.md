@@ -6,7 +6,7 @@ conversion preserves GPU-when-available; and **not penalized** when the source
 never used the GPU.
 
 This lives entirely in the NVFLARE repo's evals input
-(`dev_tools/agent/skill_evals/<skill>/evals.json` + the checker that produces
+(`skills/<skill>/evals/evals.json` + the checker that produces
 per-run status). The benchmark harness consumes it as a verified input — it
 does **not** judge device correctness itself.
 

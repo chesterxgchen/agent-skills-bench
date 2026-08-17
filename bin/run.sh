@@ -34,9 +34,11 @@ Examples:
   ./bin/run.sh pair --agent claude --model MODEL --prompt /path/to/prompt.txt /path/to/job-folder
   ./bin/run.sh pair --agent-home /path/to/agent-home --prompt /path/to/prompt.txt /path/to/job-folder
   ./bin/run.sh pair --no-agent-auth-mount --prompt /path/to/prompt.txt /path/to/job-folder
+  ./bin/run.sh pair --unattended-dependency-install --prompt /path/to/prompt.txt /path/to/job-folder
   ./bin/run.sh pair --prompt /path/to/prompt.txt --results-root /path/to/results /path/to/job-folder
   ./bin/run.sh pair --prompt /path/to/prompt.txt --output-dir /path/to/exact-run-dir /path/to/job-folder
   ./bin/run.sh scenario /path/to/scenario.yaml --output-dir /path/to/exact-run-dir
+  ./bin/run.sh scenario /path/to/scenario.yaml --unattended-dependency-install
   ./bin/run.sh report /path/to/existing-run-dir
 EOF
 }

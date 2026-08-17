@@ -257,11 +257,11 @@ def copy_directory_contents(src: Path, dst: Path) -> None:
 
 
 def nvflare_skill_eval_files(path: Path) -> list[Path]:
-    """NVFLARE SDK-native eval criteria layout: skill_evals/<skill>/evals.json."""
+    """NVFLARE SDK-native eval criteria layout: skills/<skill>/evals/evals.json."""
 
     if not path.is_dir():
         return []
-    return sorted(candidate for candidate in path.glob("*/evals.json") if candidate.is_file())
+    return sorted(candidate for candidate in path.glob("*/evals/evals.json") if candidate.is_file())
 
 
 def _native_skill_patterns_by_task(index: dict[str, Any]) -> dict[str, list[str]]:

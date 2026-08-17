@@ -114,10 +114,9 @@ class InteractiveRuntimeConfig:
 
     @property
     def unattended(self) -> bool:
-        # An interactive `docker run -it` debug shell is never unattended, so it
-        # must not receive the harness->skill unattended-mode env (unattended_env
-        # in the agent config). A skill run from this shell keeps its approval
-        # prompts. Benchmark case configs do not define this and default to True.
+        # An interactive shell has a follow-up channel, so it must not receive
+        # non-interactive runtime context. This context is not dependency-install
+        # authorization; automated runs put that authorization in the prompt.
         return False
 
 
@@ -128,6 +127,7 @@ class ScenarioCliOptions:
     result_root: Path | None = None
     agent_home: Path | None = None
     mount_agent_auth: bool | None = None
+    unattended_dependency_install: bool = False
 
 
 @dataclass(frozen=True)
@@ -382,6 +382,7 @@ def parse_scenario_cli_options(argv: list[str]) -> ScenarioCliOptions:
     result_root: Path | None = None
     agent_home: Path | None = None
     mount_agent_auth: bool | None = None
+    unattended_dependency_install = False
     index = 0
     while index < len(argv):
         arg = argv[index]
@@ -410,10 +411,16 @@ def parse_scenario_cli_options(argv: list[str]) -> ScenarioCliOptions:
                 raise SystemExit("Expected only one --no-agent-auth-mount")
             mount_agent_auth = False
             index += 1
+        elif arg == "--unattended-dependency-install":
+            if unattended_dependency_install:
+                raise SystemExit("Expected only one --unattended-dependency-install")
+            unattended_dependency_install = True
+            index += 1
         elif arg in {"-h", "--help"}:
             print(
                 "Usage: run.sh scenario SCENARIO.yaml "
-                "[--results-root PATH|--output-dir PATH] [--agent-home PATH] [--no-agent-auth-mount]"
+                "[--results-root PATH|--output-dir PATH] [--agent-home PATH] [--no-agent-auth-mount] "
+                "[--unattended-dependency-install]"
             )
             raise SystemExit(0)
         elif arg.startswith("-"):
@@ -435,6 +442,7 @@ def parse_scenario_cli_options(argv: list[str]) -> ScenarioCliOptions:
         result_root=result_root,
         agent_home=agent_home,
         mount_agent_auth=mount_agent_auth,
+        unattended_dependency_install=unattended_dependency_install,
     )
 
 
@@ -603,6 +611,8 @@ def pair_compilation_from_options(options) -> ScenarioCompilation:
             }
         ],
     }
+    if options.unattended_dependency_install:
+        raw["automation"] = {"unattended_dependency_install": True}
     for key in ("evaluation_task", "evaluation_selectors", "result_artifact", "quality_gate"):
         if key in inferred:
             raw[key] = inferred[key]
@@ -1258,14 +1268,13 @@ def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = (), 
 def autorun_code_quality_evaluations(
     result_root: Path, *, logs: Iterable[Path] = (), only_missing: bool = False
 ) -> None:
-    """Have an agent judge the generated code against the criteria list.
+    """Have an agent judge captured run evidence against the criteria list.
 
-    Replaces the brittle per-code-shape detectors: an agent reads the captured
-    generated code and scores each SDK criterion, so it works whether the agent
-    wrote a manual loop or a Recipe, flat files or a nested job folder. Runs in
-    the container sandbox (attacker-authored code), regenerates the report so
-    the verdicts show in Generated Code Quality, best-effort, skips when no
-    image is built, and BENCHMARK_AUTO_CODE_EVAL=0 disables it.
+    Replaces brittle per-code-shape and process detectors: an agent reads the
+    captured prompt, activity, generated code, and outputs and scores each SDK
+    criterion. Runs in the container sandbox (attacker-authored evidence),
+    regenerates the report, is best-effort, skips when no image is built, and
+    BENCHMARK_AUTO_CODE_EVAL=0 disables it.
     """
 
     if os.environ.get("BENCHMARK_AUTO_CODE_EVAL", "1") == "0":
@@ -1479,6 +1488,11 @@ def run_pair(argv: list[str]) -> int:
     emit(f"Report image: {images.report_image_name}", logs=logs)
     emit(f"Job folder: {options.job_input}", logs=logs)
     emit(f"Prompt file: {options.prompt_path} -> {CONTAINER_PROMPT_PATH}", logs=logs)
+    if options.unattended_dependency_install:
+        emit(
+            "Prompt composition: explicit unattended dependency-install authorization enabled",
+            logs=logs,
+        )
 
     try:
         run_statuses, scenario_summary = execute_run_plan(
@@ -1515,7 +1529,10 @@ def run_scenario(argv: list[str]) -> int:
     reject_parallel_comparison_runs("scenario")
     options = parse_scenario_cli_options(argv)
     try:
-        compilation = compile_scenario_file(options.scenario_path)
+        compilation = compile_scenario_file(
+            options.scenario_path,
+            unattended_dependency_install=options.unattended_dependency_install,
+        )
     except ScenarioValidationError as exc:
         return emit_scenario_validation_error(exc)
     result_root = scenario_result_root(options, compilation)
@@ -1529,6 +1546,11 @@ def run_scenario(argv: list[str]) -> int:
     emit(f"Console log: {console_log}", logs=logs)
     emit(f"Scenario file: {options.scenario_path}", logs=logs)
     emit(f"Run count: {compilation.run_plan.get('run_count')}", logs=logs)
+    if compilation.scenario.get("automation", {}).get("unattended_dependency_install"):
+        emit(
+            "Prompt composition: explicit unattended dependency-install authorization enabled",
+            logs=logs,
+        )
 
     try:
         statuses, summary = execute_run_plan(

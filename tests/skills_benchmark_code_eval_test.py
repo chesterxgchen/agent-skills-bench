@@ -70,6 +70,10 @@ def test_build_eval_prompt_lists_keys_and_asks_for_json():
     prompt = build_eval_prompt(_CRITERIA, "with_skills")
     assert "execution_model" in prompt and "class_weighting" in prompt
     assert "JSON array" in prompt and "verdict" in prompt
+    assert "prompt.txt" in prompt and "agent_events.jsonl" in prompt
+    assert "dependency_prewarm.json" in prompt and "must never be credited" in prompt
+    assert "Environment variables" in prompt and "not user authorization" in prompt
+    assert "redacted plan" in prompt
 
 
 def test_evaluate_code_quality_persists_agent_verdicts(tmp_path):

@@ -4482,16 +4482,16 @@ CODE_QUALITY_POINTS = _code_quality_points()
 
 def code_quality_criteria(run: dict[str, Any] | None = None) -> list[dict[str, str]]:
     """The rule-signal criteria (key + human description) an evaluation agent
-    judges the generated code against — sourced from the evaluation rules so
-    the list stays in sync with the report rows."""
+    judges against captured run evidence — sourced from the evaluation rules
+    so the list stays in sync with the report rows."""
 
     return [{"key": key, "description": label} for key, label in _conversion_quality_rows_from_rules(run)]
 
 
 def _agent_code_quality_verdicts(run: dict[str, Any]) -> dict[str, dict[str, str]]:
     """Per-criterion verdicts an evaluation agent produced (see code_eval), or
-    ``{}``. The agent reads the captured code and judges each criterion, so it
-    is robust to code shapes the deterministic detectors do not recognize."""
+    ``{}``. The agent reads captured prompt, activity, code, and outputs, so it
+    can judge both code-shape and procedural criteria."""
 
     assessment = run.get("code_quality_assessment") if isinstance(run, dict) else None
     verdicts = assessment.get("assessments") if isinstance(assessment, dict) else None
@@ -4517,8 +4517,8 @@ def generated_code_quality_assessments(run: dict[str, Any]) -> list[tuple[str, s
         # declaration; the single bad row names the routing failure.
         rows.append(("Evaluation routing", "bad", routing_error))
         return rows
-    # Prefer an evaluation agent's verdicts when present (it read the code and
-    # judged each criterion); fall back to the deterministic detector + rules.
+    # Prefer an evaluation agent's verdicts when present (it read the captured
+    # run evidence); fall back to the deterministic detector + rules.
     agent_verdicts = _agent_code_quality_verdicts(run)
     profile = conversion_quality_profile(run)
     for key, label in _conversion_quality_rows_from_rules(run):

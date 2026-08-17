@@ -273,7 +273,7 @@ class NvflareReportPlugin(ReportPlugin):
         return StructureSignal(score=structure_score(run.raw))
 
     def code_quality_criteria(self, run: RunEvidence) -> list[dict[str, str]]:
-        # The criteria an evaluation agent judges the captured code against —
+        # The criteria an evaluation agent judges against captured run evidence —
         # the same rule signals the report renders (delegated to _logic).
         return _logic.code_quality_criteria(run.raw)
 

@@ -144,6 +144,9 @@ def print_usage(command: str) -> None:
         "                          between repeats and the winner uses per-mode medians.\n"
         "  --agent-home PATH       Host auth/config directory for the selected agent.\n"
         "  --no-agent-auth-mount   Do not mount host agent auth/config files.\n"
+        "  --unattended-dependency-install\n"
+        "                          Append an explicit, recorded request to audit, preview, and\n"
+        "                          install missing dependencies without a follow-up reply.\n"
         "  --results-root PATH     Parent directory for generated timestamped result directories.\n"
         "  --output-dir PATH       Exact result directory for this run or comparison.\n"
         "  --result-root PATH      Exact result directory for pair comparisons.\n"
@@ -164,6 +167,7 @@ class HostCliOptions:
     agent_home: Path | None = None
     mount_agent_auth: bool | None = None
     repeats: int | None = None
+    unattended_dependency_install: bool = False
 
 
 def _option_value(argv: list[str], index: int, option: str) -> tuple[str, int]:
@@ -188,6 +192,7 @@ def parse_host_cli_options(argv: list[str], command: str) -> HostCliOptions:
     agent_home: Path | None = None
     mount_agent_auth: bool | None = None
     repeats: int | None = None
+    unattended_dependency_install = False
     index = 0
     while index < len(argv):
         arg = argv[index]
@@ -241,6 +246,15 @@ def parse_host_cli_options(argv: list[str], command: str) -> HostCliOptions:
             if mount_agent_auth is False:
                 raise SystemExit("Expected only one --no-agent-auth-mount")
             mount_agent_auth = False
+            index += 1
+        elif arg == "--unattended-dependency-install":
+            if command == "interactive":
+                raise SystemExit(
+                    "--unattended-dependency-install is for automated runs; put authorization in the prompt for an interactive shell"
+                )
+            if unattended_dependency_install:
+                raise SystemExit("Expected only one --unattended-dependency-install")
+            unattended_dependency_install = True
             index += 1
         elif arg == "--results-root" or arg.startswith("--results-root="):
             value, index = _option_value(argv, index, "--results-root")
@@ -318,6 +332,7 @@ def parse_host_cli_options(argv: list[str], command: str) -> HostCliOptions:
         agent_home=agent_home,
         mount_agent_auth=mount_agent_auth,
         repeats=repeats,
+        unattended_dependency_install=unattended_dependency_install,
     )
 
 

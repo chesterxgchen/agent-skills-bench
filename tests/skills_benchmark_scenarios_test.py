@@ -199,6 +199,59 @@ def test_prompt_path_with_variables_is_rendered_as_template(tmp_path):
     assert Path(materialized.scenario["prompt"]["path"]).read_text(encoding="utf-8") == "Convert ames.\n"
 
 
+def test_unattended_dependency_install_is_explicitly_composed_into_effective_prompt(tmp_path):
+    from benchmark.harness.scenario_prompt import (
+        UNATTENDED_DEPENDENCY_INSTALL_AUTHORIZATION,
+        add_unattended_dependency_install_authorization,
+    )
+    from benchmark.harness.scenarios import compile_scenario
+
+    raw = base_scenario(tmp_path)
+    raw["automation"] = {"unattended_dependency_install": True}
+    source_prompt = tmp_path / "prompt.txt"
+    source_bytes = source_prompt.read_bytes()
+    expected = add_unattended_dependency_install_authorization(source_bytes, source_prompt)
+    expected_hash = hashlib.sha256(expected).hexdigest()
+
+    compilation = compile_scenario(raw, base_dir=tmp_path)
+    prompt = compilation.scenario["prompt"]
+
+    assert source_prompt.read_bytes() == source_bytes
+    assert prompt["sha256"] == expected_hash
+    assert prompt["source_sha256"] == hashlib.sha256(source_bytes).hexdigest()
+    assert prompt["composition"] == {
+        "unattended_dependency_install": True,
+        "authorization_source": "explicit_cli_or_scenario_option",
+    }
+    assert compilation.scenario["automation"] == {"unattended_dependency_install": True}
+    assert compilation.run_plan["automation"] == {"unattended_dependency_install": True}
+    assert compilation.scenario["reproducibility"]["automation"] == {"unattended_dependency_install": True}
+    assert {entry["prompt_hash"] for entry in compilation.run_plan["entries"]} == {expected_hash}
+
+    result_root = tmp_path / "results"
+    materialized = compilation.write(result_root)
+    effective_paths = {entry["prompt_source"] for entry in materialized.run_plan["entries"]}
+    assert len(effective_paths) == 1
+    effective = Path(effective_paths.pop()).read_text(encoding="utf-8")
+    assert effective.endswith(UNATTENDED_DEPENDENCY_INSTALL_AUTHORIZATION)
+    assert "audit every declared dependency input" in effective
+    assert "without waiting for a follow-up confirmation" in effective
+
+
+def test_automation_rejects_non_boolean_unattended_dependency_install(tmp_path):
+    from benchmark.harness.scenarios import ScenarioValidationError, compile_scenario
+
+    raw = base_scenario(tmp_path)
+    raw["automation"] = {"unattended_dependency_install": "yes"}
+
+    try:
+        compile_scenario(raw, base_dir=tmp_path)
+    except ScenarioValidationError as exc:
+        assert "automation.unattended_dependency_install must be true or false" in str(exc)
+    else:
+        raise AssertionError("automation authorization must require an explicit boolean")
+
+
 def test_inline_prompt_template_string_is_rejected(tmp_path):
     from benchmark.harness.scenarios import ScenarioValidationError, compile_scenario
 

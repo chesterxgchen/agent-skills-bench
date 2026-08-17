@@ -39,7 +39,7 @@ when it fails the effectiveness bar on two consecutive corpus evaluations.
 
 ## Measurement discipline
 
-- **Held-out corpus only.** `dev_tools/agent/skill_evals` suites are authored
+- **Held-out corpus only.** `skills/<skill>/evals` suites are authored
   alongside the skills — they are conformance criteria, not impact evidence.
   Impact numbers measured on author-visible tasks stop meaning UX (Goodhart).
 - **Infrastructure-tainted runs never count** toward latency bars; if taint

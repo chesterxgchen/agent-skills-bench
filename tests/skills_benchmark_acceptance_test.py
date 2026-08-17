@@ -397,7 +397,7 @@ def test_native_skill_evals_stage_signals_for_registered_tasks(tmp_path):
         ("nvflare-convert-pytorch", "inspect-first"),
         ("nvflare-fed-stats", "one-job-both-views"),
     ):
-        evals_dir = repo / "dev_tools" / "agent" / "skill_evals" / skill
+        evals_dir = repo / "skills" / skill / "evals"
         evals_dir.mkdir(parents=True)
         evals_dir.joinpath("evals.json").write_text(
             json.dumps(
@@ -419,7 +419,7 @@ def test_native_skill_evals_stage_signals_for_registered_tasks(tmp_path):
     context.mkdir()
     sdk = SimpleNamespace(
         name="nvflare",
-        evaluation_criteria=lambda: SimpleNamespace(repo_relative_path=Path("dev_tools/agent/skill_evals")),
+        evaluation_criteria=lambda: SimpleNamespace(repo_relative_path=Path("skills")),
     )
     build.resolve_and_stage_evaluation_criteria(
         sdk=sdk,

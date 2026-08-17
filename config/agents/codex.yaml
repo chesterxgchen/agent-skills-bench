@@ -91,16 +91,11 @@ runtime_env:
 # unattended_env applies ONLY to non-interactive benchmark case runs, never to an
 # interactive `docker run -it` debug shell (which reuses runtime_env).
 #
-# AGENT_HARNESS_UNATTENDED / AGENT_HARNESS_SANDBOX are the harness->skill
-# contract for run mode. A benchmark case ALWAYS runs unattended: there is no
-# interactive channel, so an agent that stalls on an approval prompt never
-# starts the job (observed as not_started with_skills runs). The skill decides
-# interactive-vs-unattended by whether "a user or harness has explicitly made
-# follow-up answers available" and gates dependency install + source-derived
-# execution on a confirmed disposable OS-level sandbox; the benchmark container
-# IS that sandbox. These vars declare both so the skill takes its unattended,
-# install-requirements-and-run path instead of asking. Skill authors must read
-# them (prompts/skills are out of harness scope).
+# AGENT_HARNESS_UNATTENDED / AGENT_HARNESS_SANDBOX describe the run context:
+# benchmark cases have no follow-up channel and execute in a disposable
+# container. They are not user authorization for dependency installation.
+# `--unattended-dependency-install` separately materializes an explicit audited,
+# redacted install request into the prompt when automated installation is wanted.
 unattended_env:
   AGENT_HARNESS_UNATTENDED: "1"
   AGENT_HARNESS_SANDBOX: "disposable-container"

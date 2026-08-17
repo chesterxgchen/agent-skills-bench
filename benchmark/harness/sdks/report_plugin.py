@@ -209,8 +209,8 @@ class ReportPlugin(ABC):
         return ()
 
     def code_quality_criteria(self, run: RunEvidence) -> list[dict[str, str]]:
-        """Generated-code-quality criteria (``{"key", "description"}``) an
-        evaluation agent should judge the captured code against.
+        """Run-quality criteria (``{"key", "description"}``) an evaluation
+        agent should judge against captured prompt, activity, code, and outputs.
 
         Sourced from the SDK's evaluation rules so it stays in sync with the
         report rows. Empty for a plugin without code-quality criteria; those

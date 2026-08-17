@@ -202,7 +202,7 @@ the required source when no repo-relative path is available. Build preparation
 normalizes the source into a harness rules bundle, validates the composition,
 hashes it, and stages it into both images. Sources can be native harness YAML
 or SDK-native criteria layouts with an explicit converter; NVFLARE's
-`dev_tools/agent/skill_evals/*/evals.json` is converted this way. The build
+`skills/*/evals/evals.json` is converted this way. The build
 records the bundle's content hash in the §4.3 identity block, which the host
 lifts to the root-level descriptor — outside the container-writable result
 mount — by extracting the image-baked metadata copy (`docker create` +
