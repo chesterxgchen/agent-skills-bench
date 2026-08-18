@@ -74,6 +74,7 @@ __all__ = [
     "status_summary",
     "metric_name_for_runs",
     "metric_names_for_runs",
+    "metric_comparison_note",
     "comparable_metric_name",
     "metric_value",
     "_metric_value_label",
@@ -388,11 +389,16 @@ def status_summary(
     return "; ".join(parts)
 
 
-def metric_name_for_runs(runs: dict[str, RunEvidence]) -> str:
-    common_name = comparable_metric_name(runs)
+def metric_name_for_runs(runs: dict[str, RunEvidence], ctx: ReportContext | None = None) -> str:
+    common_name = comparable_metric_name(runs, ctx)
     if common_name:
         return common_name
-    if metric_names_for_runs(runs):
+    names = metric_names_for_runs(runs)
+    if len(names) == 1:
+        # Same metric name, but a plugin-declared comparison basis may differ.
+        # Keep the real name while the scorecard suppresses only its delta.
+        return names[0]
+    if names:
         return "mixed validation metrics"
     return "result"
 
@@ -445,11 +451,34 @@ def common_observed_runtime_metric_name(runs: dict[str, RunEvidence]) -> str | N
     return sorted(common)[0]
 
 
-def comparable_metric_name(runs: dict[str, RunEvidence]) -> str | None:
+def metric_comparison_note(runs: dict[str, RunEvidence], ctx: ReportContext | None = None) -> str:
+    """Explain why same-named metrics use incompatible evaluation cohorts."""
+
+    if ctx is None:
+        return ""
+    bases = []
+    for mode, run in runs.items():
+        evidence = ctx.evidence.get(mode)
+        assessment = getattr(evidence, "metric", None) if evidence is not None else None
+        key = str(getattr(assessment, "comparison_key", None) or "")
+        basis = str(getattr(assessment, "comparison_basis", None) or "")
+        if not key:
+            continue
+        bases.append((key, f"{run.label or mode}: {basis or key}"))
+    if len(bases) != len(runs) or len({key for key, _label in bases}) <= 1:
+        return ""
+    return "validation cohorts differ — " + "; ".join(label for _key, label in bases)
+
+
+def comparable_metric_name(runs: dict[str, RunEvidence], ctx: ReportContext | None = None) -> str | None:
     names = metric_names_for_runs(runs)
     if len(names) == 1:
-        return names[0]
-    return common_observed_runtime_metric_name(runs)
+        candidate = names[0]
+    else:
+        candidate = common_observed_runtime_metric_name(runs)
+    if candidate and metric_comparison_note(runs, ctx):
+        return None
+    return candidate
 
 
 def _observed_metric_value(run: RunEvidence, metric_name: str | None) -> Any:

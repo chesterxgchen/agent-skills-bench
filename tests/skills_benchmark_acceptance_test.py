@@ -430,9 +430,21 @@ def test_native_skill_evals_stage_signals_for_registered_tasks(tmp_path):
 
     staged = context / "evaluation_rules"
     conversion = load_evaluation_rules("nvflare", staged, task="conversion")
-    assert "mandatory_behavior__inspect-first" in conversion["signals"]
+    assert "mandatory_behavior__inspect-first" not in conversion["signals"]
     assert "mandatory_behavior__one-job-both-views" not in conversion["signals"]
-    stats = load_evaluation_rules("nvflare", staged, task="federated-statistics")
+    routed_conversion = load_evaluation_rules(
+        "nvflare",
+        staged,
+        task="conversion",
+        selectors={"native-eval": "nvflare-convert-pytorch-case"},
+    )
+    assert "mandatory_behavior__inspect-first" in routed_conversion["signals"]
+    stats = load_evaluation_rules(
+        "nvflare",
+        staged,
+        task="federated-statistics",
+        selectors={"native-eval": "nvflare-fed-stats-case"},
+    )
     assert "mandatory_behavior__one-job-both-views" in stats["signals"]
     assert "mandatory_behavior__inspect-first" not in stats["signals"]
     # The scenario-declared criteria stay composed under the native additions.

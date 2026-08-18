@@ -144,7 +144,7 @@ def quality_signal_table(runs: dict[str, RunEvidence], modes: list[str], ctx: Re
         "| Run | Expected metric | Reported result | Status | Evidence |",
         "|---|---|---|---|---|",
     ]
-    comparable_name = comparable_metric_name(runs)
+    comparable_name = comparable_metric_name(runs, ctx)
     for mode in modes:
         run = runs[mode]
         ev = ctx.evidence.get(mode)
@@ -293,7 +293,7 @@ def event_mix_table(runs: dict[str, RunEvidence], modes: list[str]) -> str:
 
 def outcome_details_table(runs: dict[str, RunEvidence], modes: list[str], ctx: ReportContext | None = None) -> str:
     ctx = ctx or _report_context(runs, modes)
-    comparable_name = comparable_metric_name(runs)
+    comparable_name = comparable_metric_name(runs, ctx)
     # Each getter takes (run, ev) where ev is the per-mode PluginEvidence.
     rows = [
         ("Agent/container outcome", lambda run, ev: human_readable_status(run, ev)),
@@ -471,8 +471,9 @@ def failure_analysis_section(runs: dict[str, RunEvidence], modes: list[str], ctx
         lines.append("")
         lines.append(f"- Job run status: {job_exec.status} — {job_exec.status_reason}")
         if status_kind == "passed":
-            metric = metric_display(run, comparable_metric_name(runs), ev)
-            label_text = _metric_value_label(run, comparable_metric_name(runs), ev)
+            comparable_name = comparable_metric_name(runs, ctx)
+            metric = metric_display(run, comparable_name, ev)
+            label_text = _metric_value_label(run, comparable_name, ev)
             if label_text:
                 metric = f"{metric} ({label_text})"
             lines.append(f"- Outcome: passed. {metric}.")

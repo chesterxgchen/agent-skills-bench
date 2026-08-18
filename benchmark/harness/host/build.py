@@ -54,6 +54,7 @@ REPO_ROOT = Path(_env_repo).expanduser().resolve() if _env_repo else None
 DEFAULT_UV_IMAGE = "ghcr.io/astral-sh/uv:0.11.19"
 DEFAULT_NODE_IMAGE = "node:22.16.0-bookworm-slim"
 STAGED_SDK_SKILLS_SOURCE_REF = "/tmp/sdk_skills"
+NATIVE_EVAL_SELECTOR = "native-eval"
 
 
 @dataclass(frozen=True)
@@ -404,7 +405,11 @@ def _stage_nvflare_skill_eval_fixtures(document: dict[str, Any], source: Path, n
 
 
 def _native_nvflare_behavior_signals(
-    documents: list[dict[str, Any]], task: str, patterns_by_task: dict[str, list[str]] | None = None
+    documents: list[dict[str, Any]],
+    task: str,
+    patterns_by_task: dict[str, list[str]] | None = None,
+    *,
+    eval_id: str | None = None,
 ) -> dict[str, Any]:
     signals: dict[str, Any] = {}
     for document in documents:
@@ -415,6 +420,8 @@ def _native_nvflare_behavior_signals(
             if not isinstance(eval_case, dict):
                 continue
             case_id = str(eval_case.get("id") or "")
+            if eval_id is not None and case_id != eval_id:
+                continue
             nvflare = eval_case.get("nvflare") if isinstance(eval_case.get("nvflare"), dict) else {}
             for category in ("mandatory_behavior", "prohibited_behavior", "optional_behavior"):
                 behaviors = nvflare.get(category) if isinstance(nvflare, dict) else None
@@ -450,6 +457,46 @@ def _native_nvflare_behavior_signals(
                     if case_id and case_id not in metadata.setdefault("cases", []):
                         metadata["cases"].append(case_id)
     return signals
+
+
+def _native_eval_routes(
+    documents: list[dict[str, Any]], task: str, patterns_by_task: dict[str, list[str]] | None = None
+) -> dict[str, dict[str, Any]]:
+    """Return exact native-eval-case -> signals routes for one task.
+
+    An SDK ``evals.json`` is a suite of independent scenarios. Flattening every
+    case into the task's common criteria makes an ordinary Lightning conversion
+    judge Hugging Face, DDP, routing, and other unrelated scenarios. Native
+    cases therefore join a run only through an explicit ``native-eval`` scenario
+    selector; the task's generic harness criteria remain the default.
+    """
+
+    routes: dict[str, dict[str, Any]] = {}
+    owners: dict[str, str] = {}
+    for document in documents:
+        skill_name = str(document.get("skill_name") or "")
+        if _evaluation_task_for_nvflare_skill(skill_name, patterns_by_task) != task:
+            continue
+        for eval_case in document.get("evals") or []:
+            if not isinstance(eval_case, dict):
+                continue
+            eval_id = str(eval_case.get("id") or "").strip()
+            if not eval_id:
+                raise ValueError(f"{document['path']}: every native eval case must have a non-empty id")
+            if eval_id in routes:
+                raise ValueError(
+                    f"duplicate native eval id {eval_id!r} for task {task!r}: "
+                    f"{owners[eval_id]!r} and {skill_name!r}"
+                )
+            routes[eval_id] = _native_nvflare_behavior_signals([document], task, patterns_by_task, eval_id=eval_id)
+            owners[eval_id] = skill_name
+    return routes
+
+
+def _native_eval_rules_filename(eval_id: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9_.-]+", "_", eval_id).strip("._-") or "eval"
+    digest = hashlib.sha256(eval_id.encode("utf-8")).hexdigest()[:12]
+    return f"{slug[:80]}-{digest}.yaml"
 
 
 def _write_yaml(path: Path, payload: dict[str, Any]) -> None:
@@ -491,35 +538,41 @@ def stage_nvflare_skill_evals_as_evaluation_rules(source: Path, target: Path) ->
         emit(f"Evaluation criteria: no registered task derives signals for skills: {', '.join(skipped)}")
 
     signal_counts: dict[str, int] = {}
+    eval_counts: dict[str, int] = {}
     for task in tasks:
-        native_signals = _native_nvflare_behavior_signals(documents, str(task), patterns_by_task)
-        if not native_signals:
+        native_routes = _native_eval_routes(documents, str(task), patterns_by_task)
+        if not native_routes:
             continue
-        signal_counts[str(task)] = len(native_signals)
-        native_ref = f"tasks/{task}/native_skill_evals.yaml"
-        _write_yaml(
-            target / "nvflare" / "tasks" / str(task) / "native_skill_evals.yaml",
-            {
-                "schema_version": 1,
-                "source_format": "nvflare_skill_evals",
-                "source_path": "native/nvflare_skill_evals",
-                "signals": native_signals,
-            },
-        )
+        eval_counts[str(task)] = len(native_routes)
+        signal_counts[str(task)] = sum(len(signals) for signals in native_routes.values())
         entry = tasks.get(task) or {}
-        compose = entry.get("compose")
-        if not isinstance(compose, list):
-            compose = [entry.get("common")] if entry.get("common") else []
-            entry.pop("common", None)
-        if native_ref not in compose:
-            compose.append(native_ref)
-        entry["compose"] = compose
+        overlays = entry.get("overlays") if isinstance(entry.get("overlays"), dict) else {}
+        if NATIVE_EVAL_SELECTOR in overlays:
+            raise ValueError(f"task {task!r} already declares reserved overlay dimension {NATIVE_EVAL_SELECTOR!r}")
+        eval_overlays: dict[str, str] = {}
+        for eval_id, signals in native_routes.items():
+            filename = _native_eval_rules_filename(eval_id)
+            native_ref = f"tasks/{task}/native_skill_evals/{filename}"
+            _write_yaml(
+                target / "nvflare" / "tasks" / str(task) / "native_skill_evals" / filename,
+                {
+                    "schema_version": 1,
+                    "source_format": "nvflare_skill_evals",
+                    "source_path": "native/nvflare_skill_evals",
+                    "native_eval": eval_id,
+                    "signals": signals,
+                },
+            )
+            eval_overlays[eval_id] = native_ref
+        overlays[NATIVE_EVAL_SELECTOR] = eval_overlays
+        entry["overlays"] = overlays
         tasks[str(task)] = entry
     if signal_counts:
         index["tasks"] = tasks
         index.setdefault("native_sources", {})["nvflare_skill_evals"] = {
             "path": "native/nvflare_skill_evals",
             "skill_count": len(documents),
+            "eval_counts_by_task": eval_counts,
             "signal_counts_by_task": signal_counts,
             # Kept for readers of the previous single-task layout.
             "conversion_signal_count": signal_counts.get("conversion", 0),

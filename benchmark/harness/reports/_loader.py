@@ -397,6 +397,7 @@ def collect_benchmark_runs(root: Path) -> dict[str, dict[str, Any]]:
             "prompt_metadata": load_json(mode_dir / "prompt_metadata.json", {}) if mode_dir.exists() else {},
             "rca_report": (_combined_rca_reports(mode_dir) if capture_state == CAPTURE_STATE_COMPLETE else ""),
             "runtime_image": load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {},
+            "dependency_prewarm": load_json(mode_dir / "dependency_prewarm.json", {}) if mode_dir.exists() else {},
             "evaluation_rules_path": rules_path,
             "evaluation_rules_status": rules_status,
             "evaluation_criteria": trusted_criteria,

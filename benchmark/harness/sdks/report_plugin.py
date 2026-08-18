@@ -100,6 +100,11 @@ class MetricAssessment:
     # SDK-owned path/label for a non-scalar result artifact, when one satisfied the
     # task result gate.
     result_artifact: str | None = None
+    # Stable identity and display text for the data/cohort on which the scalar
+    # was evaluated. Equal metric names are numerically comparable only when
+    # captured cohort identities do not conflict across runs.
+    comparison_key: str | None = None
+    comparison_basis: str | None = None
 
 
 @dataclass(frozen=True)

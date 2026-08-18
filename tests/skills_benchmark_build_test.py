@@ -445,13 +445,21 @@ def test_nvflare_sdk_native_skill_evals_without_skill_name_are_converted_to_rule
     )
 
     staged = context / "evaluation_rules"
-    rules = load_evaluation_rules("nvflare", staged, task="conversion", framework="pytorch")
+    generic_rules = load_evaluation_rules("nvflare", staged, task="conversion", framework="pytorch")
+    rules = load_evaluation_rules(
+        "nvflare",
+        staged,
+        task="conversion",
+        selectors={"framework": "pytorch", "native-eval": "pytorch-basic"},
+    )
     signals = rules["signals"]
     assert prepared.source_type == "sdk_repo"
     assert prepared.source_format == "nvflare_skill_evals"
     assert prepared.staged_entrypoint == "."
+    assert "mandatory_behavior__inspect-first" not in generic_rules["signals"]
     assert "mandatory_behavior__inspect-first" in signals
     assert signals["mandatory_behavior__inspect-first"]["native_behavior"]["cases"] == ["pytorch-basic"]
+    assert rules["selectors"] == {"framework": "pytorch", "native-eval": "pytorch-basic"}
     assert (staged / "native" / "nvflare_skill_evals" / "nvflare-convert-pytorch" / "evals" / "evals.json").is_file()
 
 

@@ -1202,11 +1202,15 @@ def write_benchmark_reports(result_root: Path, *, logs: Iterable[Path] = ()) -> 
         parse_cached_usage_and_activity.cache_clear()
 
 
-def _mode_has_rca_report(result_root: Path, mode: str) -> bool:
+def _mode_has_rca_report(result_root: Path, mode: str, topic: str | None = None) -> bool:
     from ..reports._loader import mode_dir_for_benchmark
 
     rca_dir = mode_dir_for_benchmark(result_root, mode) / "rca"
-    return rca_dir.is_dir() and any(rca_dir.glob("rca_report_*.md"))
+    if not rca_dir.is_dir():
+        return False
+    if topic:
+        return (rca_dir / f"rca_report_{topic}.md").is_file()
+    return any(rca_dir.glob("rca_report_*.md"))
 
 
 def _mode_has_code_quality_assessment(result_root: Path, mode: str) -> bool:
@@ -1231,11 +1235,13 @@ def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = (), 
 
     if os.environ.get("BENCHMARK_AUTO_RCA", "1") == "0":
         return
-    from ..rca import auto_diagnostic_step_timeout_seconds, resolve_invoker, resolve_seed, run_investigation
+    from ..rca import auto_diagnostic_step_timeout_seconds, resolve_auto_seeds, resolve_invoker, run_investigation
 
-    targets = [spec.mode for spec in PAIR_RUNS if resolve_seed(result_root, spec.mode, "auto", None) is not None]
+    targets = [
+        (spec.mode, str(seed["topic"])) for spec in PAIR_RUNS for seed in resolve_auto_seeds(result_root, spec.mode)
+    ]
     if only_missing:
-        targets = [mode for mode in targets if not _mode_has_rca_report(result_root, mode)]
+        targets = [(mode, topic) for mode, topic in targets if not _mode_has_rca_report(result_root, mode, topic)]
     if not targets:
         return
     try:
@@ -1248,18 +1254,19 @@ def autorun_rca_investigations(result_root: Path, *, logs: Iterable[Path] = (), 
     except SystemExit as exc:
         emit(f"Auto-RCA skipped: {exc}", logs=logs, stderr=True)
         return
-    emit(f"Running automatic RCA on {', '.join(targets)} (set BENCHMARK_AUTO_RCA=0 to disable)", logs=logs)
+    target_labels = ", ".join(f"{mode}:{topic}" for mode, topic in targets)
+    emit(f"Running automatic RCA on {target_labels} (set BENCHMARK_AUTO_RCA=0 to disable)", logs=logs)
     investigated = False
-    for mode in targets:
-        emit(f"Auto-RCA ({mode}, {agent_name}): investigating (heartbeat every 60s) ...", logs=logs)
+    for mode, topic in targets:
+        emit(f"Auto-RCA ({mode}, {topic}, {agent_name}): investigating (heartbeat every 60s) ...", logs=logs)
         try:
-            report_path = run_investigation(result_root, mode, invoker, topic="auto", agent_name=agent_name)
+            report_path = run_investigation(result_root, mode, invoker, topic=topic, agent_name=agent_name)
         except Exception as exc:
-            emit(f"Auto-RCA failed for {mode}: {type(exc).__name__}: {exc}", logs=logs, stderr=True)
+            emit(f"Auto-RCA failed for {mode}:{topic}: {type(exc).__name__}: {exc}", logs=logs, stderr=True)
             continue
         if report_path is not None:
             investigated = True
-            emit(f"Auto-RCA ({mode}, {agent_name}): {report_path}", logs=logs)
+            emit(f"Auto-RCA ({mode}, {topic}, {agent_name}): {report_path}", logs=logs)
     if investigated:
         # Regenerate so the fresh RCA reports embed in the Root Cause Analysis section.
         write_benchmark_reports(result_root, logs=logs)

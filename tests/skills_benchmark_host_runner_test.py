@@ -1344,8 +1344,8 @@ def test_autorun_rca_investigates_regressed_modes_and_regenerates(monkeypatch):
 
     monkeypatch.setattr(
         rca,
-        "resolve_seed",
-        lambda root, mode, topic, q, run_id=None: {"topic": "auto"} if mode == "with_skills" else None,
+        "resolve_auto_seeds",
+        lambda root, mode, run_id=None: ([{"topic": "slowdown"}, {"topic": "tokens"}] if mode == "with_skills" else []),
     )
 
     def fake_resolve_invoker(agent, sandbox="auto", step_timeout_seconds=None):
@@ -1368,7 +1368,7 @@ def test_autorun_rca_investigates_regressed_modes_and_regenerates(monkeypatch):
 
     runner.autorun_rca_investigations(__import__("pathlib").Path("/tmp/does-not-matter"))
 
-    assert calls["investigations"] == [("with_skills", "auto")]
+    assert calls["investigations"] == [("with_skills", "slowdown"), ("with_skills", "tokens")]
     assert calls["regenerated"] == 1  # regenerated once so RCA embeds
     # Auto-RCA must demand the container sandbox — never fall back to the host
     # CLI over attacker-authored evidence.
@@ -1381,7 +1381,9 @@ def test_autorun_rca_disabled_by_env(monkeypatch):
 
     touched = {"seed": 0}
     monkeypatch.setattr(
-        rca, "resolve_seed", lambda *a, **k: touched.__setitem__("seed", touched["seed"] + 1) or {"topic": "auto"}
+        rca,
+        "resolve_auto_seeds",
+        lambda *a, **k: touched.__setitem__("seed", touched["seed"] + 1) or [{"topic": "slowdown"}],
     )
     monkeypatch.setenv("BENCHMARK_AUTO_RCA", "0")
 
@@ -1394,7 +1396,9 @@ def test_autorun_rca_skips_when_no_investigator_available(monkeypatch):
     from benchmark.harness.host import runner
 
     monkeypatch.setattr(
-        rca, "resolve_seed", lambda root, mode, *a, **k: {"topic": "auto"} if mode == "with_skills" else None
+        rca,
+        "resolve_auto_seeds",
+        lambda root, mode, *a, **k: [{"topic": "slowdown"}] if mode == "with_skills" else [],
     )
 
     def no_agent(agent, sandbox="auto", step_timeout_seconds=None):

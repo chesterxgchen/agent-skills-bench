@@ -29,8 +29,10 @@
 # scenario_run_plan.resolve_jobs); the run record carries it and the report
 # plugin scores against that task's composed rules. `native_skills` glob
 # patterns map SDK-native skill_evals documents (skill_name in evals.json)
-# onto a task at build-stage time, so a new skill family feeds its task's
-# report signals by adding a pattern here — no harness code.
+# onto a task at build-stage time. Each native eval becomes an exact
+# `native-eval` overlay; a matching scenario opts in with
+# `evaluation_selectors: {native-eval: <eval-id>}`. Generic runs therefore do
+# not inherit unrelated criteria from the complete SDK eval suite.
 schema_version: 1
 sdk: nvflare
 default_task: conversion

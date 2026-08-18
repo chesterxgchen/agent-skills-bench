@@ -3079,6 +3079,25 @@ def _detect_partitioning(text: str) -> str:
     return "not captured"
 
 
+def validation_cohort_basis(run: dict[str, Any]) -> tuple[str, str] | None:
+    """Identify the generated client's validation cohort from captured source.
+
+    This is deliberately narrower than training partition quality. It exists to
+    prevent equal-named AUROC values from being subtracted when one conversion
+    evaluates every client on a shared validation set and the other evaluates
+    each client on its own site-local validation partition.
+    """
+
+    text = _workspace_text(run)
+    if re.search(r"load_split\(\s*self\.(?:shared_dir|shared_data_dir)\s*,\s*['\"]valid['\"]", text) or (
+        "--shared-data-dir" in text and re.search(r"load_split\([^\n]*['\"]valid['\"]", text)
+    ):
+        return "shared_validation_cohort", "shared validation cohort used by every site"
+    if re.search(r"load_split\(\s*self\.(?:site_data_dir|train_dir)\s*,\s*['\"]valid['\"]", text):
+        return "site_local_validation_cohorts", "site-local validation cohort differs by site"
+    return None
+
+
 def _detect_class_weighting(text: str) -> str:
     if "positive_class_weight(train_frame" in text:
         return "per-site loss weight from local training partition"
@@ -4539,7 +4558,8 @@ def generated_code_quality_overall(run: dict[str, Any]) -> str:
     if not known:
         return "unknown: no generated-code evidence captured"
     points = sum(points_by_status[status] for status, _ in known)
-    score_ratio = points / total
+    known_count = len(known)
+    score_ratio = points / known_count
     thresholds = overall_thresholds(_run_evaluation_rules(run))
     if score_ratio >= thresholds.get("good", 0.8):
         label = "good"
@@ -4547,9 +4567,11 @@ def generated_code_quality_overall(run: dict[str, Any]) -> str:
         label = "caution"
     else:
         label = "poor"
-    unknown_count = total - len(known)
-    unknown_note = f"; {len(known)}/{total} scored, {unknown_count} unknown" if unknown_count else ""
-    return f"{label}: {points:.1f}/{total} evidence points{unknown_note}"
+    unknown_count = total - known_count
+    coverage_note = f"; {known_count}/{total} scored"
+    if unknown_count:
+        coverage_note += f", {unknown_count} unknown excluded from score"
+    return f"{label}: {points:.1f}/{known_count} evidence points{coverage_note}"
 
 
 def generated_code_quality_score(run: dict[str, Any]) -> float | None:
@@ -4560,7 +4582,7 @@ def generated_code_quality_score(run: dict[str, Any]) -> float | None:
     known = [status for _, status, _ in assessments if status in points_by_status]
     if not known:
         return None
-    return sum(points_by_status[status] for status in known) / len(assessments)
+    return sum(points_by_status[status] for status in known) / len(known)
 
 
 # --- NVFLARE runtime-path log parsers (E3): consumed by the report plugin's

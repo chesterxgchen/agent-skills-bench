@@ -100,6 +100,7 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
         activity = load_json(mode_dir / "agent_activity.json", {}) if mode_dir.exists() else {}
         usage = load_json(mode_dir / "agent_usage.json", {}) if mode_dir.exists() else {}
         runtime_image = load_json(mode_dir / "runtime_image.json", {}) if mode_dir.exists() else {}
+        dependency_prewarm = load_json(mode_dir / "dependency_prewarm.json", {}) if mode_dir.exists() else {}
         workspace_delta_path = mode_dir / "workspace_delta_manifest.json"
         workspace_delta = load_json(workspace_delta_path, {}) if mode_dir.exists() else {}
         skills_list = load_json(mode_dir / "skills_list.json", {}) if mode_dir.exists() else {}
@@ -113,6 +114,8 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
             usage = {}
         if not isinstance(runtime_image, dict):
             runtime_image = {}
+        if not isinstance(dependency_prewarm, dict):
+            dependency_prewarm = {}
         if not isinstance(workspace_delta, dict):
             workspace_delta = {}
         if not isinstance(skills_list, dict):
@@ -180,6 +183,7 @@ def collect_runs(root: Path) -> list[dict[str, Any]]:
                 "activity": activity,
                 "usage": usage,
                 "runtime_image": runtime_image,
+                "dependency_prewarm": dependency_prewarm,
                 "host_os": run_host_os,
                 "host_environment": run_host_environment,
                 "skills_list": skills_list,
@@ -227,6 +231,11 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
         usage = row.get("usage") if isinstance(row.get("usage"), dict) else {}
         activity = row.get("activity") if isinstance(row.get("activity"), dict) else {}
         runtime_image = row.get("runtime_image") if isinstance(row.get("runtime_image"), dict) else {}
+        dependency_prewarm = (
+            row.get("dependency_prewarm")
+            if isinstance(row.get("dependency_prewarm"), dict)
+            else (load_json(mode_dir / "dependency_prewarm.json", {}) if available else {})
+        )
         workspace_delta_path = mode_dir / "workspace_delta_manifest.json"
         workspace_delta = (
             row.get("workspace_delta")
@@ -327,6 +336,7 @@ def runs_by_mode_for_insights(root: Path, rows: list[dict[str, Any]]) -> dict[st
             "workspace_delta": workspace_delta,
             "skills_list": skills_list,
             "runtime_image": runtime_image,
+            "dependency_prewarm": dependency_prewarm,
             "agent_last_message": read_text(mode_dir / "agent_last_message.txt") if available else "",
             "agent_stderr": read_text(mode_dir / "agent_stderr.txt") if available else "",
             "agent_events_text": agent_events_text,
@@ -392,7 +402,7 @@ def numeric_comparison(
         ):
             result[f"{key}_with_skills_minus_without_skills"] = right - left
     metric_name = (
-        comparable_metric_name(insight_runs) if insight_runs is not None else _row_comparable_metric_name(rows)
+        comparable_metric_name(insight_runs, ctx) if insight_runs is not None else _row_comparable_metric_name(rows)
     )
     if metric_name:
         if insight_runs is not None:
@@ -422,7 +432,7 @@ def report_summary(
     rows = collect_runs(root) if rows is None else rows
     insight_runs = runs_by_mode_for_insights(root, rows) if insight_runs is None else insight_runs
     ctx = ctx if ctx is not None else _insights_context(root, insight_runs)
-    metric_name = metric_name_for_runs(insight_runs)
+    metric_name = metric_name_for_runs(insight_runs, ctx)
     modes = [spec.mode for spec in BENCHMARK_RUNS if spec.mode in insight_runs]
     return {
         "title": title,
@@ -513,6 +523,56 @@ def _phase_timing_html(summary: dict[str, Any]) -> str:
         "the setup subcolumns show captured pieces of that total.</p>"
         f"<table><thead><tr><th>Run</th>{headers}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
     )
+
+
+def _dependency_prewarm_warnings_section(summary: dict[str, Any], *, include_heading: bool = True) -> str:
+    rows = []
+    for run in summary.get("runs") or []:
+        payload = run.get("dependency_prewarm") if isinstance(run, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        installs = payload.get("installs")
+        for install in installs if isinstance(installs, list) else []:
+            if not isinstance(install, dict) or install.get("exit_code") == 0:
+                continue
+            stderr_lines = [line.strip() for line in str(install.get("stderr_tail") or "").splitlines() if line.strip()]
+            decisive = next(
+                (
+                    line
+                    for line in stderr_lines
+                    if "Failed to build" in line or "ModuleNotFoundError" in line or "timed out" in line
+                ),
+                stderr_lines[-1] if stderr_lines else "install failed without captured stderr",
+            )
+            rows.append(
+                (
+                    str(run.get("label") or run.get("mode") or "run"),
+                    str(install.get("requirements") or "requirements file"),
+                    install.get("exit_code"),
+                    install.get("duration_seconds"),
+                    decisive[:240],
+                )
+            )
+    if not rows:
+        return ""
+    lines = []
+    if include_heading:
+        lines.extend(["## Harness Setup Warnings", ""])
+    lines.extend(
+        [
+            "These failures occurred during best-effort dependency prewarming before the measured agent process. "
+            "They are harness setup warnings, not agent failures, and do not change either run's pass/fail status.",
+            "",
+            "| Run | Requirements | Exit | Setup seconds | Detail |",
+            "|---|---|---:|---:|---|",
+        ]
+    )
+    lines.extend(
+        f"| {markdown_cell(label)} | `{markdown_cell(requirements)}` | {fmt(exit_code)} | {fmt(duration)} | "
+        f"{markdown_cell(detail)} |"
+        for label, requirements, exit_code, duration, detail in rows
+    )
+    return "\n".join(lines)
 
 
 def _recovered_issue_note(run: RunEvidence, mode: str, ctx: ReportContext, ev: Any = None) -> str:
@@ -627,6 +687,9 @@ def markdown_report(
     phase_timing = _phase_timing_section(summary)
     if phase_timing:
         lines.extend(["", phase_timing])
+    setup_warnings = _dependency_prewarm_warnings_section(summary)
+    if setup_warnings:
+        lines.extend(["", setup_warnings])
     recovered_issues = _recovered_issues_section(summary, insight_runs, ctx)
     if recovered_issues:
         lines.extend(["", recovered_issues])
@@ -687,6 +750,10 @@ def html_report(
     phase_timing_html = _phase_timing_html(summary)
     recovered_issues = _recovered_issues_section(summary, insight_runs, ctx, include_heading=False)
     recovered_html = f"<h2>Recovered Issues</h2><pre>{html.escape(recovered_issues)}</pre>" if recovered_issues else ""
+    setup_warnings = _dependency_prewarm_warnings_section(summary, include_heading=False)
+    setup_warnings_html = (
+        f"<h2>Harness Setup Warnings</h2><pre>{html.escape(setup_warnings)}</pre>" if setup_warnings else ""
+    )
     report_state = diagnostics_report_state(root)
     report_state_html = ""
     if report_state:
@@ -724,6 +791,7 @@ def html_report(
     <tbody>{''.join(rows)}</tbody>
   </table>
   {phase_timing_html}
+  {setup_warnings_html}
   {recovered_html}
   {chart}
 </body>

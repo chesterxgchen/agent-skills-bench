@@ -16,6 +16,7 @@
       "available": true,
       "capture_state": "complete",
       "capture_state_reason": "terminal result captured in run_summary.json",
+      "dependency_prewarm": {},
       "host_environment": {
         "host_os": {
           "display": "Ubuntu 24.04 LTS",
@@ -193,6 +194,7 @@
       "available": true,
       "capture_state": "complete",
       "capture_state_reason": "terminal result captured in run_summary.json",
+      "dependency_prewarm": {},
       "host_environment": {
         "host_os": {
           "display": "Ubuntu 24.04 LTS",

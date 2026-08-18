@@ -165,6 +165,7 @@ class NvflareReportPlugin(ReportPlugin):
                     f"server-selected best validation {canonical_metric_name(selected.get('name'))} "
                     f"at round {selected.get('round')} (model selector log)"
                 )
+        cohort = _logic.validation_cohort_basis(run.raw)
         return MetricAssessment(
             name=name,
             reported=bool(name),
@@ -176,6 +177,8 @@ class NvflareReportPlugin(ReportPlugin):
             gate_phrase="scalar FL result metric available",
             # The FL term for the single summary scalar, used in partial/missing prose.
             scalar_term="FL-level scalar",
+            comparison_key=cohort[0] if cohort else None,
+            comparison_basis=cohort[1] if cohort else None,
         )
 
     @staticmethod

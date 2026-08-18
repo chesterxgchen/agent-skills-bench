@@ -3677,7 +3677,7 @@ while flare.is_running():
     assert "These are evidence signals" in section
     assert "They do not change pass/fail quality gates" in section
     assert "Overall code quality signal" in section
-    assert "/15 evidence points" in section
+    assert "unknown excluded from score" in _unwrap_cells(section)
     assert "explicit sharding" in section
     assert "API pattern" in section
     assert "context: Client API loop pattern" in section
@@ -3694,6 +3694,26 @@ while flare.is_running():
     assert "accelerator-capable dependency stack" in section
     assert "skill requirements install not followed" not in section
     assert "CPU-only framework installs are faster, but they should only be treated as comparable" in section
+
+
+def test_generated_code_quality_excludes_unknown_rows_from_score_denominator(monkeypatch):
+    from benchmark.harness.sdks.nvflare import _logic
+
+    monkeypatch.setattr(
+        _logic,
+        "generated_code_quality_assessments",
+        lambda _run: [
+            ("known-good", "good", "captured"),
+            ("known-caution", "caution", "captured"),
+            ("missing", "unknown", "not captured"),
+        ],
+    )
+    monkeypatch.setattr(_logic, "_code_quality_points", lambda _run: {"good": 1.0, "caution": 0.5, "bad": 0.0})
+
+    assert _logic.generated_code_quality_score({}) == 0.75
+    assert _logic.generated_code_quality_overall({}) == (
+        "caution: 1.5/2 evidence points; 2/3 scored, 1 unknown excluded from score"
+    )
 
 
 def test_nvflare_runtime_export_location_flags_skill_output_path_violation():
@@ -8941,25 +8961,36 @@ def test_metrics_report_surfaces_recovered_issues_for_passed_run(tmp_path):
         "result_root": str(tmp_path),
         "status": "With skills: passed",
         "runs": [
-                {
-                    "mode": WITH_SKILLS_MODE,
-                    "label": "With skills",
-                    "summary": {
-                        "elapsed_seconds": 10,
-                        "token_count": 100,
-                        "phase_seconds": {
-                            "container_elapsed_seconds": 20,
-                            "setup_elapsed_seconds": 8,
-                            "skill_exposure_elapsed_seconds": 2,
-                            "input_copy_elapsed_seconds": 1,
-                            "prompt_prepare_elapsed_seconds": 1,
-                            "agent_elapsed_seconds": 10,
-                            "post_process_elapsed_seconds": 1,
-                            "report_elapsed_seconds": 1,
-                        },
+            {
+                "mode": WITH_SKILLS_MODE,
+                "label": "With skills",
+                "summary": {
+                    "elapsed_seconds": 10,
+                    "token_count": 100,
+                    "phase_seconds": {
+                        "container_elapsed_seconds": 20,
+                        "setup_elapsed_seconds": 8,
+                        "skill_exposure_elapsed_seconds": 2,
+                        "input_copy_elapsed_seconds": 1,
+                        "prompt_prepare_elapsed_seconds": 1,
+                        "agent_elapsed_seconds": 10,
+                        "post_process_elapsed_seconds": 1,
+                        "report_elapsed_seconds": 1,
                     },
-                    "activity": {"command_count": 4},
-                }
+                },
+                "activity": {"command_count": 4},
+                "dependency_prewarm": {
+                    "enabled": True,
+                    "installs": [
+                        {
+                            "requirements": "requirements-download.txt",
+                            "exit_code": 1,
+                            "duration_seconds": 12,
+                            "stderr_tail": "× Failed to build `tiledb==0.29.1`\nModuleNotFoundError: pkg_resources",
+                        }
+                    ],
+                },
+            }
         ],
         "comparison": {},
     }
@@ -8974,6 +9005,10 @@ def test_metrics_report_surfaces_recovered_issues_for_passed_run(tmp_path):
     assert "| With skills | passed with recovered issues | completed | pass |" in executive_summary
     assert "## Phase Timing" in markdown
     assert "| With skills | 20 | 8 | 2 | 1 | 1 | 10 | 1 | 1 |" in markdown
+    assert "## Harness Setup Warnings" in markdown
+    assert "harness setup warnings, not agent failures" in markdown
+    assert "requirements-download.txt" in markdown
+    assert "Failed to build `tiledb==0.29.1`" in markdown
     assert "## Recovered Issues" in markdown
     assert "validation/parity_check.py" in markdown
     assert "TypeError: list indices must be integers or slices, not str" in markdown
@@ -10002,6 +10037,80 @@ def test_metrics_chart_marks_mixed_metric_names_non_comparable():
     # The scorecard must show each run's own metric, not NA from the synthetic name.
     assert "| Metrics (mixed validation metrics) | accuracy 0.8123 | AUROC 0.7529 | not comparable |" in scorecard
     assert "NA |" not in scorecard.split("Metrics (mixed validation metrics)")[1].splitlines()[0]
+
+
+def test_same_metric_name_with_different_validation_cohorts_is_not_comparable():
+    from benchmark.harness.modes import NO_SKILLS_MODE, WITH_SKILLS_MODE
+    from benchmark.harness.reports._context import ReportContext
+    from benchmark.harness.reports.benchmark_insights import comparison_scorecard, embedded_bar_chart
+    from benchmark.harness.reports.insights._metrics import comparable_metric_name, metric_comparison_note
+    from benchmark.harness.sdks.report_plugin import MetricAssessment, PluginEvidence
+
+    runs = _evruns(
+        {
+            NO_SKILLS_MODE: {
+                "label": "No skills baseline",
+                "available": True,
+                "run": {"final_container_exit_code": 0},
+                "validation_metric": {"name": "AUROC", "value": 0.7806},
+            },
+            WITH_SKILLS_MODE: {
+                "label": "With skills",
+                "available": True,
+                "run": {"final_container_exit_code": 0},
+                "validation_metric": {"name": "AUROC", "value": 0.7772},
+            },
+        }
+    )
+    ctx = ReportContext(
+        evidence={
+            NO_SKILLS_MODE: PluginEvidence(
+                metric=MetricAssessment(
+                    name="AUROC",
+                    value=0.7806,
+                    value_authoritative=True,
+                    comparison_key="site_local_validation_cohorts",
+                    comparison_basis="site-local validation cohort differs by site",
+                )
+            ),
+            WITH_SKILLS_MODE: PluginEvidence(
+                metric=MetricAssessment(
+                    name="AUROC",
+                    value=0.7772,
+                    value_authoritative=True,
+                    comparison_key="shared_validation_cohort",
+                    comparison_basis="shared validation cohort used by every site",
+                )
+            ),
+        }
+    )
+
+    assert comparable_metric_name(runs, ctx) is None
+    assert "validation cohorts differ" in metric_comparison_note(runs, ctx)
+    scorecard = comparison_scorecard(runs, ctx)
+    assert "| Metrics (AUROC) | AUROC 0.7806 | AUROC 0.7772 | not comparable |" in scorecard
+    chart = embedded_bar_chart(runs, ctx)
+    assert "Not comparable: validation cohorts differ" in chart
+    # The non-comparable metric panel must not draw numeric bars as if the
+    # 0.0034 difference represented model quality.
+    assert ">0.7806<" not in chart and ">0.7772<" not in chart
+
+
+def test_nvflare_validation_cohort_detector_distinguishes_shared_and_site_local(monkeypatch):
+    from benchmark.harness.sdks.nvflare import _logic
+
+    monkeypatch.setattr(_logic, "_workspace_text", lambda run: run["source"])
+    shared = "valid_frame = load_split(self.shared_dir, 'valid')\nparser.add_argument('--shared-data-dir')"
+    local = 'valid_frame = load_split(self.site_data_dir, "valid")'
+
+    assert _logic.validation_cohort_basis({"source": shared}) == (
+        "shared_validation_cohort",
+        "shared validation cohort used by every site",
+    )
+    assert _logic.validation_cohort_basis({"source": local}) == (
+        "site_local_validation_cohorts",
+        "site-local validation cohort differs by site",
+    )
 
 
 def test_metrics_chart_treats_huggingface_eval_accuracy_as_accuracy():
@@ -11384,6 +11493,35 @@ def test_rca_auto_skips_structure_without_a_persisted_regression(tmp_path):
     assert resolve_seed(tmp_path, "with_skills", "auto", None) is None
 
 
+def test_rca_auto_exposes_slowdown_and_tokens_as_independent_topics(tmp_path):
+    from benchmark.harness.common import write_json
+    from benchmark.harness.rca import resolve_auto_seeds, resolve_seed
+
+    _two_mode_root(tmp_path)
+    write_json(
+        tmp_path / "records" / "mode=without_skills" / "run_summary.json",
+        {
+            "mode": "without_skills",
+            "final_container_exit_code": 0,
+            "elapsed_seconds": 900,
+            "token_count": 10_000,
+        },
+    )
+    write_json(
+        tmp_path / "records" / "mode=with_skills" / "run_summary.json",
+        {
+            "mode": "with_skills",
+            "final_container_exit_code": 0,
+            "elapsed_seconds": 1200,
+            "token_count": 16_000,
+        },
+    )
+
+    assert [seed["topic"] for seed in resolve_auto_seeds(tmp_path, "with_skills")] == ["slowdown", "tokens"]
+    # The interactive CLI's singular auto remains backward-compatible.
+    assert resolve_seed(tmp_path, "with_skills", "auto", None)["topic"] == "slowdown"
+
+
 def test_persist_quality_summary_writes_structure_scores(tmp_path, monkeypatch):
     import json as json_module
     from types import SimpleNamespace
@@ -12025,6 +12163,8 @@ def test_rca_slowdown_topic_seeds_comparative_question(tmp_path):
     assert "+300s" in prompts[0]
     assert "what did this run spend time doing that without_skills did not" in prompts[0]
     assert "records/mode=without_skills" in prompts[0]
+    assert "audit the proposed causal chain" in prompts[1]
+    assert "recommend documenting a missing behavior" in prompts[1]
 
 
 def test_rca_resynthesize_rewrites_report_from_saved_trail(tmp_path):

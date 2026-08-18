@@ -151,8 +151,19 @@ Rules:
   (e.g. instruction absent, instruction present but not followed, environment constraint) -> final cause.
 - When the cause implicates guidance, identify the exact source (which skill file/section, prompt text,
   or harness expectation) and whether following it was possible — that is what a fix proposal needs.
+- Revisit earlier hypotheses after discovering a later causal factor. Ruling out guidance for an early
+  red herring does not rule it out for the actual cause.
 - Set "conclusion" only when a further question would not change the analysis.
 """
+
+_GUIDANCE_CAUSALITY_AUDIT_QUESTION = (
+    "Before finalizing, audit the proposed causal chain against the captured guidance. For every contributing "
+    "cause identified so far—especially any cause discovered after an earlier red herring—inspect the relevant "
+    "skill text, prompt, and harness contract. Did the guidance instruct, omit, or misstate the behavior? If you "
+    "recommend documenting a missing behavior, explicitly decide whether that omission contributed to the extra "
+    "work; do not also call the cause unrelated to guidance without evidence that reconciles those claims. Return "
+    "a revised final conclusion."
+)
 
 
 @dataclass
@@ -955,32 +966,43 @@ def resolve_seed(
     if question:
         return seed_custom_context(result_root, mode, question, run_id)
     if topic == "auto":
-        mode_dir, _entry = _resolve_run_selection(result_root, mode, run_id)
-        summary = load_json(mode_dir / "run_summary.json", {}) or {}
-        record = load_json(mode_dir / "benchmark_record.json", None)
-        if not isinstance(record, dict) or not record:
-            record = load_json(mode_dir / "records" / f"{mode}_record.json", {}) or {}
-        container_exit = load_json(mode_dir / "container_exit_code.json", {}) or {}
-        capture_state, _reason = capture_state_for_mode(
-            mode_dir,
-            summary=summary,
-            record=record,
-            container_exit=container_exit,
-        )
-        if capture_state != CAPTURE_STATE_COMPLETE:
-            return None
-        for name in _AUTO_TOPICS:
-            seed = _TOPIC_SEEDERS[name](result_root, mode, run_id)
-            if seed is not None:
-                return seed
-        # Structure has no cheap numeric gate inside this SDK-agnostic loop, so
-        # auto fires it only when the persisted score shows a real regression
-        # for the selected run (not just for the mode's default run).
-        if _structure_regressed(result_root, mode, run_id):
-            return seed_structure_context(result_root, mode, run_id)
-        return None
+        seeds = resolve_auto_seeds(result_root, mode, run_id)
+        return seeds[0] if seeds else None
     seeder = _TOPIC_SEEDERS.get(topic)
     return seeder(result_root, mode, run_id) if seeder else None
+
+
+def resolve_auto_seeds(result_root: Path, mode: str, run_id: str | None = None) -> list[dict[str, Any]]:
+    """Return every independently applicable automatic RCA seed.
+
+    ``resolve_seed(..., topic="auto")`` retains its convenient first-match CLI
+    behavior. The automatic diagnostics worker uses this plural form so a
+    slowdown no longer suppresses a separate token-inflation investigation.
+    """
+
+    mode_dir, _entry = _resolve_run_selection(result_root, mode, run_id)
+    summary = load_json(mode_dir / "run_summary.json", {}) or {}
+    record = load_json(mode_dir / "benchmark_record.json", None)
+    if not isinstance(record, dict) or not record:
+        record = load_json(mode_dir / "records" / f"{mode}_record.json", {}) or {}
+    container_exit = load_json(mode_dir / "container_exit_code.json", {}) or {}
+    capture_state, _reason = capture_state_for_mode(
+        mode_dir,
+        summary=summary,
+        record=record,
+        container_exit=container_exit,
+    )
+    if capture_state != CAPTURE_STATE_COMPLETE:
+        return []
+    seeds = [seed for name in _AUTO_TOPICS if (seed := _TOPIC_SEEDERS[name](result_root, mode, run_id)) is not None]
+    # Structure has no cheap numeric gate inside this SDK-agnostic loop, so
+    # auto fires it only when the persisted score shows a real regression for
+    # the selected run (not just for the mode's default run).
+    if _structure_regressed(result_root, mode, run_id):
+        seed = seed_structure_context(result_root, mode, run_id)
+        if seed is not None:
+            seeds.append(seed)
+    return seeds
 
 
 def _step_prompt(seed: dict[str, Any], steps: list[InvestigationStep], question: str, result_root: Path) -> str:
@@ -1040,6 +1062,10 @@ def _synthesis_prompt(seed: dict[str, Any], steps: list[InvestigationStep]) -> s
         "causal hypotheses. Do not infer that tokens, response gaps, skill loading, or reasoning caused latency "
         "from correlation alone. Count full and smoke executions in both modes, and do not call outcomes "
         "identical when metrics, quality checks, or required structure differ.\n"
+        "Causality consistency is mandatory: use the latest discovered cause, not an earlier red herring; audit "
+        "every causal factor against relevant skill/prompt/harness guidance; and never claim guidance was unrelated "
+        "while recommending that the same missing guidance be added unless the evidence explicitly reconciles the "
+        "two statements.\n"
         "Keep every sentence short. Do not add headers above ###.\n\n"
         f"{_UNTRUSTED_DATA_PREAMBLE}\n\n"
         f"Observation investigated:\n{_captured_block(seed['headline'])}\n\n"
@@ -1185,6 +1211,7 @@ def run_investigation(
     steps: list[InvestigationStep] = []
     question = str(seed["seed_question"])
     asked = {question}
+    guidance_causality_audited = False
     # The prior run's RCA outputs stay on disk until the first new step
     # completes (an immediate invoker failure must not discard them), but a
     # fresh investigation must not read its own predecessor's conclusions as
@@ -1237,6 +1264,22 @@ def run_investigation(
                     os.replace(partial_path, trail_path)
                     with suppress(OSError):
                         (rca_dir / f"rca_report_{_topic_slug(seed['topic'])}.md").unlink()
+                if (
+                    step.conclusion
+                    and str(seed.get("mode") or "") == "with_skills"
+                    and str(seed.get("topic") or "") in {"slowdown", "tokens"}
+                    and not guidance_causality_audited
+                    and _GUIDANCE_CAUSALITY_AUDIT_QUESTION not in asked
+                ):
+                    # Comparative regressions are especially prone to anchoring:
+                    # an investigator can rule out a first hypothesis, discover
+                    # the real cause later, and never re-check that cause against
+                    # the skill. Reserve one deterministic audit turn before
+                    # synthesis so the verdict and recommendation agree.
+                    guidance_causality_audited = True
+                    question = _GUIDANCE_CAUSALITY_AUDIT_QUESTION
+                    asked.add(question)
+                    continue
                 if step.conclusion or not step.next_question:
                     break
                 if step.next_question in asked:

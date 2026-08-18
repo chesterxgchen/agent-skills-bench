@@ -29,6 +29,7 @@ from ..evidence import RunEvidence
 from ._metrics import (
     _scalar_metric_required,
     comparable_metric_name,
+    metric_comparison_note,
     metric_display,
     metric_name_for_runs,
     metric_names_for_runs,
@@ -65,7 +66,7 @@ def interpretation_section(runs: dict[str, RunEvidence], modes: list[str], ctx: 
     failed_quality = [
         runs[mode].label or mode for mode in modes if run_quality_issues(runs[mode], ctx.evidence.get(mode))
     ]
-    metric_name = comparable_metric_name(runs) or metric_name_for_runs(runs)
+    metric_name = comparable_metric_name(runs, ctx) or metric_name_for_runs(runs, ctx)
     lines = [
         "## Interpretation",
         "",
@@ -115,7 +116,10 @@ def interpretation_section(runs: dict[str, RunEvidence], modes: list[str], ctx: 
     return "\n".join(lines)
 
 
-def mixed_metric_note(runs: dict[str, RunEvidence]) -> str:
+def mixed_metric_note(runs: dict[str, RunEvidence], ctx: ReportContext | None = None) -> str:
+    basis_note = metric_comparison_note(runs, ctx)
+    if basis_note:
+        return basis_note
     parts = []
     for run in runs.values():
         metric = run.validation_metric
@@ -245,13 +249,11 @@ def comparison_scorecard(runs: dict[str, RunEvidence], ctx: ReportContext | None
     if not modes:
         return ""
     ctx = ctx or _report_context(runs, modes)
-    comparable_name = comparable_metric_name(runs)
-    # When runs report different validation metrics there is no shared scalar to
-    # compare, so ``metric_name_for_runs`` returns the synthetic "mixed validation
-    # metrics" label. Feeding that name to ``metric_value`` filters out every run's
-    # real metric (the names never match), rendering valid per-run values as NA.
+    comparable_name = comparable_metric_name(runs, ctx)
+    # A metric delta is unavailable when names differ or when the plugin reports
+    # incompatible evaluation cohorts. Other scorecard rows stay comparable.
     metric_is_mixed = comparable_name is None and bool(metric_names_for_runs(runs))
-    metric_name = comparable_name or metric_name_for_runs(runs)
+    metric_name = comparable_name or metric_name_for_runs(runs, ctx)
     metrics = benchmark_chart_metrics(runs, metric_name, ctx)
     labels = [markdown_cell(chart_mode_label(mode, runs[mode])) for mode in modes]
     lines = [
@@ -285,16 +287,16 @@ def comparison_scorecard(runs: dict[str, RunEvidence], ctx: ReportContext | None
 
 
 def embedded_bar_chart(runs: dict[str, RunEvidence], ctx: ReportContext | None = None) -> str:
-    comparable_name = comparable_metric_name(runs)
+    ctx = ctx or _report_context(runs, list(runs))
+    comparable_name = comparable_metric_name(runs, ctx)
     # When runs report different validation metrics only the metric panel lacks a
     # shared scalar; time, tokens, commands, and scores stay comparable. Keep the
     # chart and degrade just that panel: the synthetic "mixed validation metrics"
     # name never matches a real metric, so its bars render as NA, and the header
     # notes each run's own metric name.
     metric_is_mixed = comparable_name is None and bool(metric_names_for_runs(runs))
-    metric_name = metric_name_for_runs(runs) if metric_is_mixed else comparable_name
+    metric_name = metric_name_for_runs(runs, ctx) if metric_is_mixed else comparable_name
     modes = list(runs)
-    ctx = ctx or _report_context(runs, modes)
     metrics = benchmark_chart_metrics(runs, metric_name, ctx)
     width = 1180
     margin_x = 32
@@ -322,10 +324,8 @@ def embedded_bar_chart(runs: dict[str, RunEvidence], ctx: ReportContext | None =
         '<text x="32" y="58" font-family="Arial, sans-serif" font-size="13" fill="#4b5563">Metrics are mode-local. Missing scalar results are shown as NA instead of drawing a numeric bar.</text>',
     ]
     if metric_is_mixed:
-        note = html.escape(f"Validation metrics — Not comparable: {mixed_metric_note(runs)}")
-        lines.append(
-            f'<text x="32" y="78" font-family="Arial, sans-serif" font-size="13" fill="#b45309">{note}</text>'
-        )
+        note = html.escape(f"Validation metrics — Not comparable: {mixed_metric_note(runs, ctx)}")
+        lines.append(f'<text x="32" y="78" font-family="Arial, sans-serif" font-size="13" fill="#b45309">{note}</text>')
     for metric_index, item in enumerate(metrics):
         row = metric_index // panel_columns
         column = metric_index % panel_columns
@@ -333,7 +333,11 @@ def embedded_bar_chart(runs: dict[str, RunEvidence], ctx: ReportContext | None =
         panel_top = top + row * (panel_h + panel_gap_y)
         axis_y = panel_top + panel_h - 28
         title = html.escape(str(item["label"]))
-        values = [chart_number(item["value"](runs[mode], ctx.evidence.get(mode)), item["kind"]) for mode in modes]
+        values = (
+            [None for _mode in modes]
+            if metric_is_mixed and item.get("id") == "metric"
+            else [chart_number(item["value"](runs[mode], ctx.evidence.get(mode)), item["kind"]) for mode in modes]
+        )
         numeric_values = [value for value in values if value is not None]
         maximum = max(numeric_values) if numeric_values else 1.0
         if maximum == 0:
@@ -396,8 +400,8 @@ def outcome_metrics_table(
 ) -> str:
     modes = modes or mode_names(BENCHMARK_RUNS)
     ctx = ctx or _report_context(runs, modes)
-    comparable_name = comparable_metric_name(runs)
-    metric_name = comparable_name or metric_name_for_runs(runs)
+    comparable_name = comparable_metric_name(runs, ctx)
+    metric_name = comparable_name or metric_name_for_runs(runs, ctx)
     labels = [
         markdown_cell(_as_run_evidence(runs.get(mode, {})).label or MODE_LABELS.get(mode, mode)) for mode in modes
     ]
