@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import re
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +31,8 @@ from ..quality_signals import canonical_metric_name, is_plausible_metric_value
 from ._context import ReportContext
 from ._lifecycle import diagnostics_report_state, markdown_report_state_note
 from ._loader import (
-    _combined_rca_reports,
     CAPTURE_STATE_COMPLETE,
+    _combined_rca_reports,
     capture_state_for_mode,
     expected_validation_metric_name,
     filter_mode_console,
@@ -526,14 +527,33 @@ def _phase_timing_html(summary: dict[str, Any]) -> str:
 
 
 def _dependency_prewarm_warnings_section(summary: dict[str, Any], *, include_heading: bool = True) -> str:
-    rows = []
+    def duration_text(value: float) -> str:
+        return fmt(int(value)) if value.is_integer() else fmt(value)
+
+    failure_rows = []
+    successful_by_requirements: dict[str, list[tuple[str, float, float | None]]] = {}
     for run in summary.get("runs") or []:
         payload = run.get("dependency_prewarm") if isinstance(run, dict) else None
         if not isinstance(payload, dict):
             continue
+        label = str(run.get("label") or run.get("mode") or "run")
         installs = payload.get("installs")
         for install in installs if isinstance(installs, list) else []:
-            if not isinstance(install, dict) or install.get("exit_code") == 0:
+            if not isinstance(install, dict):
+                continue
+            requirements = str(install.get("requirements") or "requirements file")
+            duration = install.get("duration_seconds")
+            if install.get("exit_code") == 0:
+                if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+                    uv_phase = None
+                    match = re.search(
+                        r"\bInstalled\s+\d+\s+packages?\s+in\s+([0-9]+(?:\.[0-9]+)?)s\b",
+                        str(install.get("stderr_tail") or ""),
+                        flags=re.IGNORECASE,
+                    )
+                    if match:
+                        uv_phase = float(match.group(1))
+                    successful_by_requirements.setdefault(requirements, []).append((label, float(duration), uv_phase))
                 continue
             stderr_lines = [line.strip() for line in str(install.get("stderr_tail") or "").splitlines() if line.strip()]
             decisive = next(
@@ -544,34 +564,78 @@ def _dependency_prewarm_warnings_section(summary: dict[str, Any], *, include_hea
                 ),
                 stderr_lines[-1] if stderr_lines else "install failed without captured stderr",
             )
-            rows.append(
+            failure_rows.append(
                 (
-                    str(run.get("label") or run.get("mode") or "run"),
-                    str(install.get("requirements") or "requirements file"),
+                    label,
+                    requirements,
                     install.get("exit_code"),
-                    install.get("duration_seconds"),
+                    duration,
                     decisive[:240],
                 )
             )
-    if not rows:
+
+    skew_rows = []
+    for requirements, installs in successful_by_requirements.items():
+        if len(installs) < 2:
+            continue
+        fastest = min(installs, key=lambda item: item[1])
+        slowest = max(installs, key=lambda item: item[1])
+        delta = slowest[1] - fastest[1]
+        ratio = slowest[1] / fastest[1] if fastest[1] > 0 else float("inf")
+        if slowest[1] < 300 or delta < 120 or ratio < 3:
+            continue
+        slow_detail = f"{duration_text(slowest[1])}s wall"
+        if slowest[2] is not None:
+            slow_detail += f" (uv install phase {slowest[2]:g}s)"
+        skew_rows.append(
+            (
+                requirements,
+                f"{fastest[0]}: {duration_text(fastest[1])}s",
+                f"{slowest[0]}: {slow_detail}",
+                f"+{duration_text(delta)}s ({ratio:.1f}x)",
+            )
+        )
+
+    if not failure_rows and not skew_rows:
         return ""
     lines = []
     if include_heading:
         lines.extend(["## Harness Setup Warnings", ""])
-    lines.extend(
-        [
-            "These failures occurred during best-effort dependency prewarming before the measured agent process. "
-            "They are harness setup warnings, not agent failures, and do not change either run's pass/fail status.",
-            "",
-            "| Run | Requirements | Exit | Setup seconds | Detail |",
-            "|---|---|---:|---:|---|",
-        ]
-    )
-    lines.extend(
-        f"| {markdown_cell(label)} | `{markdown_cell(requirements)}` | {fmt(exit_code)} | {fmt(duration)} | "
-        f"{markdown_cell(detail)} |"
-        for label, requirements, exit_code, duration, detail in rows
-    )
+    if failure_rows:
+        lines.extend(
+            [
+                "These failures occurred during best-effort dependency prewarming before the measured agent process. "
+                "They are harness setup warnings, not agent failures, and do not change either run's pass/fail status.",
+                "",
+                "| Run | Requirements | Exit | Setup seconds | Detail |",
+                "|---|---|---:|---:|---|",
+            ]
+        )
+        lines.extend(
+            f"| {markdown_cell(label)} | `{markdown_cell(requirements)}` | {fmt(exit_code)} | {fmt(duration)} | "
+            f"{markdown_cell(detail)} |"
+            for label, requirements, exit_code, duration, detail in failure_rows
+        )
+    if skew_rows:
+        if failure_rows:
+            lines.append("")
+        lines.extend(
+            [
+                "### Dependency Prewarm Timing Anomalies",
+                "",
+                "The same successful requirements install had a large mode-to-mode setup-time skew. Prewarm runs "
+                "before the measured agent process, so this is harness/cache/container setup noise and must not be "
+                "attributed to skills.",
+                "",
+                "| Requirements | Fastest setup | Slowest setup | Skew |",
+                "|---|---:|---:|---:|",
+            ]
+        )
+        lines.extend(
+            f"| `{markdown_cell(requirements)}` | {markdown_cell(fastest)} | {markdown_cell(slowest)} | "
+            f"{markdown_cell(skew)} |"
+            for requirements, fastest, slowest, skew in skew_rows
+        )
     return "\n".join(lines)
 
 

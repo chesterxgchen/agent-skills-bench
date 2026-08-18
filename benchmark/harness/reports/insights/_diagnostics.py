@@ -61,10 +61,11 @@ def bash_blocked_diagnostic(run: RunEvidence, *, recovered: bool = False, ctx: A
         atom = _execution_atom(ctx)
         job_atom = f"job{'/' + atom if atom else ''}"
         return (
-            f"Bash tool was blocked {blocked_count} time(s) earlier in this run, but a later {job_atom} "
-            f"command completed.{command} This usually means Claude rejected that specific command shape "
-            "rather than Bash being unavailable for the whole run; it is still reported because the recovery "
-            "costs extra tool turns, tokens, and elapsed time."
+            f"Bash policy denied {blocked_count} command request(s) earlier in this run; those commands did not "
+            f"execute; a later {job_atom} command completed with exit 0.{command} This usually means Claude "
+            "rejected that specific compound or destructive command shape rather than Bash being unavailable. "
+            "It is command-policy friction, not a recovered runtime failure, but it still costs extra tool turns, "
+            "tokens, and elapsed time."
         )
     hint_counts = run.activity.get("hint_counts") or {}
     sim_count = hint_counts.get("simulation", 0)

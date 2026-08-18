@@ -318,10 +318,7 @@ def test_empty_mode_directories_are_reported_as_incomplete_not_failed(tmp_path):
 def test_terminal_host_case_error_is_reported_as_a_harness_failure(tmp_path):
     from benchmark.harness.common import write_json
     from benchmark.harness.modes import NO_SKILLS_MODE
-    from benchmark.harness.reports.benchmark_insights import (
-        collect_benchmark_runs,
-        human_readable_status,
-    )
+    from benchmark.harness.reports.benchmark_insights import collect_benchmark_runs, human_readable_status
 
     mode_dir = tmp_path / NO_SKILLS_MODE
     mode_dir.mkdir()
@@ -1181,12 +1178,7 @@ def test_framework_inference_recognizes_hugging_face_before_pytorch_exchange():
         )
         == "Hugging Face"
     )
-    assert (
-        _infer_framework_from_text(
-            "Converted a PyTorch Lightning Trainer that imports transformers."
-        )
-        == "Lightning"
-    )
+    assert _infer_framework_from_text("Converted a PyTorch Lightning Trainer that imports transformers.") == "Lightning"
 
 
 def test_benchmark_target_prefers_agent_inspector_framework_over_pytorch_prose(tmp_path):
@@ -1196,14 +1188,7 @@ def test_benchmark_target_prefers_agent_inspector_framework_over_pytorch_prose(t
 
     entries = []
     for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
-        record_dir = (
-            tmp_path
-            / "records"
-            / "agent=codex"
-            / "model=default"
-            / "job=image_conversion"
-            / f"mode={mode}"
-        )
+        record_dir = tmp_path / "records" / "agent=codex" / "model=default" / "job=image_conversion" / f"mode={mode}"
         record_dir.mkdir(parents=True)
         entries.append(
             {
@@ -1254,15 +1239,10 @@ def test_benchmark_target_prefers_agent_inspector_framework_over_pytorch_prose(t
     report = benchmark_report(tmp_path, collect_benchmark_runs(tmp_path))
 
     assert (
-        "| image-conversion | Hugging Face target | pair codex image conversion | "
-        "/tmp/jobs/image_conversion |"
+        "| image-conversion | Hugging Face target | pair codex image conversion | " "/tmp/jobs/image_conversion |"
     ) in report
-    assert (
-        "| No skills baseline | image-conversion | Hugging Face target | agent=codex, model=default |"
-    ) in report
-    assert (
-        "| With skills | image-conversion | Hugging Face target | agent=codex, model=default |"
-    ) in report
+    assert ("| No skills baseline | image-conversion | Hugging Face target | agent=codex, model=default |") in report
+    assert ("| With skills | image-conversion | Hugging Face target | agent=codex, model=default |") in report
     assert "PyTorch target" not in report
 
 
@@ -1273,14 +1253,7 @@ def test_benchmark_target_reads_current_inspector_ownership_before_prompt_framew
 
     entries = []
     for index, mode in enumerate((NO_SKILLS_MODE, WITH_SKILLS_MODE), start=1):
-        record_dir = (
-            tmp_path
-            / "records"
-            / "agent=codex"
-            / "model=default"
-            / "job=ames"
-            / f"mode={mode}"
-        )
+        record_dir = tmp_path / "records" / "agent=codex" / "model=default" / "job=ames" / f"mode={mode}"
         record_dir.mkdir(parents=True)
         entries.append(
             {
@@ -4416,7 +4389,7 @@ def test_reported_expected_metric_earns_partial_credit():
             metric_value_entry(0.7037, "AUROC"),
             metric_value_entry(0.6369, "accuracy"),
             metric_value_entry(0.5434, "loss"),
-            ],
+        ],
     )
     signal = {
         "status": "partial",
@@ -5455,8 +5428,7 @@ def test_completed_dirty_attempts_report_real_root_causes_and_exclude_exports(tm
         runtime_artifacts.append(artifact(f"{root}/server/log_fl.txt", finished, mtime))
     for root, mtime in zip(roots[:3], mtimes[:3]):
         runtime_artifacts.extend(
-            artifact(f"{root}/{site}/error_log.txt", dot6, mtime)
-            for site in ("site-1", "site-2", "site-3")
+            artifact(f"{root}/{site}/error_log.txt", dot6, mtime) for site in ("site-1", "site-2", "site-3")
         )
     runtime_artifacts.append(artifact(f"{roots[0]}/site-1/log.txt", checkpoint_warning, mtimes[0]))
     runtime_artifacts.append(
@@ -5559,9 +5531,10 @@ def test_completed_dirty_attempts_report_real_root_causes_and_exclude_exports(tm
     assert "missing-key and unexpected-key checkpoint warnings" in block
     assert "TensorServerStreamer" in block
     assert "checkpoint restore disabled" in block
-    assert _logic._nvflare_runtime_command_error_summary(
-        "RuntimeError: cannot find handler for Datum Object Type 4"
-    ) == "`cannot find handler for Datum Object Type 4` (DOT 4 is TENSOR_BYTES)"
+    assert (
+        _logic._nvflare_runtime_command_error_summary("RuntimeError: cannot find handler for Datum Object Type 4")
+        == "`cannot find handler for Datum Object Type 4` (DOT 4 is TENSOR_BYTES)"
+    )
     assert (
         "Recipe export interface",
         "poor",
@@ -5594,8 +5567,7 @@ def test_completed_dirty_attempts_report_real_root_causes_and_exclude_exports(tm
     )
     fragments = NvflareReportPlugin().explain(comparison, {})
     assert any(
-        fragment.anchor == "why_root_cause"
-        and "**Recovered completed-attempt root causes**" in fragment.text
+        fragment.anchor == "why_root_cause" and "**Recovered completed-attempt root causes**" in fragment.text
         for fragment in fragments
     )
     why = "\n".join(
@@ -8365,10 +8337,7 @@ def test_failure_analysis_formats_multiline_recovered_command_as_single_line():
 
 
 def test_recovered_python_heredocs_report_distinct_statements_and_terminal_causes():
-    from benchmark.harness.sdks.nvflare._logic import (
-        command_failure_rows,
-        completed_job_recovered_issue_summary,
-    )
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows, completed_job_recovered_issue_summary
 
     def command(body: str) -> str:
         return f"/bin/bash -lc \"python - <<'PY'\n{body}\nPY\""
@@ -8481,10 +8450,7 @@ def test_recovered_python_heredocs_report_distinct_statements_and_terminal_cause
 
 
 def test_intentional_negative_parser_preflights_are_not_recovered_failures():
-    from benchmark.harness.sdks.nvflare._logic import (
-        command_failure_rows,
-        completed_job_recovered_issue_summary,
-    )
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows, completed_job_recovered_issue_summary
 
     def message(text: str) -> dict:
         return {
@@ -8505,16 +8471,12 @@ def test_intentional_negative_parser_preflights_are_not_recovered_failures():
             },
         }
 
-    usage = (
-        "usage: job.py [-h] [--num-rounds NUM_ROUNDS]\n"
-        "job.py: error: unrecognized arguments: {option} 3\n"
-    )
+    usage = "usage: job.py [-h] [--num-rounds NUM_ROUNDS]\n" "job.py: error: unrecognized arguments: {option} 3\n"
     failed_import = command(
         "import_bad",
         "python - <<'PY'\nfrom nvflare.recipe import SimEnv, JobExportEnv\nPY",
         1,
-        "Traceback (most recent call last):\n"
-        "ImportError: cannot import name 'JobExportEnv' from 'nvflare.recipe'\n",
+        "Traceback (most recent call last):\n" "ImportError: cannot import name 'JobExportEnv' from 'nvflare.recipe'\n",
     )
     corrected_import = command(
         "import_good",
@@ -8633,10 +8595,7 @@ def test_single_accidental_parser_typo_remains_a_recovered_failure():
 
 
 def test_explicit_single_negative_parser_test_is_not_a_recovered_failure():
-    from benchmark.harness.sdks.nvflare._logic import (
-        command_failure_rows,
-        completed_job_recovered_issue_summary,
-    )
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows, completed_job_recovered_issue_summary
 
     events = [
         {
@@ -8683,10 +8642,7 @@ def test_explicit_single_negative_parser_test_is_not_a_recovered_failure():
 
 
 def test_optional_agents_instruction_discovery_miss_is_not_a_recovered_failure():
-    from benchmark.harness.sdks.nvflare._logic import (
-        command_failure_rows,
-        completed_job_recovered_issue_summary,
-    )
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows, completed_job_recovered_issue_summary
 
     failed_discovery = _codex_command(
         "/bin/bash -lc \"python3 - <<'PY'\n"
@@ -8743,10 +8699,7 @@ def test_ordinary_compound_command_stdout_is_not_used_as_failure_detail():
 
 
 def test_blank_failed_import_uses_bounded_later_diagnostic_for_root_cause():
-    from benchmark.harness.sdks.nvflare._logic import (
-        command_failure_rows,
-        completed_job_recovered_issue_summary,
-    )
+    from benchmark.harness.sdks.nvflare._logic import command_failure_rows, completed_job_recovered_issue_summary
 
     failed_import = {
         "item": {
@@ -9015,6 +8968,39 @@ def test_metrics_report_surfaces_recovered_issues_for_passed_run(tmp_path):
     assert "TypeError: 'int' object is not subscriptable" in markdown
 
 
+def test_metrics_report_flags_large_paired_dependency_prewarm_skew():
+    from benchmark.harness.reports.metrics_report import _dependency_prewarm_warnings_section
+
+    def prewarm_run(label, duration, uv_phase):
+        return {
+            "label": label,
+            "dependency_prewarm": {
+                "enabled": True,
+                "installs": [
+                    {
+                        "requirements": "requirements-train.txt",
+                        "exit_code": 0,
+                        "duration_seconds": duration,
+                        "stderr_tail": f"Installed 32 packages in {uv_phase}s",
+                    }
+                ],
+            },
+        }
+
+    section = _dependency_prewarm_warnings_section(
+        {"runs": [prewarm_run("No skills baseline", 45, 44.52), prewarm_run("With skills", 956, 45.37)]}
+    )
+
+    assert "## Harness Setup Warnings" in section
+    assert "### Dependency Prewarm Timing Anomalies" in section
+    assert "harness/cache/container setup noise" in section
+    assert "`requirements-train.txt`" in section
+    assert "No skills baseline: 45s" in section
+    assert "With skills: 956s wall (uv install phase 45.37s)" in section
+    assert "+911s (21.2x)" in section
+    assert "must not be attributed to skills" in section
+
+
 def test_job_run_status_reason_includes_failed_job_command_error():
     from benchmark.harness.reports.benchmark_insights import job_run_action
     from benchmark.harness.sdks.nvflare._logic import job_run_status, job_run_status_reason
@@ -9239,9 +9225,7 @@ def test_command_failure_rows_surface_plain_import_error_detail():
     rows = command_failure_rows(run)
 
     assert rows
-    assert rows[0]["root_cause"].startswith(
-        "ImportError: cannot import name 'Run' from 'nvflare.recipe.spec'"
-    )
+    assert rows[0]["root_cause"].startswith("ImportError: cannot import name 'Run' from 'nvflare.recipe.spec'")
     assert rows[0]["root_cause"] != "Error: Exit code 1"
 
 
@@ -9505,7 +9489,7 @@ def test_successful_guarded_nvflare_import_does_not_prove_package_available():
     assert rows[0]["dependency"] == "no dependency install command was captured before the failed job run"
 
 
-def test_failure_analysis_keeps_recovered_bash_issue_for_passed_run():
+def test_failure_analysis_separates_bash_policy_denial_from_recovered_runtime_issue():
     from benchmark.harness.modes import WITH_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import failure_analysis_section
 
@@ -9541,10 +9525,12 @@ def test_failure_analysis_keeps_recovered_bash_issue_for_passed_run():
     section = failure_analysis_section(_evruns({WITH_SKILLS_MODE: run}), [WITH_SKILLS_MODE])
 
     assert "Outcome: passed" in section
-    assert "Recovered Bash/tool issue" in section
-    assert "Bash tool was blocked 1 time(s)" in section
+    assert "Bash/tool policy denials" in section
+    assert "Bash policy denied 1 command request(s)" in section
+    assert "those commands did not execute" in section
     assert "Denied command: `rm -rf /tmp/workspace && python job.py`" in section
-    assert "costs extra tool turns, tokens, and elapsed time" in section
+    assert "not a recovered runtime failure" in section
+    assert "costs extra tool turns" in section
 
 
 def test_failure_analysis_reports_dependency_install_evidence_for_missing_module():
@@ -11340,6 +11326,159 @@ def test_why_root_cause_chain_from_claude_tool_result_events():
     assert "Root-cause chain (auto-extracted from With skills events)" in chain
     assert "ModuleNotFoundError: No module named 'torch'" in chain
     assert "Checking whether torch is available" in chain
+
+
+def test_claude_foreground_task_notification_preserves_explicit_exit_code():
+    from benchmark.harness.reports._events import agent_command_events
+
+    events = [
+        {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": "toolu_probe",
+                        "input": {"command": 'python3 -c "import tdc"'},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        },
+        {
+            "event_type": "system.task_started",
+            "task_id": "foreground_task",
+            "task_type": "local_bash",
+            "tool_use_id": "toolu_probe",
+        },
+        {
+            "event_type": "system.task_notification",
+            "status": "failed",
+            "task_id": "foreground_task",
+            "tool_use_id": "toolu_probe",
+        },
+        {
+            "event_type": "user",
+            "message": {
+                "content": [
+                    {
+                        "content": "Exit code 1\nModuleNotFoundError: No module named 'tdc'",
+                        "is_error": True,
+                        "tool_use_id": "toolu_probe",
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": "Error: Exit code 1\nModuleNotFoundError: No module named 'tdc'",
+        },
+    ]
+
+    commands = agent_command_events({"agent_events_text": "\n".join(json.dumps(event) for event in events)})
+
+    assert len(commands) == 1
+    assert commands[0]["exit_code"] == 1
+    assert commands[0]["status"] == "failed"
+    assert "background task failed" not in commands[0]["output"]
+
+
+def test_policy_denials_and_unused_probe_do_not_become_recovered_runtime_failures():
+    from benchmark.harness.reports._events import agent_command_events, bash_permission_denial_count
+    from benchmark.harness.sdks.nvflare._logic import (
+        _successful_job_spans,
+        command_failure_rows,
+        completed_job_recovered_issue_summary,
+        job_command_succeeded,
+        job_run_status,
+        last_successful_job_event,
+    )
+
+    def bash(tool_id, command):
+        return {
+            "event_type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "id": tool_id,
+                        "input": {"command": command},
+                        "name": "Bash",
+                        "type": "tool_use",
+                    }
+                ]
+            },
+        }
+
+    def result(tool_id, content, *, is_error=False):
+        return {
+            "event_type": "user",
+            "message": {
+                "content": [
+                    {
+                        "content": content,
+                        "is_error": is_error,
+                        "tool_use_id": tool_id,
+                        "type": "tool_result",
+                    }
+                ]
+            },
+            "tool_use_result": f"Error: {content}" if is_error else {"stdout": content, "interrupted": False},
+        }
+
+    probe = 'python3 -c "import torch"; python3 -c "import pytorch_lightning"; ' 'python3 -c "import tdc"'
+    denied_job = 'rm -rf /tmp/ws && timeout 900 python3 job.py > /tmp/job.log 2>&1; echo "EXIT_CODE=$?"'
+    job = 'timeout 900 python3 job.py > /tmp/job.log 2>&1; echo "EXIT_CODE=$?"'
+    denied_export = 'rm -rf /tmp/export && python3 job.py --export --export-dir /tmp/export; echo "EXIT_CODE=$?"'
+    export = 'python3 job.py --export --export-dir /tmp/export > /tmp/export.log 2>&1; echo "EXIT_CODE=$?"'
+    simulator = 'timeout 900 nvflare simulator /tmp/export/job -w /tmp/export-ws; echo "EXIT_CODE=$?"'
+    denied_text = "This Bash command contains multiple operations. The following parts require approval"
+    events = [
+        bash("probe", probe),
+        result("probe", "Exit code 1\nModuleNotFoundError: No module named 'tdc'", is_error=True),
+        bash("denied_job", denied_job),
+        result("denied_job", denied_text, is_error=True),
+        bash("job", job),
+        result("job", "EXIT_CODE=0"),
+        bash("denied_export", denied_export),
+        result("denied_export", denied_text, is_error=True),
+        bash("export", export),
+        result("export", "EXIT_CODE=0"),
+        bash("simulator", simulator),
+        result("simulator", "EXIT_CODE=0"),
+        {
+            "event_type": "result.success",
+            "permission_denials": [
+                {"tool_name": "Bash", "tool_use_id": "denied_job", "tool_input": {"command": denied_job}},
+                {
+                    "tool_name": "Bash",
+                    "tool_use_id": "denied_export",
+                    "tool_input": {"command": denied_export},
+                },
+            ],
+        },
+    ]
+    run = {"available": True, "agent_events_text": "\n".join(json.dumps(event) for event in events)}
+
+    parsed = agent_command_events(run)
+    rows = command_failure_rows(run)
+
+    assert bash_permission_denial_count(run) == 2
+    assert [(event["command"], event["exit_code"]) for event in parsed if "job.py" in event["command"]] == [
+        (denied_job, 1),
+        (job, 0),
+        (denied_export, 1),
+        (export, 0),
+    ]
+    execution_events = {event["command"]: event for event in parsed}
+    assert job_command_succeeded(execution_events[job])
+    assert job_command_succeeded(execution_events[export])
+    assert job_command_succeeded(execution_events[simulator])
+    assert [span["command"] for span in _successful_job_spans(run)] == [job, simulator]
+    assert len(rows) == 1
+    assert rows[0]["exit"] == "1"
+    assert "tdc" in rows[0]["root_cause"]
+    assert rows[0]["recovery"] == "not recovered in this run"
+    assert completed_job_recovered_issue_summary(run) == ""
+    assert job_run_status(run) == "completed"
+    assert last_successful_job_event(run)["command"] == simulator
 
 
 def test_rca_investigation_loop_follows_agent_questions(tmp_path):

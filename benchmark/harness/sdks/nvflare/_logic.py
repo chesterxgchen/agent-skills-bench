@@ -55,8 +55,8 @@ from ...reports._events import (
     as_number,
     bash_permission_denial_count,
     command_error_summary,
-    command_failure_root_cause,
     command_failed,
+    command_failure_root_cause,
     command_recovery_key,
     command_succeeded,
     commands_for_run,
@@ -94,8 +94,8 @@ from ...reports._text import (
     _is_file_inspection_segment,
     _shell_command_parts,
     _shell_command_segments,
-    _strip_quoted,
     _strip_execution_prefix_tokens,
+    _strip_quoted,
     fmt_number,
     markdown_cell,
     strip_ansi,
@@ -1082,14 +1082,54 @@ def _expected_repository_instruction_discovery_miss(event: dict[str, Any]) -> bo
     return detail in {"no command output captured", "no explicit failure detail captured"}
 
 
+def _permission_denied_command_ids(run: dict[str, Any]) -> set[str]:
+    """Return Bash tool ids rejected by the agent's command policy.
+
+    A policy denial means the requested shell command never executed. Keep it
+    in the dedicated Bash-policy diagnostic, but do not mix it into execution
+    failure/recovery rows where a later decomposed command looks like a retry
+    of failed runtime work.
+    """
+
+    denied_ids: set[str] = set()
+    for line in str(run.get("agent_events_text") or "").splitlines():
+        try:
+            payload = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        denials = payload.get("permission_denials")
+        if isinstance(denials, list):
+            for denial in denials:
+                if isinstance(denial, dict) and denial.get("tool_name") == "Bash":
+                    tool_id = str(denial.get("tool_use_id") or "")
+                    if tool_id:
+                        denied_ids.add(tool_id)
+        for item in _message_content(payload):
+            if item.get("type") != "tool_result":
+                continue
+            content = str(item.get("content") or item.get("text") or "").lower()
+            if (
+                "requested permissions to use bash" in content
+                or "this bash command contains multiple operations" in content
+            ):
+                tool_id = str(item.get("tool_use_id") or "")
+                if tool_id:
+                    denied_ids.add(tool_id)
+    return denied_ids
+
+
 def _selected_command_failure_events(run: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply one selection policy to both failure rows and recovered summaries."""
 
     expected_negative_tests = _expected_negative_parser_test_indexes(run, events)
+    permission_denied_ids = _permission_denied_command_ids(run)
     failed_events = [
         event
         for event in events
         if command_failed(event)
+        and str(event.get("id") or "") not in permission_denied_ids
         and int(event.get("index") or 0) not in expected_negative_tests
         and not _expected_repository_instruction_discovery_miss(event)
     ]
@@ -1581,6 +1621,39 @@ def _direct_job_exit_is_trustworthy(command: str) -> bool:
     return all(operator == "&&" for _segment, operator in parts[job_index : len(parts) - 1])
 
 
+def _reported_job_or_simulator_exit_code(command: str, output: str) -> int | None:
+    """Return an explicitly echoed job/simulator exit code, when safely shaped.
+
+    Agents commonly preserve a redirected command's status with
+    ``python job.py ...; echo "EXIT_CODE=$?"`` and may inspect the log after
+    that. The aggregate shell status then belongs to ``echo``/``tail``, but the
+    captured marker still reports the job segment itself. Only accept a marker
+    when the immediately following shell segment echoes ``$?`` under the same
+    EXIT/EXIT_CODE label.
+    """
+
+    parts = _shell_command_parts(command)
+    execution_index = None
+    for index, (segment, _operator) in enumerate(parts):
+        if job_entrypoint_match(segment) == "direct" or re.search(
+            r"\b(?:python(?:3)?\s+-m\s+)?nvflare(?:\.cli)?\s+simulator\b",
+            strip_ansi(segment),
+            flags=re.IGNORECASE,
+        ):
+            execution_index = index
+    if execution_index is None or execution_index + 1 >= len(parts):
+        return None
+    status_segment = parts[execution_index + 1][0]
+    if not re.search(
+        r"\becho\b[^\n]*(?:EXIT_CODE\s*=|EXIT\s*:)[^\n]*\$\?",
+        status_segment,
+        flags=re.IGNORECASE,
+    ):
+        return None
+    matches = re.findall(r"(?im)^\s*EXIT(?:_CODE)?\s*[:=]\s*([0-9]+)\s*$", strip_ansi(output))
+    return int(matches[-1]) if matches else None
+
+
 def job_command_succeeded(event: dict[str, Any]) -> bool:
     command = str(event.get("command") or "")
     output = str(event.get("output") or "")
@@ -1592,17 +1665,35 @@ def job_command_succeeded(event: dict[str, Any]) -> bool:
     if job_match == "direct":
         if _direct_job_exit_is_trustworthy(command):
             return True
+        if _reported_job_or_simulator_exit_code(command, output) == 0:
+            return True
         return job_output_succeeded(output)
     if job_match == "ambiguous":
         return job_output_succeeded(output)
     if is_simulation_entrypoint_command(command):
         return job_output_succeeded(output)
     if invokes_nvflare_simulator(command, output):
+        if _reported_job_or_simulator_exit_code(command, output) == 0:
+            return True
         return job_output_succeeded(output)
     return False
 
 
 def recovered_by_later_success(event: dict[str, Any], events: list[dict[str, Any]]) -> bool:
+    missing_module = missing_python_module_name(str(event.get("output") or ""))
+    if missing_module and not missing_module.startswith("nvflare."):
+        index = int(event.get("index") or 0)
+        import_pattern = re.compile(
+            rf"\b(?:import\s+{re.escape(missing_module)}\b|from\s+{re.escape(missing_module)}(?:\.|\s+import\b))"
+        )
+        for candidate in events:
+            if int(candidate.get("index") or 0) <= index or not command_succeeded(candidate):
+                continue
+            candidate_command = str(candidate.get("command") or "")
+            if is_dependency_install_command(candidate_command) or import_pattern.search(candidate_command):
+                return True
+        return False
+
     key = command_recovery_key(str(event.get("command") or ""))
     index = int(event.get("index") or 0)
     for candidate in events:
@@ -1621,6 +1712,12 @@ def recovered_by_later_success(event: dict[str, Any], events: list[dict[str, Any
 
 
 def recovered_by_later_successful_job(event: dict[str, Any], events: list[dict[str, Any]]) -> bool:
+    command = str(event.get("command") or "")
+    missing_module = missing_python_module_name(str(event.get("output") or ""))
+    if missing_module and not missing_module.startswith("nvflare.") and not is_simulation_or_job_command(command):
+        # A successful job that never needed an optional package does not
+        # prove that a failed package-availability probe was recovered.
+        return False
     index = int(event.get("index") or 0)
     for candidate in events:
         if int(candidate.get("index") or 0) <= index:
@@ -1828,9 +1925,8 @@ def _background_simulation_interruption_status(run: dict[str, Any]) -> str:
                 return "background_task_killed"
         if not terminal_status_records:
             unfinished_background_tools.append(background_tools[tool_id])
-    if (
-        len(unfinished_background_tools) == 1
-        and _background_tool_has_later_finished_attempt(run, unfinished_background_tools[0])
+    if len(unfinished_background_tools) == 1 and _background_tool_has_later_finished_attempt(
+        run, unfinished_background_tools[0]
     ):
         # Some agent runtimes omit the terminal task notification even though
         # the same background launch wrote a later terminal server log.
@@ -1855,9 +1951,7 @@ def job_run_status(run: dict[str, Any]) -> str:
     attempted_commands = [
         command
         for command in commands_for_run(run)
-        if is_simulation_or_job_command(command)
-        and "--help" not in command
-        and not _is_job_export_command(command)
+        if is_simulation_or_job_command(command) and "--help" not in command and not _is_job_export_command(command)
     ]
     attempted = bool(executed_events or attempted_commands)
     # A later background simulation that was still running (or was killed) when
@@ -1983,8 +2077,7 @@ def job_run_status_reason(run: dict[str, Any]) -> str:
         completed_attempt = _latest_completed_runtime_attempt(run)
         if completed_attempt and not event:
             return (
-                "simulation completed — captured "
-                f"`{completed_attempt['label']}` reached a terminal `Finished` state"
+                "simulation completed — captured " f"`{completed_attempt['label']}` reached a terminal `Finished` state"
             )
         if "Finished" in output:
             reason = "simulation completed — FL workflow reached Finished state"
@@ -2525,11 +2618,7 @@ def _recovered_completed_attempt_issue_details(run: dict[str, Any]) -> dict[str,
 
     latest_dots = {detail["dot"] for detail in _attempt_datum_handler_errors(run, latest_root)}
     latest_checkpoint_mismatch = bool(_attempt_checkpoint_key_mismatch(run, latest_root))
-    completed_earlier = [
-        attempt
-        for attempt in reversed(attempts[1:])
-        if _runtime_log_finished(str(attempt["text"]))
-    ]
+    completed_earlier = [attempt for attempt in reversed(attempts[1:]) if _runtime_log_finished(str(attempt["text"]))]
     if not completed_earlier:
         return {}
 
@@ -2600,9 +2689,7 @@ def _recovered_completed_attempt_issue_summary(run: dict[str, Any]) -> str:
         affected_roots.update(issue["attempts"])
         if issue["kind"] == "datum_handler":
             dot = int(issue["dot"])
-            causes.append(
-                f"the DOT {dot}/{issue['dot_name']} tensor handler was unavailable during payload decoding"
-            )
+            causes.append(f"the DOT {dot}/{issue['dot_name']} tensor handler was unavailable during payload decoding")
         elif issue["kind"] == "checkpoint_keys":
             causes.append("Hugging Face checkpoint restoration loaded incompatible missing/unexpected parameter keys")
     correction = []
@@ -2660,10 +2747,7 @@ def _recovered_completed_attempt_root_cause_block(run: dict[str, Any]) -> str:
         else:
             sites = issue.get("sites") or []
             site_phrase = f" across {len(sites)} client site(s)" if sites else ""
-            cause = (
-                "Hugging Face restored a checkpoint with incompatible model parameter namespaces"
-                f"{site_phrase}"
-            )
+            cause = "Hugging Face restored a checkpoint with incompatible model parameter namespaces" f"{site_phrase}"
             evidence = f"both missing-key and unexpected-key checkpoint warnings; `{evidence_ref}`"
             correction = (
                 "checkpoint restore disabled; warnings disappeared"
@@ -2736,9 +2820,7 @@ def _runtime_attempt_failure_details(run: dict[str, Any], attempt_root: str) -> 
             )
         else:
             representation = (
-                f"{dot_name} tensor deserialization"
-                if dot_name != "unknown"
-                else f"DOT {dot} tensor deserialization"
+                f"{dot_name} tensor deserialization" if dot_name != "unknown" else f"DOT {dot} tensor deserialization"
             )
             cause = (
                 f"PyTorch {representation} failed{site_phrase}: "
@@ -3913,9 +3995,6 @@ def result_failure_root_cause_block(run: dict[str, Any]) -> str:
 
 def completed_job_recovered_issue_summary(run: dict[str, Any]) -> str:
     parts = []
-    blocked_count = bash_permission_denial_count(run)
-    if blocked_count:
-        parts.append(f"Bash/tool permission was blocked {blocked_count} time(s) before a later job command completed")
     semantic_recovery = _recovered_semantic_attempt_summary(run)
     if semantic_recovery:
         parts.append(semantic_recovery)

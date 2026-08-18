@@ -418,10 +418,7 @@ def status_table(runs: dict[str, RunEvidence], modes: list[str], ctx: ReportCont
         if status == "passed" and (job_exec.recovered_summary or recovered_commands):
             status = "passed with recovered issues"
             analysis = job_exec.recovered_summary or "recovered command failures were captured"
-        lines.append(
-            f"| {markdown_cell(run.label)} | {markdown_cell(status)} | "
-            f"{markdown_cell(analysis)} |"
-        )
+        lines.append(f"| {markdown_cell(run.label)} | {markdown_cell(status)} | " f"{markdown_cell(analysis)} |")
     return "\n".join(lines)
 
 
@@ -504,7 +501,7 @@ def failure_analysis_section(runs: dict[str, RunEvidence], modes: list[str], ctx
         if status_kind == "passed":
             bash_blocked = bash_blocked_diagnostic(run, recovered=True, ctx=ctx)
             if bash_blocked:
-                lines.append(f"- Recovered Bash/tool issue: {bash_blocked}")
+                lines.append(f"- Bash/tool policy denials: {bash_blocked}")
             recovered_commands = command_failure_diagnostics_table(run, recovered_only=True, ev=ctx.evidence.get(mode))
             if recovered_commands:
                 lines.append("")

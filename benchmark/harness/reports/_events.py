@@ -236,7 +236,24 @@ def _event_payloads(text: str) -> list[dict[str, Any]]:
 def _background_task_status_by_tool_id(payloads: list[dict[str, Any]]) -> dict[str, str]:
     task_by_tool_id: dict[str, str] = {}
     status_by_task_id: dict[str, str] = {}
+    background_tool_ids: set[str] = set()
     for payload in payloads:
+        for content_item in message_content_items(payload):
+            if content_item.get("type") == "tool_use" and content_item.get("name") == "Bash":
+                tool_input = content_item.get("input") if isinstance(content_item.get("input"), dict) else {}
+                tool_id = str(content_item.get("id") or "")
+                if tool_id and tool_input.get("run_in_background"):
+                    background_tool_ids.add(tool_id)
+            elif content_item.get("type") == "tool_result":
+                tool_id = str(content_item.get("tool_use_id") or "")
+                content = str(content_item.get("content") or content_item.get("text") or "")
+                result = payload.get("tool_use_result")
+                if tool_id and (
+                    "Command running in background with ID:" in content
+                    or (isinstance(result, dict) and result.get("backgroundTaskId"))
+                ):
+                    background_tool_ids.add(tool_id)
+
         event_type = str(payload.get("event_type") or payload.get("type") or "")
         if event_type == "system.task_started":
             task_id = str(payload.get("task_id") or "")
@@ -263,7 +280,7 @@ def _background_task_status_by_tool_id(payloads: list[dict[str, Any]]) -> dict[s
     return {
         tool_id: status_by_task_id[task_id]
         for tool_id, task_id in task_by_tool_id.items()
-        if status_by_task_id.get(task_id)
+        if tool_id in background_tool_ids and status_by_task_id.get(task_id)
     }
 
 
@@ -287,6 +304,8 @@ def _adjust_background_command_status(
         return exit_code, status, output
     if background_status == "completed":
         return 0, "completed", output
+    if background_status == "failed" and exit_code not in (None, 0):
+        return exit_code, "failed", output
     if background_status in {"failed", "killed", "stopped"}:
         note = f"background task {background_status} before command completion"
         output = f"{note}\n{output}".strip()
