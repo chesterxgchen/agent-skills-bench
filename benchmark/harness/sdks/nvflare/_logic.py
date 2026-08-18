@@ -3089,9 +3089,7 @@ def validation_cohort_basis(run: dict[str, Any]) -> tuple[str, str] | None:
     """
 
     text = _workspace_text(run)
-    if re.search(r"load_split\(\s*self\.(?:shared_dir|shared_data_dir)\s*,\s*['\"]valid['\"]", text) or (
-        "--shared-data-dir" in text and re.search(r"load_split\([^\n]*['\"]valid['\"]", text)
-    ):
+    if re.search(r"load_split\(\s*self\.(?:shared_dir|shared_data_dir)\s*,\s*['\"]valid['\"]", text):
         return "shared_validation_cohort", "shared validation cohort used by every site"
     if re.search(r"load_split\(\s*self\.(?:site_data_dir|train_dir)\s*,\s*['\"]valid['\"]", text):
         return "site_local_validation_cohorts", "site-local validation cohort differs by site"

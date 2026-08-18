@@ -10101,7 +10101,8 @@ def test_nvflare_validation_cohort_detector_distinguishes_shared_and_site_local(
 
     monkeypatch.setattr(_logic, "_workspace_text", lambda run: run["source"])
     shared = "valid_frame = load_split(self.shared_dir, 'valid')\nparser.add_argument('--shared-data-dir')"
-    local = 'valid_frame = load_split(self.site_data_dir, "valid")'
+    local = 'valid_frame = load_split(self.site_data_dir, "valid")\nparser.add_argument("--shared-data-dir")'
+    other_local = 'valid_frame = load_split(self.validation_dir, "valid")\nparser.add_argument("--shared-data-dir")'
 
     assert _logic.validation_cohort_basis({"source": shared}) == (
         "shared_validation_cohort",
@@ -10111,6 +10112,7 @@ def test_nvflare_validation_cohort_detector_distinguishes_shared_and_site_local(
         "site_local_validation_cohorts",
         "site-local validation cohort differs by site",
     )
+    assert _logic.validation_cohort_basis({"source": other_local}) is None
 
 
 def test_metrics_chart_treats_huggingface_eval_accuracy_as_accuracy():
@@ -12157,7 +12159,9 @@ def test_rca_slowdown_topic_seeds_comparative_question(tmp_path):
             }
         )
 
-    report_path = run_investigation(tmp_path, "with_skills", fake_invoker, topic="slowdown", agent_name="fake")
+    report_path = run_investigation(
+        tmp_path, "with_skills", fake_invoker, topic="slowdown", max_steps=1, agent_name="fake"
+    )
     assert report_path is not None
     assert report_path.name == "rca_report_slowdown.md"
     assert "+300s" in prompts[0]
@@ -12165,6 +12169,7 @@ def test_rca_slowdown_topic_seeds_comparative_question(tmp_path):
     assert "records/mode=without_skills" in prompts[0]
     assert "audit the proposed causal chain" in prompts[1]
     assert "recommend documenting a missing behavior" in prompts[1]
+    assert len(prompts) == 3  # investigation, supplemental audit, synthesis
 
 
 def test_rca_resynthesize_rewrites_report_from_saved_trail(tmp_path):

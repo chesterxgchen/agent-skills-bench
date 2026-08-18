@@ -1212,6 +1212,7 @@ def run_investigation(
     question = str(seed["seed_question"])
     asked = {question}
     guidance_causality_audited = False
+    guidance_audit_pending = False
     # The prior run's RCA outputs stay on disk until the first new step
     # completes (an immediate invoker failure must not discard them), but a
     # fresh investigation must not read its own predecessor's conclusions as
@@ -1232,7 +1233,12 @@ def run_investigation(
         with partial_path.open("w", encoding="utf-8") as stream:
             stream.write(json.dumps({"seed": seed, "agent": agent_name}) + "\n")
             stream.flush()
-            for _ in range(max_steps):
+            investigation_steps = 0
+            while investigation_steps < max_steps or guidance_audit_pending:
+                is_guidance_audit = guidance_audit_pending
+                guidance_audit_pending = False
+                if not is_guidance_audit:
+                    investigation_steps += 1
                 raw = invoker(_step_prompt(seed, steps, question, result_root), staged_root)
                 payload = parse_agent_answer(raw)
                 step = InvestigationStep(
@@ -1274,9 +1280,11 @@ def run_investigation(
                     # Comparative regressions are especially prone to anchoring:
                     # an investigator can rule out a first hypothesis, discover
                     # the real cause later, and never re-check that cause against
-                    # the skill. Reserve one deterministic audit turn before
-                    # synthesis so the verdict and recommendation agree.
+                    # the skill. The deterministic audit is supplemental to the
+                    # normal investigation-step budget so even a conclusion on
+                    # its final step is audited before synthesis.
                     guidance_causality_audited = True
+                    guidance_audit_pending = True
                     question = _GUIDANCE_CAUSALITY_AUDIT_QUESTION
                     asked.add(question)
                     continue
