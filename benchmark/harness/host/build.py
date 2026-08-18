@@ -329,7 +329,7 @@ def _load_nvflare_skill_eval_documents(path: Path) -> list[dict[str, Any]]:
             raise ValueError(f"{evals_path}: invalid JSON: {exc}") from exc
         if not isinstance(payload, dict):
             raise ValueError(f"{evals_path}: evals.json must contain a JSON object")
-        skill_name = str(payload.get("skill_name") or evals_path.parent.name)
+        skill_name = str(payload.get("skill_name") or evals_path.parent.parent.name)
         evals = payload.get("evals")
         if not isinstance(evals, list):
             raise ValueError(f"{evals_path}: evals must be a list")

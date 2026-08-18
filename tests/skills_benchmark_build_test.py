@@ -396,7 +396,7 @@ evaluation:
     )
 
 
-def test_nvflare_sdk_native_skill_evals_are_converted_to_rules(tmp_path):
+def test_nvflare_sdk_native_skill_evals_without_skill_name_are_converted_to_rules(tmp_path):
     from benchmark.harness.evaluation import load_evaluation_rules
     from benchmark.harness.host import build
     from benchmark.harness.sdks.base import SdkSource
@@ -407,7 +407,6 @@ def test_nvflare_sdk_native_skill_evals_are_converted_to_rules(tmp_path):
     evals_dir.joinpath("evals.json").write_text(
         json.dumps(
             {
-                "skill_name": "nvflare-convert-pytorch",
                 "evals": [
                     {
                         "id": "pytorch-basic",
