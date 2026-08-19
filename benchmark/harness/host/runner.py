@@ -268,6 +268,16 @@ def emit_case_failure_summary(
             prefix=prefix,
             stderr=True,
         )
+    causal_event = exit_summary.get("causal_event")
+    if isinstance(causal_event, dict):
+        reference = causal_event.get("reference") or "agent event"
+        evidence = causal_event.get("evidence") or causal_event.get("reason") or "structured failure signal"
+        emit(
+            f"Final causal event: {truncate_text(reference)}: {truncate_text(evidence)}",
+            logs=logs,
+            prefix=prefix,
+            stderr=True,
+        )
     harness_message = early_failure.get("message") or host_error.get("message")
     if harness_message:
         phase = early_failure.get("phase") or host_error.get("error_type") or "host"
@@ -283,8 +293,8 @@ def emit_case_failure_summary(
         for line in stderr_excerpt.splitlines():
             emit(f"  {line}", logs=logs, prefix=prefix, stderr=True)
     emit(
-        f"Failure artifacts: {result_dir / 'agent_stderr.txt'}, {result_dir / 'agent_exit_summary.json'}, "
-        f"{result_dir / 'run_summary.json'}",
+        f"Failure artifacts: {result_dir / 'agent_stderr.txt'}, {result_dir / 'agent_events.jsonl'}, "
+        f"{result_dir / 'agent_exit_summary.json'}, {result_dir / 'run_summary.json'}",
         logs=logs,
         prefix=prefix,
         stderr=True,

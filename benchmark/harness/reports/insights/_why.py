@@ -24,6 +24,7 @@ from .._context import JobExecutionSignal, ReportContext
 from .._events import (
     _format_command_span,
     _span_total_seconds,
+    agent_causal_event,
     as_number,
     event_timeline_from_text,
     fmt_seconds,
@@ -1031,6 +1032,12 @@ def _failure_root_cause_chain(with_run: RunEvidence, base_run: RunEvidence) -> l
     built for a genuinely terminal failure — a failure the run recovered from
     (a later command succeeded) produces no chain.
     """
+
+    # A classifier-owned structured terminal event outranks shell-command
+    # heuristics. Building a command chain in that case would relabel an
+    # earlier command failure as the run's root cause.
+    if agent_causal_event(with_run.raw):
+        return []
 
     timeline = _run_event_timeline(with_run)
     anchored = terminal_failure_anchor(timeline)

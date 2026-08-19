@@ -4000,6 +4000,57 @@ def test_failure_root_cause_prefers_agent_exit_classifier():
     assert failure_root_cause(_ev(run)) == "Agent failure category: agent_auth_failure"
 
 
+def test_failure_diagnosis_cites_structured_causal_event_instead_of_first_command():
+    from benchmark.harness.reports.benchmark_insights import failure_evidence, failure_root_cause
+    from benchmark.harness.reports.insights._why import _failure_root_cause_chain
+
+    causal_event = {
+        "reference": "agent_events.jsonl:9",
+        "evidence": "message.diagnostics.cache_miss_reason.type=missing_artifact_authorization",
+        "reason": "missing_artifact_authorization",
+    }
+    failed_run = {
+        "available": True,
+        "label": "With skills",
+        "agent_events_text": (
+            '{"type":"item.completed","item":{"type":"command_execution","command":"first-command",'
+            '"aggregated_output":"Error: unrelated early failure","exit_code":1}}\n'
+            '{"type":"result","diagnostics":{"cache_miss_reason":'
+            '{"type":"missing_artifact_authorization"}}}\n'
+        ),
+        "record": {
+            "agent_exit_summary": {
+                "failure_category": "blocked_missing_artifact_authorization",
+                "causal_event": causal_event,
+            }
+        },
+        "run": {"agent_exit_code": 1},
+        "container_exit": {"exit_code": 1},
+    }
+    baseline_run = {
+        "available": True,
+        "label": "No skills baseline",
+        "record": {},
+        "run": {"agent_exit_code": 0},
+        "container_exit": {"exit_code": 0},
+    }
+
+    evidence = failure_evidence(failed_run)
+    root_cause = failure_root_cause(_ev(failed_run))
+
+    assert evidence == (
+        "final causal event `agent_events.jsonl:9`: "
+        "`message.diagnostics.cache_miss_reason.type=missing_artifact_authorization`"
+    )
+    assert root_cause == (
+        "Agent failure category: blocked_missing_artifact_authorization "
+        "(final causal event `agent_events.jsonl:9`: "
+        "`message.diagnostics.cache_miss_reason.type=missing_artifact_authorization`)"
+    )
+    assert "first-command" not in root_cause
+    assert _failure_root_cause_chain(_ev(failed_run), _ev(baseline_run)) == []
+
+
 def test_failure_root_cause_infers_auth_from_agent_last_message():
     from benchmark.harness.modes import WITH_SKILLS_MODE
     from benchmark.harness.reports.benchmark_insights import (

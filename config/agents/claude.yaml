@@ -143,6 +143,11 @@ exit:
     - category: agent_cli_missing
       exit_codes:
         - 127
+    # Claude can report an infrastructure block only in the structured event
+    # stream. Prefer that terminal diagnostic over earlier command failures.
+    - category: blocked_missing_artifact_authorization
+      structured_cache_miss_reasons:
+        - missing_artifact_authorization
     - category: agent_model_unsupported
       all:
         - model

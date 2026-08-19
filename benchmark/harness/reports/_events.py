@@ -1157,7 +1157,28 @@ def artifact_validation_metric_is_runtime_evidence(run: dict[str, Any]) -> bool:
     return metric_is_runtime_result_artifact(metric)
 
 
+def agent_causal_event(run: dict[str, Any]) -> dict[str, Any]:
+    """Return the classifier's terminal structured-event attribution, if any."""
+
+    record = run.get("record") if isinstance(run.get("record"), dict) else {}
+    exit_summary = record.get("agent_exit_summary") if isinstance(record.get("agent_exit_summary"), dict) else {}
+    causal_event = exit_summary.get("causal_event")
+    return causal_event if isinstance(causal_event, dict) else {}
+
+
+def agent_causal_event_evidence(run: dict[str, Any]) -> str:
+    causal_event = agent_causal_event(run)
+    if not causal_event:
+        return ""
+    reference = str(causal_event.get("reference") or "agent event")
+    evidence = str(causal_event.get("evidence") or causal_event.get("reason") or "structured failure signal")
+    return f"final causal event `{reference}`: `{evidence}`"
+
+
 def failure_evidence(run: dict[str, Any]) -> str:
+    causal_evidence = agent_causal_event_evidence(run)
+    if causal_evidence:
+        return causal_evidence
     text = combined_text(run)
     model_error = unsupported_model_message(text)
     if model_error:

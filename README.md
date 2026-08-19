@@ -806,6 +806,8 @@ When a case fails, look for:
 - `records/.../mode=<mode>/late_harness_failure.json`
 - `records/.../mode=<mode>/container_exit_code.json`
 - `records/.../mode=<mode>/agent_stderr.txt`
+- `records/.../mode=<mode>/agent_events.jsonl`
+- `records/.../mode=<mode>/agent_exit_summary.json`
 - `records/.../mode=<mode>/agent_last_message.txt`
 
 ## Example Report
@@ -963,6 +965,13 @@ rerun without `--no-agent-auth-mount`. Current harness versions mount both
 caches read-only when they exist and classify this error as
 `agent_cloud_config_failure`; older result records may show
 `agent_unknown_failure`.
+
+Some agent failures are emitted only as structured JSONL diagnostics. For
+example, a terminal `cache_miss_reason.type=missing_artifact_authorization` is
+classified as `blocked_missing_artifact_authorization`. The corresponding
+`agent_exit_summary.json` records a `causal_event` with an
+`agent_events.jsonl:<line>` reference; reports prefer that final event over an
+earlier failed command when naming the root cause.
 
 Codex image is older than the host CLI:
 

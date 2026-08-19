@@ -21,6 +21,7 @@ from typing import Any
 
 from .._context import CommandFailureSignal, JobExecutionSignal
 from .._events import (
+    agent_causal_event_evidence,
     agent_failure_category,
     bash_permission_denial_count,
     exit_code,
@@ -154,7 +155,9 @@ def failure_root_cause(run: RunEvidence) -> str:
     record = run.record if isinstance(run.record, dict) else {}
     failure_category = agent_failure_category(run.raw)
     if failure_category and failure_category != "agent_unknown_failure":
-        return f"Agent failure category: {failure_category}"
+        causal_evidence = agent_causal_event_evidence(run.raw)
+        suffix = f" ({causal_evidence})" if causal_evidence else ""
+        return f"Agent failure category: {failure_category}{suffix}"
     text = combined_text(run.raw)
     model_error = unsupported_model_message(text)
     if model_error:

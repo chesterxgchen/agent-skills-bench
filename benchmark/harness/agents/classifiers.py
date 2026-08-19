@@ -16,11 +16,124 @@
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 CLASSIFICATION_EVIDENCE_LIMIT = 4000
+
+
+def normalized_signal_name(value: Any) -> str:
+    """Return the comparison form used for structured diagnostic names."""
+
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def structured_cache_miss_reasons(value: Any, path: tuple[str, ...] = ()) -> Iterable[tuple[str, str]]:
+    """Yield exact ``(json_path, reason)`` pairs from cache-miss diagnostics."""
+
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = (*path, str(key))
+            if normalized_signal_name(key) == "cache_miss_reason":
+                if isinstance(child, dict):
+                    for field_name in ("type", "reason", "code"):
+                        reason = child.get(field_name)
+                        if isinstance(reason, str) and reason.strip():
+                            yield ".".join((*child_path, field_name)), reason.strip()
+                            break
+                else:
+                    reason = child
+                    if isinstance(reason, str) and reason.strip():
+                        yield ".".join(child_path), reason.strip()
+            yield from structured_cache_miss_reasons(child, child_path)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from structured_cache_miss_reasons(child, (*path, str(index)))
+
+
+def causal_event_summary(
+    path: Path,
+    line_number: int,
+    event: dict[str, Any],
+    json_path: str,
+    reason: str,
+) -> dict[str, Any]:
+    source = path.name
+    evidence = f"{json_path}={reason}"
+    summary = {
+        "source": source,
+        "line": line_number,
+        "reference": f"{source}:{line_number}",
+        "json_path": json_path,
+        "reason": reason,
+        "evidence": evidence,
+    }
+    for source_key, target_key in (
+        ("event_type", "event_type"),
+        ("type", "event_type"),
+        ("timestamp", "timestamp"),
+        ("harness_timestamp", "harness_timestamp"),
+        ("request_id", "request_id"),
+        ("uuid", "event_id"),
+    ):
+        value = event.get(source_key)
+        if value not in (None, "") and target_key not in summary:
+            summary[target_key] = value
+    return summary
+
+
+def terminal_result_failure(event: dict[str, Any]) -> bool | None:
+    """Return a terminal result's failure state, or ``None`` for non-results."""
+
+    raw_type = normalized_signal_name(event.get("type"))
+    event_type = normalized_signal_name(event.get("event_type"))
+    if raw_type != "result" and not event_type.startswith("result_"):
+        return None
+    is_error = event.get("is_error")
+    if isinstance(is_error, bool):
+        return is_error
+    subtype = normalized_signal_name(event.get("subtype"))
+    if subtype:
+        return subtype != "success"
+    if event_type.startswith("result_"):
+        return event_type != "result_success"
+    return None
+
+
+def final_structured_cache_miss(
+    paths: Iterable[Path],
+    configured_reasons: set[str],
+) -> tuple[str, dict[str, Any]] | None:
+    """Return a configured cache miss only from the final failing result."""
+
+    terminal_event: tuple[Path, int, dict[str, Any], bool] | None = None
+    for path in paths:
+        try:
+            stream = path.open("r", encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with stream:
+            for line_number, line in enumerate(stream, start=1):
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                failed = terminal_result_failure(event)
+                if failed is not None:
+                    terminal_event = (path, line_number, event, failed)
+    if terminal_event is None or not terminal_event[3]:
+        return None
+    path, line_number, event, _failed = terminal_event
+    for json_path, reason in structured_cache_miss_reasons(event):
+        normalized_reason = normalized_signal_name(reason)
+        if normalized_reason in configured_reasons:
+            return normalized_reason, causal_event_summary(path, line_number, event, json_path, reason)
+    return None
 
 
 def stderr_excerpt(stderr_path: Path) -> str:
@@ -112,9 +225,16 @@ def validate_stderr_pattern_rules(config: dict[str, Any]) -> None:
             raise ValueError(f"exit.rules[{index}].category must be a non-empty string")
         any_patterns = as_string_list(rule.get("any"), f"exit.rules[{index}].any")
         all_patterns = as_string_list(rule.get("all"), f"exit.rules[{index}].all")
+        cache_miss_reasons = as_string_list(
+            rule.get("structured_cache_miss_reasons"),
+            f"exit.rules[{index}].structured_cache_miss_reasons",
+        )
         exit_codes = as_exit_codes(rule.get("exit_codes"), f"exit.rules[{index}].exit_codes")
-        if not any_patterns and not all_patterns and not exit_codes:
-            raise ValueError(f"exit.rules[{index}] must define at least one of any, all, or exit_codes")
+        if not any_patterns and not all_patterns and not cache_miss_reasons and not exit_codes:
+            raise ValueError(
+                f"exit.rules[{index}] must define at least one of any, all, "
+                "structured_cache_miss_reasons, or exit_codes"
+            )
 
 
 def validate_exit_config(config: dict[str, Any]) -> None:
@@ -145,9 +265,28 @@ def stderr_pattern_exit(
     config: dict[str, Any],
     evidence_paths: Iterable[Path] = (),
 ) -> dict[str, Any]:
+    evidence_paths = tuple(evidence_paths)
     summary = generic_cli_exit(exit_code, stderr_path, classifier_id="stderr_patterns", evidence_paths=evidence_paths)
+    structured_rules: dict[str, dict[str, Any]] = {}
+    for rule in config.get("rules") or []:
+        for reason in as_string_list(
+            rule.get("structured_cache_miss_reasons"),
+            "exit.rules[].structured_cache_miss_reasons",
+        ):
+            structured_rules.setdefault(normalized_signal_name(reason), rule)
+    structured_match = final_structured_cache_miss(evidence_paths, set(structured_rules)) if exit_code else None
+    if structured_match is not None:
+        reason, causal_event = structured_match
+        summary["failure_category"] = str(structured_rules[reason]["category"])
+        summary["causal_event"] = causal_event
+        summary["classification_excerpt"] = (
+            f"Final causal event {causal_event['reference']}: {causal_event['evidence']}"
+        )[:CLASSIFICATION_EVIDENCE_LIMIT]
+        return summary
     evidence_lower = str(summary.get("classification_excerpt") or summary.get("stderr_excerpt") or "").lower()
     for rule in config.get("rules") or []:
+        if rule.get("structured_cache_miss_reasons") and not any(rule.get(key) for key in ("any", "all", "exit_codes")):
+            continue
         if stderr_rule_matches(rule, exit_code, evidence_lower):
             summary["failure_category"] = str(rule["category"])
             break

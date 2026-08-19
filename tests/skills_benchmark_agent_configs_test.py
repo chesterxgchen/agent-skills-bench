@@ -956,6 +956,139 @@ def test_codex_exit_classifier_detects_startup_configuration_failures(
     assert summary["failure_category"] == expected_category
 
 
+def test_claude_exit_classifier_prefers_final_structured_artifact_authorization_block(tmp_path):
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    adapter = load_agent_adapter("claude")
+    stderr = tmp_path / "agent_stderr.txt"
+    stderr.write_text("", encoding="utf-8")
+    last_message = tmp_path / "agent_last_message.txt"
+    last_message.write_text("The first command failed.\n", encoding="utf-8")
+    events = tmp_path / "agent_events.jsonl"
+    raw_events = [
+        {
+            "type": "user",
+            "message": {"content": [{"type": "tool_result", "content": "Error: first command failed"}]},
+        },
+        {
+            "type": "assistant",
+            "request_id": "request-earlier",
+            "message": {"diagnostics": {"cache_miss_reason": {"type": "missing_artifact_authorization"}}},
+        },
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "retrying"}]}},
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "request_id": "request-final",
+            "diagnostics": {"cache_miss_reason": {"type": "missing_artifact_authorization"}},
+        },
+    ]
+    with events.open("w", encoding="utf-8") as stream:
+        for event in raw_events:
+            stream.write(json.dumps(adapter.normalize_event(json.dumps(event))) + "\n")
+
+    summary = adapter.exit_summary(1, stderr, evidence_paths=(last_message, events))
+
+    assert summary["failure_category"] == "blocked_missing_artifact_authorization"
+    causal_event = summary["causal_event"]
+    assert causal_event["source"] == "agent_events.jsonl"
+    assert causal_event["line"] == 4
+    assert causal_event["reference"] == "agent_events.jsonl:4"
+    assert causal_event["json_path"] == "diagnostics.cache_miss_reason.type"
+    assert causal_event["reason"] == "missing_artifact_authorization"
+    assert causal_event["evidence"] == "diagnostics.cache_miss_reason.type=missing_artifact_authorization"
+    assert causal_event["event_type"] == "result.error_during_execution"
+    assert causal_event["request_id"] == "request-final"
+    assert summary["classification_excerpt"] == (
+        "Final causal event agent_events.jsonl:4: "
+        "diagnostics.cache_miss_reason.type=missing_artifact_authorization"
+    )
+    assert "first command" not in summary["classification_excerpt"]
+
+
+def test_claude_exit_classifier_ignores_cache_miss_superseded_by_terminal_failure(tmp_path):
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    adapter = load_agent_adapter("claude")
+    stderr = tmp_path / "agent_stderr.txt"
+    stderr.write_text("", encoding="utf-8")
+    events = tmp_path / "agent_events.jsonl"
+    raw_events = [
+        {
+            "type": "assistant",
+            "diagnostics": {"cache_miss_reason": {"type": "missing_artifact_authorization"}},
+        },
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "result": "Model gpt-test is unsupported for this account.",
+        },
+    ]
+    with events.open("w", encoding="utf-8") as stream:
+        for event in raw_events:
+            stream.write(json.dumps(adapter.normalize_event(json.dumps(event))) + "\n")
+
+    summary = adapter.exit_summary(1, stderr, evidence_paths=(events,))
+
+    assert summary["failure_category"] == "agent_model_unsupported"
+    assert "causal_event" not in summary
+
+
+@pytest.mark.parametrize("reason_field", ["reason", "code"])
+def test_claude_structured_cache_miss_preserves_reason_field_path(tmp_path, reason_field):
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    adapter = load_agent_adapter("claude")
+    stderr = tmp_path / "agent_stderr.txt"
+    stderr.write_text("", encoding="utf-8")
+    events = tmp_path / "agent_events.jsonl"
+    event = {
+        "type": "result",
+        "subtype": "error_during_execution",
+        "is_error": True,
+        "diagnostics": {"cache_miss_reason": {reason_field: "missing_artifact_authorization"}},
+    }
+    events.write_text(json.dumps(adapter.normalize_event(json.dumps(event))) + "\n", encoding="utf-8")
+
+    summary = adapter.exit_summary(1, stderr, evidence_paths=(events,))
+
+    causal_event = summary["causal_event"]
+    expected_path = f"diagnostics.cache_miss_reason.{reason_field}"
+    assert summary["failure_category"] == "blocked_missing_artifact_authorization"
+    assert causal_event["json_path"] == expected_path
+    assert causal_event["evidence"] == f"{expected_path}=missing_artifact_authorization"
+
+
+def test_claude_structured_artifact_authorization_signal_does_not_fail_successful_exit(tmp_path):
+    from benchmark.harness.agents.registry import load_agent_adapter
+
+    adapter = load_agent_adapter("claude")
+    stderr = tmp_path / "agent_stderr.txt"
+    stderr.write_text("", encoding="utf-8")
+    events = tmp_path / "agent_events.jsonl"
+    events.write_text(
+        json.dumps(
+            adapter.normalize_event(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "diagnostics": {"cache_miss_reason": {"type": "missing_artifact_authorization"}},
+                    }
+                )
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = adapter.exit_summary(0, stderr, evidence_paths=(events,))
+
+    assert summary["passed"] is True
+    assert summary["failure_category"] is None
+    assert "causal_event" not in summary
+
+
 def test_agent_config_rejects_unknown_parser_id(tmp_path):
     from benchmark.harness.agents.config import AgentConfig
 

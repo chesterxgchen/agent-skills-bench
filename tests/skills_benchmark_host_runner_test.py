@@ -573,6 +573,10 @@ def test_emit_case_failure_summary_prints_actionable_error(tmp_path):
             {
                 "failure_category": "agent_auth_failure",
                 "stderr_excerpt": "failed to read auth token\nsecond detail\nthird detail\nfourth detail\nfifth detail\n",
+                "causal_event": {
+                    "reference": "agent_events.jsonl:23",
+                    "evidence": "diagnostics.cache_miss_reason.type=missing_artifact_authorization",
+                },
             }
         ),
         encoding="utf-8",
@@ -590,9 +594,14 @@ def test_emit_case_failure_summary_prints_actionable_error(tmp_path):
     assert "[run_00002] Run failed: mode=with_skills; final_status=1" in text
     assert "Failure exit codes: agent_process_exit=1; final_container_exit=1" in text
     assert "Failure category: agent_auth_failure" in text
+    assert (
+        "Final causal event: agent_events.jsonl:23: "
+        "diagnostics.cache_miss_reason.type=missing_artifact_authorization"
+    ) in text
     assert "failed to read auth token" in text
     assert "fifth detail" not in text
     assert "Failure artifacts:" in text
+    assert str(result_dir / "agent_events.jsonl") in text
 
 
 def test_directory_size_bytes_does_not_traverse_symlinked_directories(tmp_path):
