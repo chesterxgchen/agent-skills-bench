@@ -148,7 +148,7 @@ def quality_signal_table(runs: dict[str, RunEvidence], modes: list[str], ctx: Re
     for mode in modes:
         run = runs[mode]
         ev = ctx.evidence.get(mode)
-        signal = quality_signal(run.record if isinstance(run.record, dict) else {})
+        signal = quality_signal(run.record if isinstance(run.record, dict) else {}, run.agent_last_message)
         metric = run.validation_metric if isinstance(run.validation_metric, dict) else {}
         expected = signal.get("expected_primary_metric") or metric.get("name")
         result = metric_display(run, comparable_name, ev)
@@ -494,7 +494,7 @@ def failure_analysis_section(runs: dict[str, RunEvidence], modes: list[str], ctx
         else:
             lines.append("- Outcome: missing. No run artifacts were found for this mode.")
         record = run.record if isinstance(run.record, dict) else {}
-        signal = quality_signal(record)
+        signal = quality_signal(record, run.agent_last_message)
         metric_evidence = artifact_validation_metric_evidence(run.raw) or signal.get("evidence")
         if metric_evidence:
             lines.append(f"- Metric evidence: {metric_evidence}")

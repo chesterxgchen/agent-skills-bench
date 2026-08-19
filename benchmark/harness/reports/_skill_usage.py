@@ -76,10 +76,14 @@ def _skill_reference_name_from_path(file_path: str) -> str:
     return _skill_name_from_relative_path(rel_path)
 
 
-# Shared-reference containers observed under the skills root: the visible
-# `_shared/` directory and hidden dot-dirs like `.nvflare-shared/`. A dot-dir
-# may nest a content-hash segment (`.nvflare-shared/<sha256>/references/...`).
-_SHARED_CONTAINER_RE = re.compile(r"^(?:_shared|\.[A-Za-z0-9_-]*shared)$", re.IGNORECASE)
+# Shared-reference containers observed under the skills root: `_shared/`, the
+# installed `nvflare-shared/` skill, and hidden dot-dirs like
+# `.nvflare-shared/`. A dot-dir may nest a content-hash segment
+# (`.nvflare-shared/<sha256>/references/...`).
+_SHARED_CONTAINER_RE = re.compile(
+    r"^(?:_shared|nvflare-shared|\.[A-Za-z0-9_-]*shared)$",
+    re.IGNORECASE,
+)
 _HEX_SEGMENT_RE = re.compile(r"^[0-9a-f]{32,}$", re.IGNORECASE)
 
 
@@ -129,6 +133,23 @@ def _event_command_text(event: dict[str, Any]) -> str:
     return ""
 
 
+def _event_explicit_skill_names(event: dict[str, Any]) -> list[str]:
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return []
+    names: list[str] = []
+    for item in message.get("content") or []:
+        if not isinstance(item, dict) or item.get("name") != "Skill":
+            continue
+        tool_input = item.get("input")
+        if not isinstance(tool_input, dict):
+            continue
+        skill_name = str(tool_input.get("skill") or "").strip()
+        if skill_name:
+            names.append(skill_name)
+    return names
+
+
 def explicit_skill_tool_calls(events_text: str) -> list[str]:
     skills: list[str] = []
     seen: set[str] = set()
@@ -139,16 +160,7 @@ def explicit_skill_tool_calls(events_text: str) -> list[str]:
             continue
         if not isinstance(event, dict):
             continue
-        message = event.get("message")
-        if not isinstance(message, dict):
-            continue
-        for item in message.get("content") or []:
-            if not isinstance(item, dict) or item.get("name") != "Skill":
-                continue
-            tool_input = item.get("input")
-            if not isinstance(tool_input, dict):
-                continue
-            skill_name = str(tool_input.get("skill") or "").strip()
+        for skill_name in _event_explicit_skill_names(event):
             _append_unique(skills, seen, skill_name)
     return skills
 
@@ -169,7 +181,12 @@ def skill_instruction_reads(events_text: str) -> list[str]:
 
 
 def skill_inspection_reads(events_text: str) -> list[str]:
-    """Return skills whose top-level SKILL.md was read while routing/inspecting."""
+    """Return skills whose instructions were loaded while routing/inspecting.
+
+    Claude's explicit ``Skill`` tool loads the top-level instructions without
+    emitting a separate ``Read`` event for ``SKILL.md``. Count that invocation
+    alongside literal top-level instruction reads.
+    """
 
     skills: list[str] = []
     seen: set[str] = set()
@@ -180,6 +197,8 @@ def skill_inspection_reads(events_text: str) -> list[str]:
             continue
         if not isinstance(event, dict):
             continue
+        for skill_name in _event_explicit_skill_names(event):
+            _append_unique(skills, seen, _valid_skill_name(skill_name))
         for file_path in _event_skill_paths(event):
             _append_unique(skills, seen, _skill_inspection_name_from_path(file_path))
     return skills

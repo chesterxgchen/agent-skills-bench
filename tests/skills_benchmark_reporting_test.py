@@ -124,7 +124,10 @@ def test_skill_usage_keeps_explicit_skills_and_shared_refs_separate():
         ]
     )
 
-    assert skill_inspection_display(events_text) == "none"
+    # Invoking Claude's Skill tool loads the skill instructions implicitly, so
+    # it is inspection evidence even though Claude does not emit a separate
+    # Read call for the top-level SKILL.md.
+    assert skill_inspection_display(events_text) == "nvflare-convert-lightning"
     assert skill_usage_display(events_text=events_text, skills_enabled=True) == "nvflare-convert-lightning"
     assert (
         shared_skill_usage_display(events_text) == "_shared/dependency-install.md; _shared/runtime-output-guidance.md"
@@ -245,6 +248,72 @@ def test_skill_usage_counts_deeper_codex_references_as_applied_usage():
     assert skill_inspection_display(events_text) == "nvflare-convert-lightning; nvflare-convert-pytorch"
     assert skill_usage_display(events_text=events_text, skills_enabled=True) == "nvflare-convert-pytorch"
     assert shared_skill_usage_display(events_text) == "_shared/dependency-install.md"
+
+
+def test_claude_skill_invocation_and_nvflare_shared_reference_reads_are_reported():
+    from benchmark.harness.reports._skill_usage import (
+        shared_skill_usage_display,
+        skill_inspection_display,
+        skill_usage_display,
+    )
+
+    events_text = "\n".join(
+        [
+            json.dumps(
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "name": "Skill",
+                                "input": {"skill": "nvflare-convert-lightning"},
+                            }
+                        ]
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "name": "Read",
+                                "input": {
+                                    "file_path": (
+                                        "/workspace/.claude/skills/nvflare-shared/references/conversion-common.md"
+                                    )
+                                },
+                            },
+                            {
+                                "name": "Read",
+                                "input": {
+                                    "file_path": (
+                                        "/workspace/.claude/skills/nvflare-convert-lightning/references/"
+                                        "lightning-detection.md"
+                                    )
+                                },
+                            },
+                            {
+                                "name": "Read",
+                                "input": {
+                                    "file_path": (
+                                        "/workspace/.claude/skills/nvflare-shared/references/"
+                                        "pytorch-family-recipe-construction.md"
+                                    )
+                                },
+                            },
+                        ]
+                    }
+                }
+            ),
+        ]
+    )
+
+    assert skill_inspection_display(events_text) == "nvflare-convert-lightning"
+    assert skill_usage_display(events_text=events_text, skills_enabled=True) == "nvflare-convert-lightning"
+    assert shared_skill_usage_display(events_text) == (
+        "nvflare-shared/references/conversion-common.md; "
+        "nvflare-shared/references/pytorch-family-recipe-construction.md"
+    )
 
 
 def test_skill_usage_ignores_shared_observed_skill_name_fallback():
@@ -966,7 +1035,7 @@ def test_benchmark_reports_read_canonical_record_layout(tmp_path):
     assert "### Skill Evidence" in insights
     assert "| Run | Skills available | Skills inspected | Skills applied/used | Shared refs read |" in insights
     assert "| No skills baseline | not enabled | none | none | none |" in insights
-    assert "| With skills | not recorded | none | nvflare-convert-pytorch | none |" in insights
+    assert "| With skills | not recorded | nvflare-convert-pytorch | nvflare-convert-pytorch | none |" in insights
     assert "## Run Identity" in insights
     assert "| No skills baseline | codex | default | scenario | without_skills | not captured |" in insights
     assert "## Cost And Work Comparison" in insights
@@ -1166,7 +1235,7 @@ def test_benchmark_target_infers_plain_pytorch_framework_from_captured_evidence(
     assert "| No skills baseline | ames | PyTorch target | agent=claude, model=default |" in report
     assert "| With skills | ames | PyTorch target | agent=claude, model=default |" in report
     assert "Lightning target" not in report
-    assert "| With skills | not recorded | none | nvflare-convert-pytorch | none |" in report
+    assert "| With skills | not recorded | nvflare-convert-pytorch | nvflare-convert-pytorch | none |" in report
 
 
 def test_framework_inference_recognizes_hugging_face_before_pytorch_exchange():
@@ -4157,6 +4226,40 @@ Validation:
     assert metric["summary_value_label"] == "Best aggregated validation AUROC"
 
 
+def test_metric_alignment_uses_server_best_model_progression_scalar():
+    """A server best-model progression is explicit FL-summary metric evidence.
+
+    Regression for the AMES Lightning response: the metric name preceded a
+    parenthetical clause and the numeric values followed round assignments, so
+    the old parser stopped at the comma before reaching either AUROC value.
+    """
+
+    from benchmark.harness.quality_signals import metric_signal
+
+    signal = metric_signal(
+        None,
+        "Primary validation metric: AUROC.\n",
+        (
+            "- **Server‑side best‑model selection on **`val_auroc`** "
+            "(the source's selection metric, `mode=max`): `IntimeModelSelector` "
+            "best at round 1 = 0.753 → round 2 = **0.7812**; aggregated 3/3 "
+            "clients each round."
+        ),
+    )
+
+    metric = signal["reported_validation_metric"]
+    assert signal["status"] == "pass"
+    assert signal["metric_scalar_available"] is True
+    assert metric["name"] == "AUROC"
+    assert metric["value"] == 0.7812
+    assert metric["reported_values"] == [0.753, 0.7812]
+    assert metric["value_scope"] == "fl_summary_metric"
+    assert (
+        metric["summary_value_label"]
+        == "Server‑side best‑model selection on val_auroc (the source's selection metric, mode=max)"
+    )
+
+
 def test_metric_alignment_rejects_out_of_range_auroc_from_dependency_version():
     from benchmark.harness.quality_signals import metric_signal
 
@@ -4550,6 +4653,73 @@ def test_artifact_metric_satisfies_result_gate_when_final_response_metric_is_inc
     assert "Reporting note: Final response reporting gap" in failure_analysis
     quality_table = quality_signal_table(_evruns(runs), [WITH_SKILLS_MODE], _nv_ctx(runs, [WITH_SKILLS_MODE]))
     assert "artifact metric present; final response gap" in quality_table
+
+
+def test_report_replay_refreshes_stale_metric_signal_from_captured_final_response():
+    from benchmark.harness.modes import WITH_SKILLS_MODE
+    from benchmark.harness.reports.benchmark_insights import (
+        final_response_metric_reporting_gap,
+        quality_signal,
+        quality_signal_table,
+    )
+
+    stale_signal = {
+        "status": "not_available",
+        "available": False,
+        "expected_primary_metric": None,
+        "metric_value_available": False,
+        "metric_scalar_available": False,
+        "reported_validation_metric": {
+            "name": "AUROC",
+            "value": None,
+            "reported_values": [],
+            "reported_value_entries": [],
+        },
+    }
+    final_message = (
+        "- **Server‑side best‑model selection on **`val_auroc`** "
+        "(the source's selection metric, `mode=max`): `IntimeModelSelector` "
+        "best at round 1 = 0.753 → round 2 = **0.7812**; aggregated 3/3 clients each round."
+    )
+    run = {
+        "available": True,
+        "label": "With skills",
+        "container_exit": {"exit_code": 0},
+        "run": {"final_container_exit_code": 0},
+        "record": {
+            "quality_signals": {
+                "artifact_validation_metric": {
+                    "status": "pass",
+                    "reported_validation_metric": {"name": "AUROC", "value": 0.7812},
+                },
+                "job_guidance_primary_validation_metric": stale_signal,
+            }
+        },
+        "agent_last_message": final_message,
+        "validation_metric": {
+            "name": "AUROC",
+            "source": "metrics_artifact",
+            "reported_values": [0.7812],
+            "reported_value_entries": [{"label": "artifact aggregated validation metric", "value": 0.7812}],
+            "summary_value_label": "artifact aggregated validation metric",
+            "value": 0.7812,
+            "value_scope": "fl_summary_metric",
+        },
+    }
+    record = run["record"]
+
+    assert quality_signal(record)["status"] == "missing"
+    refreshed = quality_signal(record, final_message)
+    assert refreshed["status"] == "pass"
+    assert refreshed["reported_validation_metric"]["value"] == 0.7812
+    assert final_response_metric_reporting_gap(_ev(run), _nv_ev(run)) == ""
+    quality_table = quality_signal_table(
+        _evruns({WITH_SKILLS_MODE: run}),
+        [WITH_SKILLS_MODE],
+        _nv_ctx({WITH_SKILLS_MODE: run}, [WITH_SKILLS_MODE]),
+    )
+    assert "artifact metric present; final response gap" not in quality_table
+    assert "| pass |" in quality_table
 
 
 def test_not_started_job_cannot_pass_result_gate_with_reported_scalar():

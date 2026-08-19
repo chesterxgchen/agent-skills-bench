@@ -33,10 +33,15 @@ from ...quality_signals import (
     metric_value_entries,
 )
 from ...quality_signals import metric_value_label as payload_metric_value_label
-from ...quality_signals import reported_metric_payload
+from ...quality_signals import refresh_metric_signal_from_final_message, reported_metric_payload
 from .._context import AlgorithmSignal, JobExecutionSignal, ReportContext
 from .._events import exit_code
-from .._loader import CAPTURE_STATE_COMPLETE, CAPTURE_STATE_INCOMPLETE, sanitized_validation_metric
+from .._loader import (
+    CAPTURE_STATE_COMPLETE,
+    CAPTURE_STATE_INCOMPLETE,
+    expected_validation_metric_name,
+    sanitized_validation_metric,
+)
 from .._runs import combined_text, run_workspace_delta
 from .._text import fmt_number
 from ..evidence import RunEvidence
@@ -96,7 +101,7 @@ def metric_reporting_gap_evidence(run: RunEvidence, ev: Any = None, ctx: Any = N
     if not issues:
         return ""
     record = run.record if isinstance(run.record, dict) else {}
-    expected = quality_signal(record).get("expected_primary_metric") or "target metric"
+    expected = quality_signal(record, run.agent_last_message).get("expected_primary_metric") or "target metric"
     success = successful_job_evidence(run, ev, ctx)
     if success and metric_value(run, canonical_metric_name(expected), ev) is None:
         return (
@@ -150,7 +155,7 @@ def dependency_reference_notes(run: RunEvidence) -> list[str]:
 
 def metric_mismatch_with_reported_scalar(run: RunEvidence, ev: Any = None) -> bool:
     record = run.record if isinstance(run.record, dict) else {}
-    signal = quality_signal(record)
+    signal = quality_signal(record, run.agent_last_message)
     if not signal.get("mismatch"):
         return False
     metric = run.validation_metric if isinstance(run.validation_metric, dict) else {}
@@ -160,7 +165,7 @@ def metric_mismatch_with_reported_scalar(run: RunEvidence, ev: Any = None) -> bo
 
 def metric_mismatch_issue(run: RunEvidence, ev: Any = None) -> str:
     record = run.record if isinstance(run.record, dict) else {}
-    signal = quality_signal(record)
+    signal = quality_signal(record, run.agent_last_message)
     expected = signal.get("expected_primary_metric") or "target metric"
     metric = run.validation_metric if isinstance(run.validation_metric, dict) else {}
     actual_name = canonical_metric_name(metric.get("name"))
@@ -266,7 +271,7 @@ def _plugin_metric_quality_issue(run: RunEvidence, ev: Any = None) -> str:
 
 def final_response_metric_reporting_gap(run: RunEvidence, ev: Any = None) -> str:
     record = run.record if isinstance(run.record, dict) else {}
-    signal = quality_signal(record)
+    signal = quality_signal(record, run.agent_last_message)
     signal_status = str(signal.get("status") or "")
     if signal_status not in {"fail", "missing"} or metric_mismatch_with_reported_scalar(run, ev):
         return ""
@@ -295,7 +300,7 @@ def run_quality_issues(run: RunEvidence, ev: Any = None) -> list[str]:
         issues.append(f"Failed check `job_execution`: job status is `{job_status}`{detail}.")
     issues.extend(_failed_critical_quality_check_issues(run))
     record = run.record if isinstance(run.record, dict) else {}
-    signal = quality_signal(record)
+    signal = quality_signal(record, run.agent_last_message)
     expected = signal.get("expected_primary_metric")
     signal_status = str(signal.get("status") or "")
     if signal_status in {"fail", "missing"}:
@@ -580,7 +585,7 @@ def metric_display(run: RunEvidence, metric_name: str | None, ev: Any = None) ->
     display_name = actual_name if metric_name is None else metric_name
     if not display_name:
         record = run.record if isinstance(run.record, dict) else {}
-        display_name = quality_signal(record).get("expected_primary_metric")
+        display_name = quality_signal(record, run.agent_last_message).get("expected_primary_metric")
     if not display_name:
         display_name = "result"
     value = metric_value(run, metric_name, ev)
@@ -600,7 +605,7 @@ def reported_expected_metric_value(run: RunEvidence, ev: Any = None) -> tuple[st
     plausible metrics were listed together). Returns ``(name, value)`` or None."""
 
     record = run.record if isinstance(run.record, dict) else {}
-    expected = canonical_metric_name(quality_signal(record).get("expected_primary_metric"))
+    expected = canonical_metric_name(quality_signal(record, run.agent_last_message).get("expected_primary_metric"))
     if not expected:
         return None
     metric = run.validation_metric if isinstance(run.validation_metric, dict) else {}
@@ -810,7 +815,7 @@ def benchmark_outcome(run: RunEvidence, ev: Any = None) -> str:
     return f"pass: {gate_phrase or 'result metric available'}"
 
 
-def quality_signal(record: dict[str, Any]) -> dict[str, Any]:
+def quality_signal(record: dict[str, Any], final_message: str = "") -> dict[str, Any]:
     quality = record.get("quality_signals")
     if not isinstance(quality, dict):
         return {}
@@ -818,6 +823,10 @@ def quality_signal(record: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(signal, dict):
         return {}
     result = dict(signal)
+    expected = result.get("expected_primary_metric") or expected_validation_metric_name(record)
+    if expected:
+        result["expected_primary_metric"] = expected
+    result = refresh_metric_signal_from_final_message(result, final_message)
     metric = result.get("reported_validation_metric")
     if isinstance(metric, dict) and metric.get("name"):
         sanitized = sanitized_validation_metric(metric)

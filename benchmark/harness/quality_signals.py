@@ -34,6 +34,7 @@ GENERIC_VALIDATION_METRIC_PATTERN = (
     r"|(?:best\s+)?(?:aggregated|aggregate|global|server)\s+validation\s+(?:metric|[A-Za-z0-9_/-]+)"
     r")\b"
 )
+SERVER_BEST_MODEL_METRIC_PATTERN = r"\bserver(?:[- ]+side)?\s+best(?:[- ]+model)?\s+selection\b"
 
 
 # The handful of commonly-used deep-learning metrics the harness RECOGNIZES by name,
@@ -149,10 +150,10 @@ def line_value_after_metric(line: str, match: re.Match[str]) -> float | None:
 
 
 def label_from_metric_line(line: str) -> str | None:
-    match = re.match(r"\s*[-*]?\s*`?([^`:]+?)`?\s*:", line)
+    match = re.match(r"\s*(?:[-*]\s+)?(.+?)\s*:", line)
     if not match:
         return None
-    label = match.group(1).strip("` ")
+    label = re.sub(r"[`*]+", "", match.group(1)).strip()
     return label or None
 
 
@@ -161,6 +162,27 @@ def metric_value_entry(value: float, label: str | None = None) -> dict[str, Any]
     if label:
         entry["label"] = label
     return entry
+
+
+def progression_metric_entries(line: str, match: re.Match[str], label: str | None) -> list[dict[str, Any]]:
+    """Return metric values assigned in an explicit same-line progression.
+
+    Agent summaries commonly render server best-model history as ``round 1 =
+    0.75 -> round 2 = 0.78`` after naming the metric. Requiring both an arrow
+    and an assignment keeps unrelated later decimals, such as dependency
+    versions, from becoming metric evidence.
+    """
+
+    tail = line[match.end() :]
+    if not re.search(r"(?:->|→)", tail):
+        return []
+    assignment_pattern = rf"(?:=|:)\s*[`*_]*{FLOAT_PATTERN}"
+    entries: list[dict[str, Any]] = []
+    for value_match in re.finditer(assignment_pattern, tail):
+        value = parse_float(value_match.group(1))
+        if value is not None:
+            entries.append(metric_value_entry(value, label))
+    return entries
 
 
 def following_line_values(lines: list[str], start_index: int, metric_pattern: str, limit: int = 8) -> list[float]:
@@ -175,6 +197,8 @@ def line_metric_entries(line: str, metric_pattern: str) -> list[dict[str, Any]]:
         value = line_value_after_metric(line, match)
         if value is not None:
             entries.append(metric_value_entry(value, label))
+        else:
+            entries.extend(progression_metric_entries(line, match, label))
     return entries
 
 
@@ -260,9 +284,10 @@ def is_site_label(label: Any) -> bool:
 
 
 def is_fl_summary_metric_label(label: Any) -> bool:
-    text = str(label or "")
-    return (
-        not is_site_label(text) and re.search(GENERIC_VALIDATION_METRIC_PATTERN, text, flags=re.IGNORECASE) is not None
+    text = re.sub(r"[\u2010-\u2015]", "-", str(label or ""))
+    return not is_site_label(text) and (
+        re.search(GENERIC_VALIDATION_METRIC_PATTERN, text, flags=re.IGNORECASE) is not None
+        or re.search(SERVER_BEST_MODEL_METRIC_PATTERN, text, flags=re.IGNORECASE) is not None
     )
 
 
@@ -564,27 +589,8 @@ def critical_quality_checks_failed(*sources: Mapping[str, Any] | None) -> bool:
     return False
 
 
-def metric_signal(guidance_source: Any, guidance_text: str, final_message: str) -> dict[str, Any]:
-    guidance_entries = guidance_source_entries(guidance_source, guidance_text)
-    expected, matched_source = primary_metric_from_guidance_sources(guidance_entries, guidance_text)
-    reported = reported_validation_metric(final_message, expected)
-    _primary_source, sources = guidance_source_payload(guidance_source)
-    if not sources and guidance_entries:
-        sources = [public_guidance_source(entry) for entry in guidance_entries if entry.get("path")]
-    matched_public_source = public_guidance_source(matched_source) if matched_source else {}
-    primary_source = matched_public_source.get("path") or (sources[0]["path"] if sources else None)
-    signal: dict[str, Any] = {
-        "source": primary_source,
-        "matched_source": matched_public_source or None,
-        "sources": sources,
-        "source_type": "job_guidance",
-        "expected_primary_metric": expected,
-        "reported_validation_metric": reported,
-        "available": bool(expected),
-    }
-    if not expected:
-        signal["status"] = "not_available"
-        return signal
+def _metric_signal_alignment(expected: str, reported: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive the final-response alignment fields for one expected metric."""
 
     value = reported.get("value")
     reported_values = reported.get("reported_values")
@@ -653,17 +659,59 @@ def metric_signal(guidance_source: Any, guidance_text: str, final_message: str) 
         status = "missing"
         evidence = f"Job guidance declares {expected} as the primary metric, but the final response did not report it."
 
-    signal.update(
-        {
-            "status": status,
-            "evidence": evidence,
-            "metric_value_available": has_reported_numeric,
-            "metric_scalar_available": has_value,
-            "aligned_with_job_guidance": aligned,
-            "aligned_with_readme": aligned,
-            "mismatch": mismatch,
-        }
-    )
+    return {
+        "status": status,
+        "evidence": evidence,
+        "metric_value_available": has_reported_numeric,
+        "metric_scalar_available": has_value,
+        "aligned_with_job_guidance": aligned,
+        "aligned_with_readme": aligned,
+        "mismatch": mismatch,
+    }
+
+
+def refresh_metric_signal_from_final_message(signal: Mapping[str, Any] | None, final_message: str) -> dict[str, Any]:
+    """Refresh only final-response-derived fields in a captured metric signal.
+
+    Report replay uses this to apply the current parser to the immutable captured
+    final response while preserving the signal's captured guidance provenance.
+    """
+
+    if not isinstance(signal, Mapping):
+        return {}
+    refreshed = dict(signal)
+    expected = refreshed.get("expected_primary_metric")
+    if not expected or not final_message:
+        return refreshed
+    reported = reported_validation_metric(final_message, str(expected))
+    refreshed["reported_validation_metric"] = reported
+    refreshed["available"] = True
+    refreshed.update(_metric_signal_alignment(str(expected), reported))
+    return refreshed
+
+
+def metric_signal(guidance_source: Any, guidance_text: str, final_message: str) -> dict[str, Any]:
+    guidance_entries = guidance_source_entries(guidance_source, guidance_text)
+    expected, matched_source = primary_metric_from_guidance_sources(guidance_entries, guidance_text)
+    reported = reported_validation_metric(final_message, expected)
+    _primary_source, sources = guidance_source_payload(guidance_source)
+    if not sources and guidance_entries:
+        sources = [public_guidance_source(entry) for entry in guidance_entries if entry.get("path")]
+    matched_public_source = public_guidance_source(matched_source) if matched_source else {}
+    primary_source = matched_public_source.get("path") or (sources[0]["path"] if sources else None)
+    signal: dict[str, Any] = {
+        "source": primary_source,
+        "matched_source": matched_public_source or None,
+        "sources": sources,
+        "source_type": "job_guidance",
+        "expected_primary_metric": expected,
+        "reported_validation_metric": reported,
+        "available": bool(expected),
+    }
+    if not expected:
+        signal["status"] = "not_available"
+        return signal
+    signal.update(_metric_signal_alignment(expected, reported))
     return signal
 
 

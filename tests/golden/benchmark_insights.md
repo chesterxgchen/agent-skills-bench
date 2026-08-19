@@ -39,7 +39,7 @@ Result root: `<RESULT_ROOT>`
 | Run | Skills available | Skills inspected | Skills applied/used | Shared refs read |
 |---|---|---|---|---|
 | No skills baseline | not enabled | none | none | none |
-| With skills | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | none | nvflare-convert-pytorch | none |
+| With skills | nvflare-convert-lightning; nvflare-convert-pytorch; nvflare-diagnose-job; nvflare-orient | nvflare-convert-pytorch | nvflare-convert-pytorch | none |
 
 ## FL Algorithm / Workflow
 
