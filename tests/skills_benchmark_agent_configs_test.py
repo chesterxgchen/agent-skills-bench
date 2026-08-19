@@ -271,6 +271,30 @@ def test_claude_image_settings_disable_nested_tool_sandbox():
 
     assert settings["sandbox"]["enabled"] is False
     assert settings["sandbox"]["autoAllowBashIfSandboxed"] is True
+    assert settings["hooks"]["PreToolUse"] == [
+        {
+            "matcher": "Bash",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "/workspace/venv/bin/python /workspace/benchmark/harness/hooks/claude_stop_guard.py",
+                    "timeout": 10,
+                }
+            ],
+        }
+    ]
+    stop_hooks = settings["hooks"]["Stop"]
+    assert stop_hooks == [
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "/workspace/venv/bin/python /workspace/benchmark/harness/hooks/claude_stop_guard.py",
+                    "timeout": 10,
+                }
+            ]
+        }
+    ]
 
 
 def test_claude_stream_parser_normalizes_event_usage_and_activity(tmp_path):

@@ -50,6 +50,7 @@ from ..agents.base import (
 )
 from ..agents.registry import load_agent_adapter
 from ..artifacts import capture_workspace_delta, write_workspace_baseline
+from ..background_tasks import background_tasks_pending_at_success, iter_jsonl_objects
 from ..common import (
     DEFAULT_PREWARM_INSTALL_TIMEOUT_SECONDS,
     bool_from_text,
@@ -144,6 +145,10 @@ class AgentRunConfig:
     @property
     def agent_stderr_path(self) -> Path:
         return self.result_dir / "agent_stderr.txt"
+
+    @property
+    def background_task_lifecycle_path(self) -> Path:
+        return self.result_dir / "background_task_lifecycle.json"
 
     @property
     def prompt_file_path(self) -> Path:
@@ -1382,6 +1387,21 @@ def post_process(
         exclude_source_dirs=[run_root for _label, run_root in workspace_runtime_sources],
     )
     adapter = load_agent_adapter(config.agent)
+    saw_success, pending_background_tasks = background_tasks_pending_at_success(
+        iter_jsonl_objects(config.agent_events_path)
+    )
+    background_task_lifecycle = {
+        "status": (
+            "fail"
+            if agent_exit == 0 and saw_success and pending_background_tasks
+            else "pass" if saw_success else "not_evaluated"
+        ),
+        "policy": "agent_must_not_finish_with_active_background_tasks",
+        "agent_success_result_seen": saw_success,
+        "pending_tasks_at_success": pending_background_tasks,
+        "agent_process_exit_code": agent_exit,
+    }
+    write_json(config.background_task_lifecycle_path, background_task_lifecycle)
     exit_summary = adapter.exit_summary(
         agent_exit,
         config.agent_stderr_path,
@@ -1430,6 +1450,7 @@ def post_process(
     record = load_json(config.final_record_path, {}) or {}
     if isinstance(record, dict):
         record["agent_exit_summary"] = exit_summary
+        record["background_task_lifecycle"] = background_task_lifecycle
         if exit_summary.get("failure_category"):
             record["failure_category"] = exit_summary.get("failure_category")
             record["failure_root_cause"] = exit_summary.get("failure_category")
@@ -1450,7 +1471,10 @@ def record_has_policy_failure(record: dict[str, Any]) -> bool:
     if isinstance(metrics, dict) and metrics.get("source_input_immutable_violation"):
         return True
     violation = record.get("source_input_immutable_violation")
-    return isinstance(violation, dict) and violation.get("status") == "fail"
+    if isinstance(violation, dict) and violation.get("status") == "fail":
+        return True
+    lifecycle = record.get("background_task_lifecycle")
+    return isinstance(lifecycle, dict) and lifecycle.get("status") == "fail"
 
 
 def final_container_exit_status(agent_exit: int, report_statuses: dict[str, int], *, policy_failed: bool) -> int:

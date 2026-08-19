@@ -17,5 +17,30 @@
   "sandbox": {
     "enabled": false,
     "autoAllowBashIfSandboxed": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/workspace/venv/bin/python /workspace/benchmark/harness/hooks/claude_stop_guard.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/workspace/venv/bin/python /workspace/benchmark/harness/hooks/claude_stop_guard.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
