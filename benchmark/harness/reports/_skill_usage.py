@@ -73,6 +73,9 @@ def _skill_reference_name_from_path(file_path: str) -> str:
     rel_path = _skill_relative_path(file_path)
     if not rel_path or _is_top_level_skill_md(rel_path):
         return ""
+    parts = PurePosixPath(rel_path).parts
+    if parts and _SHARED_CONTAINER_RE.match(parts[0]):
+        return ""
     return _skill_name_from_relative_path(rel_path)
 
 

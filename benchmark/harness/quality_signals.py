@@ -197,9 +197,8 @@ def line_metric_entries(line: str, metric_pattern: str) -> list[dict[str, Any]]:
         value = line_value_after_metric(line, match)
         if value is not None:
             entries.append(metric_value_entry(value, label))
-        else:
-            entries.extend(progression_metric_entries(line, match, label))
-    return entries
+        entries.extend(progression_metric_entries(line, match, label))
+    return merge_metric_entries(entries)
 
 
 def single_unlabeled_metric_entry(line: str) -> dict[str, Any] | None:

@@ -316,6 +316,33 @@ def test_claude_skill_invocation_and_nvflare_shared_reference_reads_are_reported
     )
 
 
+def test_nvflare_shared_reference_read_is_not_reported_as_applied_skill():
+    from benchmark.harness.reports._skill_usage import (
+        shared_skill_usage_display,
+        skill_reference_reads,
+        skill_usage_display,
+    )
+
+    events_text = json.dumps(
+        {
+            "message": {
+                "content": [
+                    {
+                        "name": "Read",
+                        "input": {
+                            "file_path": "/workspace/.claude/skills/nvflare-shared/references/conversion-common.md"
+                        },
+                    }
+                ]
+            }
+        }
+    )
+
+    assert skill_reference_reads(events_text) == []
+    assert skill_usage_display(events_text=events_text, skills_enabled=True) == "none recorded"
+    assert shared_skill_usage_display(events_text) == "nvflare-shared/references/conversion-common.md"
+
+
 def test_skill_usage_ignores_shared_observed_skill_name_fallback():
     from benchmark.harness.reports._skill_usage import skill_usage_display
 
@@ -4258,6 +4285,26 @@ def test_metric_alignment_uses_server_best_model_progression_scalar():
         metric["summary_value_label"]
         == "Server‑side best‑model selection on val_auroc (the source's selection metric, mode=max)"
     )
+
+
+def test_metric_alignment_keeps_latest_value_when_progression_starts_after_metric():
+    from benchmark.harness.quality_signals import metric_signal, metric_value_entries
+
+    assert metric_value_entries("AUROC", "val_auroc: round 1 = 0.753 → round 2 = 0.7812") == [
+        {"label": "val_auroc", "value": 0.753},
+        {"label": "val_auroc", "value": 0.7812},
+    ]
+
+    signal = metric_signal(
+        None,
+        "Primary validation metric: AUROC.\n",
+        "Server-side best-model selection on val_auroc: round 1 = 0.753 → round 2 = 0.7812",
+    )
+
+    metric = signal["reported_validation_metric"]
+    assert signal["status"] == "pass"
+    assert metric["reported_values"] == [0.753, 0.7812]
+    assert metric["value"] == 0.7812
 
 
 def test_metric_alignment_rejects_out_of_range_auroc_from_dependency_version():
